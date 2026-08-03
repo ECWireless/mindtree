@@ -349,8 +349,7 @@ input {
 }
 
 @media (max-width: 760px) {
-  .dashboard-account > span,
-  .dashboard-account .button {
+  .dashboard-account > span {
     display: none;
   }
 
