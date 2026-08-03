@@ -1,5 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
+import { browserAllowedEmail, browserAuthSecret } from "./tests/config/browser-auth.mjs";
 import { loadDatabaseEnvironment } from "./tests/config/load-database-environment.mjs";
 
 loadDatabaseEnvironment();
@@ -13,16 +14,17 @@ if (!process.env.DATABASE_URL) {
 
 const testAuthEnvironment = {
   DATABASE_URL: process.env.DATABASE_URL,
-  BETTER_AUTH_SECRET: "synthetic-auth-secret-for-browser-tests-only",
+  BETTER_AUTH_SECRET: browserAuthSecret,
   BETTER_AUTH_URL: baseURL,
   GOOGLE_CLIENT_ID: "synthetic-google-client-id",
   GOOGLE_CLIENT_SECRET: "synthetic-google-client-secret",
-  ALLOWED_EMAIL: "browser-user@example.test",
+  ALLOWED_EMAIL: browserAllowedEmail,
 };
 
 export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: true,
+  workers: 1,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
   reporter: "list",
