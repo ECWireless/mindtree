@@ -8,6 +8,13 @@
       "when": 1785731778813,
       "tag": "0000_lucky_demogoblin",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1785778134116,
+      "tag": "0001_great_giant_girl",
+      "breakpoints": true
     }
   ]
 }

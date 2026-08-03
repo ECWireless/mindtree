@@ -1,9 +1,16 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
+  foreignKey,
   index,
+  integer,
   pgTable,
   text,
   timestamp,
+  unique,
+  uuid,
+  varchar,
 } from "drizzle-orm/pg-core";
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).defaultNow().notNull();
@@ -71,6 +78,42 @@ export const verification = pgTable(
   (table) => [index("verification_identifier_idx").on(table.identifier)],
 );
 
+export const nodes = pgTable(
+  "nodes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    parentId: uuid("parent_id"),
+    position: integer("position").notNull(),
+    title: varchar("title", { length: 200 }).notNull(),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    unique("nodes_user_id_id_unique").on(table.userId, table.id),
+    unique("nodes_sibling_position_unique")
+      .on(table.userId, table.parentId, table.position)
+      .nullsNotDistinct(),
+    foreignKey({
+      name: "nodes_parent_owner_fk",
+      columns: [table.userId, table.parentId],
+      foreignColumns: [table.userId, table.id],
+    }).onDelete("cascade"),
+    check(
+      "nodes_not_own_parent_check",
+      sql`${table.parentId} is null or ${table.parentId} <> ${table.id}`,
+    ),
+    check("nodes_position_non_negative_check", sql`${table.position} >= 0`),
+    check(
+      "nodes_title_trimmed_length_check",
+      sql`${table.title} !~ '^[[:space:]]|[[:space:]]$' and char_length(${table.title}) between 1 and 200`,
+    ),
+  ],
+);
+
 export const authSchema = {
   user,
   session,
@@ -78,4 +121,7 @@ export const authSchema = {
   verification,
 };
 
-export const schema = authSchema;
+export const schema = {
+  ...authSchema,
+  nodes,
+};
