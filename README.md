@@ -27,7 +27,7 @@ Intentional Phase 1 divergences from that baseline are narrow and explicit:
 
 ## Requirements
 
-- Node.js 22 or newer
+- Node.js 22.12 or newer in the 22.x line, or Node.js 24 or newer
 - Corepack and pnpm 11.13.1
 
 PostgreSQL 15+, Google OAuth credentials, and an OpenAI API key will be needed
@@ -56,6 +56,8 @@ Run each available check independently:
 ```sh
 corepack pnpm lint
 corepack pnpm typecheck
+corepack pnpm test
+corepack pnpm test:integration
 corepack pnpm build
 corepack pnpm test:e2e
 ```
@@ -66,8 +68,9 @@ Install the Chromium binary used by Playwright when needed:
 corepack pnpm exec playwright install chromium
 ```
 
-Unit and PostgreSQL integration commands are added by the next Phase 1 commit
-unit. Database migration commands arrive with the Phase 2 persistence work.
+The integration command intentionally passes with no integration files during
+Phase 1. PostgreSQL-backed cases and database migration commands arrive with
+the Phase 2 persistence work.
 
 ## Deployment shape
 
