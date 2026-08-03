@@ -183,6 +183,16 @@ input {
   margin-top: 2rem;
 }
 
+.auth-action--compact {
+  margin-top: 0;
+}
+
+.auth-action p {
+  margin: 0.75rem 0 0;
+  color: var(--color-muted);
+  font-size: 0.8rem;
+}
+
 .dashboard {
   display: flex;
   min-height: 100vh;
@@ -257,6 +267,11 @@ input {
   margin: 1.25rem 0 0;
   padding: 0;
   list-style: none;
+}
+
+.tree-empty {
+  margin: 1.25rem 0 0;
+  color: var(--color-muted);
 }
 
 .node-row {
