@@ -10,7 +10,7 @@ test("renders the signed-out foundation without horizontal overflow", async ({ p
     page.getByRole("heading", { level: 1, name: "See how your thoughts grow." }),
   ).toBeVisible();
 
-  const action = page.getByRole("link", { name: "View source" });
+  const action = page.getByRole("button", { name: "Continue with Google" });
   await action.focus();
   await expect(action).toBeFocused();
   await expect(action).toHaveCSS("outline-style", "solid");
@@ -22,11 +22,14 @@ test("renders the signed-out foundation without horizontal overflow", async ({ p
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
 });
 
-test("keeps the source action honest and accessible", async ({ page }) => {
-  await page.goto("/");
+test("distinguishes allowlist rejection from other OAuth errors", async ({ page }) => {
+  await page.goto("/?error=access_denied");
 
-  await expect(page.getByRole("link", { name: "View source" })).toHaveAttribute(
-    "href",
-    "https://github.com/ECWireless/mindtree",
-  );
+  await expect(page.getByText("Google sign-in wasn’t completed. Please try again.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Continue with Google" })).toBeVisible();
+
+  await page.goto("/?error=ACCOUNT_NOT_ALLOWED");
+
+  await expect(page.getByText("That Google account can’t access this MindTree.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Use another Google account" })).toBeVisible();
 });

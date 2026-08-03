@@ -2,13 +2,9 @@ import { fileURLToPath } from "node:url";
 
 import { defineConfig } from "vitest/config";
 
-try {
-  process.loadEnvFile(".env");
-} catch (error) {
-  if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
-    throw error;
-  }
-}
+import { loadDatabaseEnvironment } from "./tests/config/load-database-environment.mjs";
+
+loadDatabaseEnvironment();
 
 export default defineConfig({
   resolve: {
@@ -20,7 +16,6 @@ export default defineConfig({
   test: {
     include: ["tests/integration/**/*.test.{ts,tsx}"],
     fileParallelism: false,
-    passWithNoTests: true,
     testTimeout: 10_000,
   },
 });

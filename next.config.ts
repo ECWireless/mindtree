@@ -1,11 +1,17 @@
 import type { NextConfig } from "next";
 
-const allowedDevOrigins = process.env.NEXT_ALLOWED_DEV_ORIGINS?.split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+import { sensitiveAuthRequestLogPatterns } from "./src/lib/auth/logging";
+import { parseAllowedDevOrigins } from "./src/lib/env/development-origins";
+
+const allowedDevOrigins = parseAllowedDevOrigins(process.env.NEXT_ALLOWED_DEV_ORIGINS);
 
 const nextConfig: NextConfig = {
   allowedDevOrigins,
+  logging: {
+    incomingRequests: {
+      ignore: sensitiveAuthRequestLogPatterns,
+    },
+  },
   reactStrictMode: true,
 };
 

@@ -1,4 +1,5 @@
 import { BrandMark } from "./brand-mark";
+import { SignOutButton } from "./auth-buttons";
 import type { CSSProperties } from "react";
 import Link from "next/link";
 
@@ -33,9 +34,7 @@ export function DashboardShell({ email, nodes, selectedNodeId }: DashboardShellP
         </Link>
         <div className="dashboard-account">
           <span>{email}</span>
-          <button className="button button--quiet" type="button" disabled>
-            Sign out
-          </button>
+          <SignOutButton />
         </div>
       </header>
 
@@ -75,6 +74,7 @@ export function DashboardShell({ email, nodes, selectedNodeId }: DashboardShellP
               );
             })}
           </ul>
+          {nodes.length === 0 ? <p className="tree-empty">No thoughts yet.</p> : null}
         </nav>
 
         <section className="detail-pane" aria-labelledby="fixture-node-title">

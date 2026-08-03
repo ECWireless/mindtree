@@ -1,11 +1,30 @@
 import { defineConfig, devices } from "@playwright/test";
 
+import { browserAllowedEmail, browserAuthSecret } from "./tests/config/browser-auth.mjs";
+import { loadDatabaseEnvironment } from "./tests/config/load-database-environment.mjs";
+
+loadDatabaseEnvironment();
+
 const port = 3188;
 const baseURL = `http://127.0.0.1:${port}`;
+
+if (!process.env.DATABASE_URL) {
+  throw new Error("DATABASE_URL is required for browser tests.");
+}
+
+const testAuthEnvironment = {
+  DATABASE_URL: process.env.DATABASE_URL,
+  BETTER_AUTH_SECRET: browserAuthSecret,
+  BETTER_AUTH_URL: baseURL,
+  GOOGLE_CLIENT_ID: "synthetic-google-client-id",
+  GOOGLE_CLIENT_SECRET: "synthetic-google-client-secret",
+  ALLOWED_EMAIL: browserAllowedEmail,
+};
 
 export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: true,
+  workers: 1,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
   reporter: "list",
@@ -32,6 +51,7 @@ export default defineConfig({
   webServer: {
     command: `corepack pnpm dev --hostname 127.0.0.1 --port ${port}`,
     url: baseURL,
+    env: testAuthEnvironment,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

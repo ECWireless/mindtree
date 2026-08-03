@@ -9,6 +9,7 @@ const syntheticEnvironment = {
   DATABASE_URL_UNPOOLED: "postgresql://mindtree:synthetic@localhost:5432/mindtree",
   BETTER_AUTH_SECRET: "synthetic-auth-secret-with-at-least-32-characters",
   BETTER_AUTH_URL: "http://localhost:3000",
+  BETTER_AUTH_TRUSTED_ORIGINS: "https://trusted.example.test/",
   GOOGLE_CLIENT_ID: "synthetic-google-client-id",
   GOOGLE_CLIENT_SECRET: "synthetic-google-client-secret",
   ALLOWED_EMAIL: "owner@example.test",
@@ -25,7 +26,10 @@ describe("parseServerEnvironment", () => {
   it("accepts the complete synthetic server contract", () => {
     expect(
       parseServerEnvironment(syntheticEnvironment, ["database", "authentication", "openai"]),
-    ).toEqual(syntheticEnvironment);
+    ).toEqual({
+      ...syntheticEnvironment,
+      BETTER_AUTH_TRUSTED_ORIGINS: ["https://trusted.example.test"],
+    });
   });
 
   it("keeps the direct migration URL optional for the database requirement", () => {
@@ -41,8 +45,24 @@ describe("parseServerEnvironment", () => {
     expect(environment.DATABASE_URL_UNPOOLED).toBeUndefined();
   });
 
+  it("can validate a canonical auth origin without requiring preview secrets", () => {
+    expect(
+      parseServerEnvironment(
+        {
+          NODE_ENV: "development",
+          BETTER_AUTH_URL: syntheticEnvironment.BETTER_AUTH_URL,
+        },
+        ["authentication-origin"],
+      ),
+    ).toEqual({
+      NODE_ENV: "development",
+      BETTER_AUTH_URL: syntheticEnvironment.BETTER_AUTH_URL,
+    });
+  });
+
   it.each([
     ["database", "DATABASE_URL"],
+    ["authentication-origin", "BETTER_AUTH_URL"],
     [
       "authentication",
       "BETTER_AUTH_SECRET, BETTER_AUTH_URL, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, ALLOWED_EMAIL",
@@ -82,6 +102,21 @@ describe("parseServerEnvironment", () => {
     expect(() =>
       parseServerEnvironment({ ...syntheticEnvironment, [name]: value }),
     ).toThrow();
+  });
+
+  it.each([
+    "ftp://trusted.example.test",
+    "https://*.trusted.example.test",
+    "https://trusted.example.test/path",
+    "https://user:password@trusted.example.test",
+    "https://trusted.example.test?query=value",
+  ])("rejects a malformed additional trusted origin: %s", (origin) => {
+    expect(() =>
+      parseServerEnvironment({
+        ...syntheticEnvironment,
+        BETTER_AUTH_TRUSTED_ORIGINS: origin,
+      }),
+    ).toThrow("Trusted origins must be exact HTTP(S) origins");
   });
 });
 
