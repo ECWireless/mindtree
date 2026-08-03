@@ -8,6 +8,7 @@ import { getServerEnvironment } from "@/lib/env/server";
 type HomeProps = {
   searchParams: Promise<{
     error?: string | string[];
+    node?: string | string[];
   }>;
 };
 
@@ -16,6 +17,7 @@ export const dynamic = "force-dynamic";
 export default async function Home({ searchParams }: HomeProps) {
   const params = await searchParams;
   const error = typeof params.error === "string" ? params.error : undefined;
+  const selectedNodeId = typeof params.node === "string" ? params.node : undefined;
   const environment = getServerEnvironment(["authentication-origin"]);
   const authenticationAvailability = resolveAuthenticationAvailability({
     canonicalUrl: environment.BETTER_AUTH_URL,
@@ -39,7 +41,16 @@ export default async function Home({ searchParams }: HomeProps) {
   }
 
   if (session) {
-    return <DashboardShell email={session.user.email} nodes={[]} />;
+    const { getNodeTreeForUser } = await import("@/lib/server/node-service");
+    const tree = await getNodeTreeForUser(session.user.id);
+
+    return (
+      <DashboardShell
+        email={session.user.email}
+        nodes={tree.nodes}
+        selectedNodeId={selectedNodeId}
+      />
+    );
   }
 
   const accessDenied =

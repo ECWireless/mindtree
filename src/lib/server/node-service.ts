@@ -163,8 +163,12 @@ export async function getNodeTreeForUser(userId: string) {
       .from(nodes)
       .where(eq(nodes.userId, userId))
       .orderBy(asc(nodes.position), asc(nodes.id));
+    const flatNodes = rows.map(toFlatNode);
 
-    return assembleNodeTree(rows.map(toFlatNode));
+    return {
+      nodes: flatNodes,
+      ...assembleNodeTree(flatNodes),
+    };
   } catch (error) {
     throw sanitizeNodeServiceError(error);
   }
