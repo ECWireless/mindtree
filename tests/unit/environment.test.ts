@@ -28,6 +28,19 @@ describe("parseServerEnvironment", () => {
     ).toEqual(syntheticEnvironment);
   });
 
+  it("keeps the direct migration URL optional for the database requirement", () => {
+    const environment = parseServerEnvironment(
+      {
+        NODE_ENV: "test",
+        DATABASE_URL: syntheticEnvironment.DATABASE_URL,
+      },
+      ["database"],
+    );
+
+    expect(environment.DATABASE_URL).toBe(syntheticEnvironment.DATABASE_URL);
+    expect(environment.DATABASE_URL_UNPOOLED).toBeUndefined();
+  });
+
   it.each([
     ["database", "DATABASE_URL"],
     [
