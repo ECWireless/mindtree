@@ -14,6 +14,7 @@ import { requireAuthorizedSession } from "@/lib/server/authorization";
 import {
   archiveNodeForUser,
   createNodeForUser,
+  deleteNodeForUser,
   moveNodeForUser,
   NodeMutationError,
   renameNodeForUser,
@@ -155,6 +156,26 @@ export async function unarchiveNode(input: NodeLifecycleInput): Promise<NodeActi
     const unarchived = await unarchiveNodeForUser(session.user.id, parsed.data);
     revalidatePath("/");
     return { ok: true, nodeId: unarchived.id };
+  } catch (error) {
+    return mutationFailure(error);
+  }
+}
+
+export async function deleteNode(input: NodeLifecycleInput): Promise<NodeActionResult> {
+  const session = await requireAuthorizedSession();
+  const parsed = nodeLifecycleSchema.safeParse(input);
+  if (!parsed.success) {
+    return validationFailure(parsed.error);
+  }
+
+  try {
+    const deleted = await deleteNodeForUser(session.user.id, parsed.data);
+    revalidatePath("/");
+    return {
+      ok: true,
+      nodeId: deleted.nodeId,
+      recoveryNodeId: deleted.recoveryNodeId,
+    };
   } catch (error) {
     return mutationFailure(error);
   }

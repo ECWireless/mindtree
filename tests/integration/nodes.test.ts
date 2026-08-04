@@ -13,6 +13,7 @@ const pool = new Pool({ connectionString });
 const userIds = new Set<string>();
 
 let createNodeForUser: typeof import("../../src/lib/server/node-service").createNodeForUser;
+let deleteNodeForUser: typeof import("../../src/lib/server/node-service").deleteNodeForUser;
 let archiveNodeForUser: typeof import(
   "../../src/lib/server/node-service"
 ).archiveNodeForUser;
@@ -55,6 +56,7 @@ describe("owner-scoped node service", () => {
     ({
       archiveNodeForUser,
       createNodeForUser,
+      deleteNodeForUser,
       getNodeTreeForUser,
       moveNodeForUser,
       NodeMutationError,
@@ -320,5 +322,77 @@ describe("owner-scoped node service", () => {
     await expect(unarchiveNodeForUser(userId, { id: foreign.id })).rejects.toEqual(
       new NodeMutationError("node-not-found"),
     );
+  });
+
+  it("permanently deletes only the owned subtree and closes its sibling gap", async () => {
+    const userId = await insertUser();
+    const otherUserId = await insertUser();
+    const first = await createNodeForUser(userId, { title: "First" });
+    const doomed = await createNodeForUser(userId, { title: "Doomed" });
+    const third = await createNodeForUser(userId, { title: "Third" });
+    const child = await createNodeForUser(userId, {
+      title: "Doomed child",
+      parentId: doomed.id,
+    });
+    const grandchild = await createNodeForUser(userId, {
+      title: "Doomed grandchild",
+      parentId: child.id,
+    });
+
+    await expect(deleteNodeForUser(otherUserId, { id: doomed.id })).rejects.toEqual(
+      new NodeMutationError("node-not-found"),
+    );
+    await expect(deleteNodeForUser(userId, { id: doomed.id })).resolves.toEqual({
+      nodeId: doomed.id,
+      parentId: null,
+      recoveryNodeId: third.id,
+    });
+
+    expect(await siblingPositions(userId, null)).toEqual([
+      { id: first.id, position: 0 },
+      { id: third.id, position: 1 },
+    ]);
+    const deletedRows = await pool.query<{ id: string }>(
+      `select id from nodes where id = any($1::uuid[])`,
+      [[doomed.id, child.id, grandchild.id]],
+    );
+    expect(deletedRows.rows).toEqual([]);
+  });
+
+  it("serializes subtree deletion with movement without partial trees or order gaps", async () => {
+    const userId = await insertUser();
+    const doomed = await createNodeForUser(userId, { title: "Doomed root" });
+    const child = await createNodeForUser(userId, {
+      title: "Movable child",
+      parentId: doomed.id,
+    });
+    const destination = await createNodeForUser(userId, { title: "Destination" });
+    const survivor = await createNodeForUser(userId, { title: "Survivor" });
+
+    const [deleteResult, moveResult] = await Promise.allSettled([
+      deleteNodeForUser(userId, { id: doomed.id }),
+      moveNodeForUser(userId, { id: child.id, parentId: destination.id }),
+    ]);
+
+    expect(deleteResult).toEqual({
+      status: "fulfilled",
+      value: {
+        nodeId: doomed.id,
+        parentId: null,
+        recoveryNodeId: destination.id,
+      },
+    });
+    const tree = await getNodeTreeForUser(userId);
+    expect(tree.byId.has(doomed.id)).toBe(false);
+    if (moveResult.status === "fulfilled") {
+      expect(tree.byId.get(child.id)?.parentId).toBe(destination.id);
+    } else {
+      expect(moveResult.reason).toEqual(new NodeMutationError("node-not-found"));
+      expect(tree.byId.has(child.id)).toBe(false);
+    }
+    expect(await siblingPositions(userId, null)).toEqual([
+      { id: destination.id, position: 0 },
+      { id: survivor.id, position: 1 },
+    ]);
   });
 });

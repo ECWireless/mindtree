@@ -8,6 +8,7 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/app/actions/nodes", () => ({
   archiveNode: vi.fn(),
   createNode: vi.fn(),
+  deleteNode: vi.fn(),
   moveNode: vi.fn(),
   renameNode: vi.fn(),
   unarchiveNode: vi.fn(),
@@ -49,9 +50,11 @@ describe("DashboardShell", () => {
     expect(markup).toContain('class="node-actions" aria-label="Thought actions"');
     expect(markup).toContain('data-tooltip="Archive thought"');
     expect(markup).toContain('data-tooltip="Move To…"');
+    expect(markup).toContain('data-tooltip="Delete thought"');
     expect(markup).toContain('<rect x="3" y="4" width="18" height="4" rx="1"></rect>');
     expect(markup).toContain('<path d="M10 12h4"></path>');
     expect(markup).toContain('<path d="M3 7.5h7l2 2h9v9H3z"></path>');
+    expect(markup).toContain('<path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13"></path>');
     const actionsStart = markup.indexOf('class="node-actions" aria-label="Thought actions"');
     const actionsMarkup = markup.slice(actionsStart, markup.indexOf("</div>", actionsStart));
     expect(actionsMarkup.indexOf('aria-label="Add child"')).toBeLessThan(
@@ -59,6 +62,9 @@ describe("DashboardShell", () => {
     );
     expect(actionsMarkup.indexOf('aria-label="Archive"')).toBeLessThan(
       actionsMarkup.indexOf('aria-label="Move To…"'),
+    );
+    expect(actionsMarkup.indexOf('aria-label="Move To…"')).toBeLessThan(
+      actionsMarkup.indexOf('aria-label="Delete"'),
     );
     expect(markup).toContain('class="node-drag-handle"');
     expect(markup).toContain('data-tooltip="Add child to Feedback loops"');
@@ -100,6 +106,7 @@ describe("DashboardShell", () => {
     expect(selectedMarkup).toContain('data-tooltip="Hide archived"');
     expect(selectedMarkup).toContain("Unarchive");
     expect(selectedMarkup).toContain('data-tooltip="Unarchive thought"');
+    expect(selectedMarkup).toContain('data-tooltip="Delete thought"');
     expect(selectedMarkup).toContain('<path d="M4 7v5h5"></path>');
     expect(selectedMarkup).toContain('role="status" aria-live="polite"');
     expect(selectedMarkup).not.toContain("Add child to Feedback loops");

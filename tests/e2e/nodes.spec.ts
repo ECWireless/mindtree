@@ -261,6 +261,207 @@ test("archives a subtree, reveals it, and unarchives only a reachable path", asy
   }
 });
 
+test("confirms permanent subtree deletion and recovers selection and focus", async ({
+  context,
+  page,
+}, testInfo) => {
+  const seeded = await seedBrowserSession(pool);
+  const rootId = randomUUID();
+  const stableChildId = randomUUID();
+  const doomedId = randomUUID();
+  const doomedGrandchildId = randomUUID();
+  const afterChildId = randomUUID();
+  const otherRootId = randomUUID();
+
+  try {
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values ($1, $7, null, 0, 'Deletion parent'),
+              ($2, $7, $1, 0, 'Stable child'),
+              ($3, $7, $1, 1, 'Delete this branch'),
+              ($4, $7, $3, 0, 'Deleted grandchild'),
+              ($5, $7, $1, 2, 'After child'),
+              ($6, $7, null, 1, 'Other root')`,
+      [
+        rootId,
+        stableChildId,
+        doomedId,
+        doomedGrandchildId,
+        afterChildId,
+        otherRootId,
+        seeded.userId,
+      ],
+    );
+    await pool.query(`update nodes set archived_at = now() where id = $1`, [otherRootId]);
+    await installBrowserSessionCookie(context, seeded.cookie);
+    await page.goto(`/?node=${doomedId}`);
+
+    const actionButtons = [
+      page.getByRole("button", { name: "Add child", exact: true }),
+      page.getByRole("button", { name: "Archive", exact: true }),
+      page.getByRole("button", { name: "Move To…", exact: true }),
+      page.getByRole("button", { name: "Delete", exact: true }),
+    ];
+    const actionBoxes = await Promise.all(actionButtons.map((button) => button.boundingBox()));
+    if (actionBoxes.some((box) => box === null)) {
+      throw new Error("Thought actions must have measurable layout boxes.");
+    }
+    const actionRows = actionBoxes.map((box) => box?.y ?? 0);
+    expect(Math.max(...actionRows) - Math.min(...actionRows)).toBeLessThanOrEqual(1);
+
+    const deleteTrigger = actionButtons[3];
+    await expect(deleteTrigger).toHaveAttribute("data-tooltip", "Delete thought");
+    await deleteTrigger.focus();
+    await expect.poll(() =>
+      deleteTrigger.evaluate((button) => getComputedStyle(button, "::after").opacity),
+    ).toBe("1");
+    await deleteTrigger.click();
+
+    const dialog = page.getByRole("dialog", {
+      name: "Permanently delete Delete this branch?",
+    });
+    await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+    await expect(dialog.locator(".dialog-copy")).toContainText(
+      "This permanently deletes this thought, every descendant",
+    );
+    await expect(dialog.locator(".dialog-copy")).toContainText("This cannot be undone");
+    await expect(dialog.locator(".dialog-copy")).toContainText("Archive instead");
+    await page.keyboard.press("Escape");
+    await expect(deleteTrigger).toBeFocused();
+
+    await deleteTrigger.click();
+    await page.route("**/*", async (route) => {
+      if (route.request().method() === "POST") {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+      await route.continue();
+    });
+    await dialog.getByRole("button", { name: "Delete permanently" }).click();
+    await expect(dialog).toHaveAttribute("aria-busy", "true");
+    await expect(dialog.getByRole("button", { name: "Deleting…" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await expect(dialog.locator(".dialog-status")).toHaveText("Deleting Delete this branch…");
+    await expect(dialog.locator(".dialog-status")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toHaveCount(0);
+    await page.unroute("**/*");
+
+    await expect(page).toHaveURL(`/?node=${rootId}`);
+    if (testInfo.project.name === "mobile") {
+      await expect(page.getByRole("heading", { level: 1, name: "Deletion parent" })).toBeFocused();
+    } else {
+      await expect(page.getByRole("link", { name: /Deletion parent/ })).toBeFocused();
+    }
+    const remainingChildren = await pool.query<{ id: string; position: number }>(
+      `select id, position from nodes where user_id = $1 and parent_id = $2 order by position`,
+      [seeded.userId, rootId],
+    );
+    expect(remainingChildren.rows).toEqual([
+      { id: stableChildId, position: 0 },
+      { id: afterChildId, position: 1 },
+    ]);
+    const deletedSubtree = await pool.query<{ id: string }>(
+      `select id from nodes where id = any($1::uuid[])`,
+      [[doomedId, doomedGrandchildId]],
+    );
+    expect(deletedSubtree.rows).toEqual([]);
+
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await page.getByRole("button", { name: "Delete permanently" }).click();
+    await expect(page).toHaveURL(`/?node=${otherRootId}`);
+    await expect(page.locator(".node-status-line")).toHaveText("Archived");
+    if (testInfo.project.name === "mobile") {
+      await expect(page.getByRole("heading", { level: 1, name: "Other root" })).toBeFocused();
+    } else {
+      await expect(page.getByRole("button", { name: "Show archived" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      await expect(page.getByRole("link", { name: /Other root/ })).toBeFocused();
+    }
+
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await page.getByRole("button", { name: "Delete permanently" }).click();
+    await expect(page).toHaveURL("/");
+    await expect(page.getByRole("button", { name: "New root thought" })).toBeFocused();
+    await expect(
+      page.getByText(
+        testInfo.project.name === "mobile" ? "No thoughts yet." : "Start with one thought.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+  } finally {
+    await seeded.cleanup();
+  }
+});
+
+test("keeps archived delete warnings and error recovery accessible in a short viewport", async ({
+  context,
+  page,
+}, testInfo) => {
+  const seeded = await seedBrowserSession(pool);
+  const missingArchivedId = randomUUID();
+  const deletableArchivedId = randomUUID();
+  const activeRootId = randomUUID();
+  const longTitle = `Archived ${"long knowledge ".repeat(12)}`.trim();
+
+  try {
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title, archived_at)
+       values ($1, $4, null, 2, $5, now()),
+              ($2, $4, null, 0, 'Archived deletable root', now()),
+              ($3, $4, null, 1, 'Active recovery root', null)`,
+      [missingArchivedId, deletableArchivedId, activeRootId, seeded.userId, longTitle],
+    );
+    await installBrowserSessionCookie(context, seeded.cookie);
+    const viewport = page.viewportSize();
+    await page.setViewportSize({ width: viewport?.width ?? 375, height: 320 });
+    await page.goto(`/?node=${missingArchivedId}`);
+
+    await expect(page.locator(".node-status-line")).toHaveText("Archived");
+    if (testInfo.project.name !== "mobile") {
+      await expect(page.getByRole("button", { name: "Show archived" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    }
+    const deleteTrigger = page.getByRole("button", { name: "Delete", exact: true });
+    await deleteTrigger.click();
+    const dialog = page.getByRole("dialog", { name: /Permanently delete Archived/ });
+    await expect(dialog).toHaveAccessibleDescription(/This permanently deletes this thought/);
+    await expect(dialog).toHaveAccessibleDescription(/This cannot be undone/);
+    const dialogBox = await dialog.boundingBox();
+    if (!dialogBox) {
+      throw new Error("Delete confirmation must have a measurable layout box.");
+    }
+    expect(dialogBox.y).toBeGreaterThanOrEqual(0);
+    expect(dialogBox.y + dialogBox.height).toBeLessThanOrEqual(320);
+
+    await pool.query(`delete from nodes where user_id = $1 and id = $2`, [
+      seeded.userId,
+      missingArchivedId,
+    ]);
+    await dialog.getByRole("button", { name: "Delete permanently" }).click();
+    await expect(dialog.getByRole("alert")).toHaveText("That node is no longer available.");
+    await expect(dialog.getByRole("button", { name: "Delete permanently" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(deleteTrigger).toBeFocused();
+
+    await page.goto(`/?node=${deletableArchivedId}`);
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await page.getByRole("button", { name: "Delete permanently" }).click();
+    await expect(page).toHaveURL(`/?node=${activeRootId}`);
+    if (testInfo.project.name === "mobile") {
+      await expect(page.getByRole("heading", { level: 1, name: "Active recovery root" })).toBeFocused();
+    } else {
+      await expect(page.getByRole("link", { name: /Active recovery root/ })).toBeFocused();
+    }
+  } finally {
+    await seeded.cleanup();
+  }
+});
+
 test("keeps deep long-title rows and breadcrumbs within the viewport", async ({ context, page }, testInfo) => {
   const seeded = await seedBrowserSession(pool);
   const titles = Array.from(

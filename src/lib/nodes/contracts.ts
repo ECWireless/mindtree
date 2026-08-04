@@ -19,7 +19,7 @@ export type MoveNodeInput = {
 };
 
 export type NodeActionResult =
-  | { ok: true; nodeId: string }
+  | { ok: true; nodeId: string; recoveryNodeId?: string | null }
   | {
       ok: false;
       message: string;

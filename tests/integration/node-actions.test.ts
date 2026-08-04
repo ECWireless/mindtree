@@ -19,6 +19,7 @@ const userIds = new Set<string>();
 let requestHeaders = new Headers();
 let archiveNode: typeof import("../../src/app/actions/nodes").archiveNode;
 let createNode: typeof import("../../src/app/actions/nodes").createNode;
+let deleteNode: typeof import("../../src/app/actions/nodes").deleteNode;
 let moveNode: typeof import("../../src/app/actions/nodes").moveNode;
 let renameNode: typeof import("../../src/app/actions/nodes").renameNode;
 let unarchiveNode: typeof import("../../src/app/actions/nodes").unarchiveNode;
@@ -61,7 +62,7 @@ describe("node Server Actions", () => {
     vi.stubEnv("GOOGLE_CLIENT_SECRET", "synthetic-google-client-secret");
     vi.stubEnv("ALLOWED_EMAIL", allowedEmail);
 
-    ({ archiveNode, createNode, moveNode, renameNode, unarchiveNode } = await import(
+    ({ archiveNode, createNode, deleteNode, moveNode, renameNode, unarchiveNode } = await import(
       "../../src/app/actions/nodes"
     ));
   });
@@ -97,6 +98,9 @@ describe("node Server Actions", () => {
       new AuthorizationError("missing-session"),
     );
     await expect(unarchiveNode({ id: "not-a-uuid" })).rejects.toEqual(
+      new AuthorizationError("missing-session"),
+    );
+    await expect(deleteNode({ id: "not-a-uuid" })).rejects.toEqual(
       new AuthorizationError("missing-session"),
     );
     const after = await pool.query<{ count: string }>("select count(*) from nodes");
@@ -152,6 +156,22 @@ describe("node Server Actions", () => {
       ok: false,
       fieldErrors: { position: expect.any(Array) },
     });
+    expect(await deleteNode({ id: "not-a-uuid" })).toMatchObject({
+      ok: false,
+      fieldErrors: { id: expect.any(Array) },
+    });
+
+    const doomed = await createNode({ title: "Doomed" });
+    if (!doomed.ok) {
+      throw new Error("Expected deletable node creation to succeed.");
+    }
+    expect(await deleteNode({ id: doomed.nodeId })).toEqual({
+      ok: true,
+      nodeId: doomed.nodeId,
+      recoveryNodeId: destination.nodeId,
+    });
+    const deleted = await pool.query(`select id from nodes where id = $1`, [doomed.nodeId]);
+    expect(deleted.rows).toEqual([]);
   });
 
   it("does not distinguish foreign nodes from missing nodes", async () => {
@@ -192,6 +212,9 @@ describe("node Server Actions", () => {
     );
     expect(await unarchiveNode({ id: foreignNodeId })).toEqual(
       await unarchiveNode({ id: missingNodeId }),
+    );
+    expect(await deleteNode({ id: foreignNodeId })).toEqual(
+      await deleteNode({ id: missingNodeId }),
     );
 
     const ownedRows = await pool.query<{ parent_id: string | null }>(

@@ -382,3 +382,42 @@ export async function unarchiveNodeForUser(userId: string, input: NodeLifecycleI
     throw sanitizeNodeServiceError(error);
   }
 }
+
+export async function deleteNodeForUser(userId: string, input: NodeLifecycleInput) {
+  try {
+    return await db.transaction(async (tx) => {
+      const lockedNodes = await lockOwnerNodes(tx, userId);
+      const target = requireNode(lockedNodes, input.id);
+      const subtreeIds = new Set(getSubtreeIds(lockedNodes, target.id));
+      const remainingSiblings = lockedNodes
+        .filter(
+          (node) => node.parentId === target.parentId && !subtreeIds.has(node.id),
+        )
+        .sort(
+          (left, right) =>
+            left.position - right.position || left.id.localeCompare(right.id),
+        );
+      const recoveryNodeId = target.parentId ?? (
+        remainingSiblings.find((node) => node.position > target.position)?.id ??
+        remainingSiblings.at(-1)?.id ??
+        null
+      );
+
+      await tx.execute(sql`set constraints nodes_sibling_position_unique deferred`);
+      const [deleted] = await tx
+        .delete(nodes)
+        .where(and(eq(nodes.userId, userId), eq(nodes.id, target.id)))
+        .returning({ id: nodes.id });
+
+      if (!deleted) {
+        throw new NodeMutationError("node-not-found");
+      }
+
+      await rewriteSiblingGroup(tx, userId, remainingSiblings, target.parentId);
+
+      return { nodeId: deleted.id, parentId: target.parentId, recoveryNodeId };
+    });
+  } catch (error) {
+    throw sanitizeNodeServiceError(error);
+  }
+}

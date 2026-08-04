@@ -122,6 +122,15 @@ button:not(:disabled) {
   background: #1873c5;
 }
 
+.button--danger {
+  border-color: #c43c35;
+  background: #a72f2a;
+}
+
+.button--danger:hover {
+  background: #c43c35;
+}
+
 .button--quiet {
   border-color: rgb(154 166 178 / 30%);
   background: transparent;
@@ -148,6 +157,15 @@ button:not(:disabled) {
 .icon-button:hover {
   border-color: rgb(115 185 245 / 60%);
   background: rgb(18 99 173 / 16%);
+}
+
+.icon-button--danger {
+  color: #ffaaa2;
+}
+
+.icon-button--danger:hover {
+  border-color: rgb(255 118 105 / 70%);
+  background: rgb(167 47 42 / 20%);
 }
 
 .icon-button svg {
@@ -916,6 +934,11 @@ button:not(:disabled) {
   background: rgb(0 0 0 / 72%);
 }
 
+.node-dialog--confirm {
+  width: min(calc(100% - 2rem), 32rem);
+  overflow-y: auto;
+}
+
 .dialog-heading {
   display: flex;
   align-items: flex-start;
@@ -962,6 +985,20 @@ button:not(:disabled) {
 .move-browser__place.icon-button[data-tooltip]:hover::after,
 .move-browser__place.icon-button[data-tooltip]:focus-visible::after {
   transform: translateY(0);
+}
+
+.dialog-copy {
+  margin: 1.25rem 0 0;
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+  line-height: 1.65;
+}
+
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-top: 1.25rem;
 }
 
 .dialog-search {

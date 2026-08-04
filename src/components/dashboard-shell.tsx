@@ -35,6 +35,7 @@ import {
   renameNode,
   unarchiveNode,
 } from "@/app/actions/nodes";
+import { DeleteNodeDialog } from "@/components/delete-node-dialog";
 import { MoveNodeDialog } from "@/components/move-node-dialog";
 import { NodeTreeList } from "@/components/node-tree-list";
 import {
@@ -58,6 +59,7 @@ type DashboardShellProps = {
 
 const pendingTreeFocusKey = "mindtree:pending-tree-focus";
 const pendingShowArchivedKey = "mindtree:pending-show-archived";
+const pendingNewRootFocusKey = "mindtree:pending-new-root-focus";
 
 function nodeHref(nodeId: string) {
   return `/?node=${encodeURIComponent(nodeId)}`;
@@ -196,6 +198,23 @@ function MoveIcon() {
     >
       <path d="M3 7.5h7l2 2h9v9H3z" />
       <path d="m10 14 2-2 2 2M12 12v5" />
+    </svg>
+  );
+}
+
+function DeleteIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13" />
+      <path d="M10 11v5M14 11v5" />
     </svg>
   );
 }
@@ -498,6 +517,7 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
   const [searchText, setSearchText] = useState("");
   const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [lifecyclePending, setLifecyclePending] = useState(false);
   const [lifecycleError, setLifecycleError] = useState<string | null>(null);
   const [lifecycleStatus, setLifecycleStatus] = useState("");
@@ -508,6 +528,8 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const createReturnFocus = useRef<HTMLElement | null>(null);
   const moveTriggerRef = useRef<HTMLButtonElement>(null);
+  const deleteTriggerRef = useRef<HTMLButtonElement>(null);
+  const newRootTriggerRef = useRef<HTMLButtonElement>(null);
   const lifecycleRequestInFlight = useRef(false);
   const pendingTreeFocus = useRef<string | null>(null);
   const rowLinkRefs = useRef(new Map<string, HTMLAnchorElement>());
@@ -535,7 +557,17 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
       : null;
 
   useEffect(() => {
+    if (selectedNode?.archivedAt === null || selectedNode?.archivedAt === undefined) {
+      return;
+    }
+    const frame = requestAnimationFrame(() => setShowArchived(true));
+    return () => cancelAnimationFrame(frame);
+  }, [selectedNode?.archivedAt, selectedNode?.id]);
+
+  useEffect(() => {
     let showArchivedFrame: number | null = null;
+    let newRootFocusFrame: number | null = null;
+    let newRootSettleFrame: number | null = null;
     if (sessionStorage.getItem(pendingShowArchivedKey) === "true") {
       showArchivedFrame = requestAnimationFrame(() => {
         sessionStorage.removeItem(pendingShowArchivedKey);
@@ -547,9 +579,23 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
       sessionStorage.removeItem(pendingTreeFocusKey);
       pendingTreeFocus.current = nodeId;
     }
+    if (sessionStorage.getItem(pendingNewRootFocusKey) === "true") {
+      newRootFocusFrame = requestAnimationFrame(() => {
+        newRootSettleFrame = requestAnimationFrame(() => {
+          newRootTriggerRef.current?.focus();
+          sessionStorage.removeItem(pendingNewRootFocusKey);
+        });
+      });
+    }
     return () => {
       if (showArchivedFrame !== null) {
         cancelAnimationFrame(showArchivedFrame);
+      }
+      if (newRootFocusFrame !== null) {
+        cancelAnimationFrame(newRootFocusFrame);
+      }
+      if (newRootSettleFrame !== null) {
+        cancelAnimationFrame(newRootSettleFrame);
       }
     };
   }, [tree]);
@@ -559,15 +605,23 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
     if (!nodeId || !tree.byId.has(nodeId)) {
       return;
     }
+    let settleFrame: number | null = null;
     const frame = requestAnimationFrame(() => {
-      const target = window.matchMedia("(max-width: 760px)").matches
-        ? document.getElementById("node-detail-title")
-        : rowLinkRefs.current.get(nodeId);
-      target?.scrollIntoView({ block: "center" });
-      target?.focus();
-      pendingTreeFocus.current = null;
+      settleFrame = requestAnimationFrame(() => {
+        const target = window.matchMedia("(max-width: 760px)").matches
+          ? document.getElementById("node-detail-title")
+          : rowLinkRefs.current.get(nodeId);
+        target?.scrollIntoView({ block: "center" });
+        target?.focus();
+        pendingTreeFocus.current = null;
+      });
     });
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(frame);
+      if (settleFrame !== null) {
+        cancelAnimationFrame(settleFrame);
+      }
+    };
   }, [tree]);
 
   useEffect(() => {
@@ -720,6 +774,18 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
       pendingTreeFocus.current = selectedNode.id;
     }
     router.refresh();
+  }
+
+  function deleted(recoveryNodeId: string | null) {
+    setDeleteDialogOpen(false);
+
+    if (recoveryNodeId) {
+      sessionStorage.setItem(pendingTreeFocusKey, recoveryNodeId);
+      router.push(nodeHref(recoveryNodeId));
+      return;
+    }
+    sessionStorage.setItem(pendingNewRootFocusKey, "true");
+    router.push("/");
   }
 
   async function changeArchiveState() {
@@ -891,6 +957,7 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
             {showArchived ? <EyeOffIcon /> : <EyeIcon />}
           </button>
           <button
+            ref={newRootTriggerRef}
             className="icon-button icon-button--primary"
             type="button"
             aria-label="New root thought"
@@ -1135,6 +1202,16 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
                 >
                   <MoveIcon />
                 </button>
+                <button
+                  ref={deleteTriggerRef}
+                  className="icon-button icon-button--danger"
+                  type="button"
+                  aria-label="Delete"
+                  data-tooltip="Delete thought"
+                  onClick={() => setDeleteDialogOpen(true)}
+                >
+                  <DeleteIcon />
+                </button>
               </div>
               <p className="sr-only" role="status" aria-live="polite">
                 {lifecycleStatus}
@@ -1181,6 +1258,14 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
           onClose={() => setMoveDialogOpen(false)}
           onMoved={moved}
           returnFocusRef={moveTriggerRef}
+        />
+      ) : null}
+      {selectedNode && deleteDialogOpen ? (
+        <DeleteNodeDialog
+          node={selectedNode}
+          onClose={() => setDeleteDialogOpen(false)}
+          onDeleted={deleted}
+          returnFocusRef={deleteTriggerRef}
         />
       ) : null}
     </main>
