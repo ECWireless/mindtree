@@ -8,6 +8,10 @@ export type RenameNodeInput = {
   title: string;
 };
 
+export type NodeLifecycleInput = {
+  id: string;
+};
+
 export type MoveNodeInput = {
   id: string;
   parentId: string | null;

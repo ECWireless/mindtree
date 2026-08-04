@@ -35,7 +35,7 @@ test("creates and navigates a responsive thought hierarchy", async ({ context, p
     await expect(toolbarCount).toHaveText("0 nodes");
     await expect(newRoot).toHaveAttribute("data-tooltip", "New root thought");
     await expect(showArchived).toHaveAttribute("data-tooltip", "Show archived");
-    await expect(showArchived).toBeDisabled();
+    await expect(showArchived).toBeEnabled();
     if (testInfo.project.name !== "mobile") {
       await expect(toolbarCount).toBeVisible();
       const countColor = await toolbarCount.locator(".eyebrow").evaluate(
@@ -165,6 +165,102 @@ test("creates and navigates a responsive thought hierarchy", async ({ context, p
   }
 });
 
+test("archives a subtree, reveals it, and unarchives only a reachable path", async ({
+  context,
+  page,
+}, testInfo) => {
+  const seeded = await seedBrowserSession(pool);
+  const rootId = randomUUID();
+  const childId = randomUUID();
+  const grandchildId = randomUUID();
+
+  try {
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values ($1, $4, null, 0, 'Archive root'),
+              ($2, $4, $1, 0, 'Archive child'),
+              ($3, $4, $2, 0, 'Archive grandchild')`,
+      [rootId, childId, grandchildId, seeded.userId],
+    );
+    await installBrowserSessionCookie(context, seeded.cookie);
+    await page.goto(`/?node=${rootId}`);
+
+    const archivedToggle = page.getByRole("button", { name: "Show archived" });
+    const archiveButton = page.getByRole("button", { name: "Archive", exact: true });
+    await expect(archiveButton).toHaveAttribute("data-tooltip", "Archive thought");
+    await archiveButton.focus();
+    await expect.poll(() =>
+      archiveButton.evaluate((button) => getComputedStyle(button, "::after").opacity),
+    ).toBe("1");
+    await archiveButton.click();
+    await expect(
+      page.getByRole("status").filter({ hasText: "Archive root archived." }),
+    ).toBeVisible();
+    await expect(page.locator(".node-status-line")).toHaveText("Archived");
+    await expect(page.getByRole("button", { name: "Add child", exact: true })).toHaveCount(0);
+    if (testInfo.project.name === "mobile") {
+      await page.getByRole("link", { name: "Back to thoughts" }).click();
+      await expect(page.getByRole("link", { name: /Archive root/ })).toBeVisible();
+    }
+    await expect(archivedToggle).toHaveAttribute("aria-pressed", "true");
+    await expect(archivedToggle).toHaveAttribute("data-tooltip", "Hide archived");
+
+    await archivedToggle.click();
+    await expect(page).toHaveURL("/");
+    await expect(page.getByText("No active thoughts.", { exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: /Archive root/ })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Show archived thoughts" }).click();
+    await expect(page.getByRole("link", { name: /Archive root/ })).toBeVisible();
+    await page.getByRole("button", { name: "Expand Archive root" }).click();
+    await page.getByRole("link", { name: /Archive child/ }).click();
+    const unarchiveButton = page.getByRole("button", { name: "Unarchive", exact: true });
+    await expect(unarchiveButton).toHaveAttribute("data-tooltip", "Unarchive thought");
+    await unarchiveButton.click();
+    await expect(page.getByText("Active", { exact: true })).toBeVisible();
+
+    if (testInfo.project.name === "mobile") {
+      await page.getByRole("link", { name: "Back to thoughts" }).click();
+    }
+    const toggleAfterUnarchive = page.getByRole("button", { name: "Show archived" });
+    await expect(toggleAfterUnarchive).toHaveAttribute("aria-pressed", "true");
+    await toggleAfterUnarchive.click();
+    const expandRoot = page.getByRole("button", { name: "Expand Archive root" });
+    if (await expandRoot.count()) {
+      await expandRoot.click();
+    }
+    await expect(page.getByRole("link", { name: /Archive child/ })).toBeVisible();
+    await expect(page.getByRole("link", { name: /Archive grandchild/ })).toHaveCount(0);
+
+    await page.getByRole("combobox", { name: "Search thought titles" }).fill("grandchild");
+    const archivedSearchResult = page.getByRole("option", {
+      name: /Archive grandchild.*Archived/,
+    });
+    await expect(archivedSearchResult).toBeVisible();
+    await archivedSearchResult.click();
+    await expect(page).toHaveURL(`/?node=${grandchildId}`);
+    await expect(page.locator(".node-status-line")).toHaveText("Archived");
+    if (testInfo.project.name === "mobile") {
+      await page.getByRole("link", { name: "Back to thoughts" }).click();
+    }
+    await expect(page.getByRole("button", { name: "Show archived" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    const rows = await pool.query<{ id: string; archived_at: Date | null }>(
+      `select id, archived_at from nodes where user_id = $1 order by id`,
+      [seeded.userId],
+    );
+    const archivedAtById = new Map(rows.rows.map((row) => [row.id, row.archived_at]));
+    expect(archivedAtById.get(rootId)).toBeNull();
+    expect(archivedAtById.get(childId)).toBeNull();
+    expect(archivedAtById.get(grandchildId)).toBeInstanceOf(Date);
+  } finally {
+    await seeded.cleanup();
+  }
+});
+
 test("keeps deep long-title rows and breadcrumbs within the viewport", async ({ context, page }, testInfo) => {
   const seeded = await seedBrowserSession(pool);
   const titles = Array.from(
@@ -266,15 +362,20 @@ test("searches the tree and moves a thought through the accessible dialog", asyn
   const systemsId = randomUUID();
   const feedbackId = randomUUID();
   const researchId = randomUUID();
+  const sharedSystemsId = randomUUID();
+  const sharedResearchId = randomUUID();
+  const archivedDestinationId = randomUUID();
   const searchOptionIds = Array.from({ length: 14 }, () => randomUUID());
 
   try {
     await pool.query(
       `insert into nodes (id, user_id, parent_id, position, title)
-       values ($1, $4, null, 0, 'Systems map'),
-              ($2, $4, $1, 0, 'Feedback loops'),
-              ($3, $4, null, 1, 'Research notes')`,
-      [systemsId, feedbackId, researchId, seeded.userId],
+       values ($1, $6, null, 0, 'Systems map'),
+              ($2, $6, $1, 0, 'Feedback loops'),
+              ($3, $6, null, 1, 'Research notes'),
+              ($4, $6, $1, 1, 'Shared target'),
+              ($5, $6, $3, 0, 'Shared target')`,
+      [systemsId, feedbackId, researchId, sharedSystemsId, sharedResearchId, seeded.userId],
     );
     for (const [index, id] of searchOptionIds.entries()) {
       await pool.query(
@@ -283,6 +384,11 @@ test("searches the tree and moves a thought through the accessible dialog", asyn
         [id, seeded.userId, index + 2, `Search option ${index + 1}`],
       );
     }
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title, archived_at)
+       values ($1, $2, null, 16, 'Archived shelf', now())`,
+      [archivedDestinationId, seeded.userId],
+    );
 
     await installBrowserSessionCookie(context, seeded.cookie);
     await page.goto("/");
@@ -329,30 +435,66 @@ test("searches the tree and moves a thought through the accessible dialog", asyn
       await expect(page.getByRole("heading", { level: 1, name: "Feedback loops" })).toBeFocused();
     }
 
-    const moveTrigger = page.getByRole("button", { name: "Move to…" });
+    const moveTrigger = page.getByRole("button", { name: "Move To…" });
+    await expect(moveTrigger).toHaveAttribute("data-tooltip", "Move To…");
     await moveTrigger.click();
-    const dialog = page.getByRole("dialog", { name: /Choose a destination for Feedback loops/ });
+    const dialog = page.getByRole("dialog", { name: /Choose a new location for Feedback loops/ });
     await expect(dialog.getByRole("searchbox", { name: "Search destinations" })).toBeFocused();
-    await dialog.getByRole("button", { name: "Close move dialog" }).click();
+    await expect(dialog.locator(".move-browser__toolbar")).toContainText("Systems map");
+    const closeMoveDialog = dialog.getByRole("button", { name: "Close move dialog" });
+    await expect(closeMoveDialog).toHaveAttribute("data-tooltip", "Close");
+    await page.keyboard.press("Escape");
     await expect(moveTrigger).toBeFocused();
 
     await moveTrigger.click();
+    await dialog.getByRole("button", { name: "Up one level" }).click();
+    await expect(dialog.locator(".move-browser__toolbar")).toContainText("Root");
+    await expect(dialog.getByRole("button", { name: "Move here" })).toBeFocused();
+    await dialog.getByRole("button", { name: "Browse Archived shelf" }).click();
+    await expect(dialog.getByRole("button", { name: "Move here" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Up one level" })).toBeFocused();
+    await dialog.getByRole("button", { name: "Up one level" }).click();
+    await expect(dialog.getByRole("button", { name: "Move here" })).toBeFocused();
+    const moveSearch = dialog.getByRole("searchbox", { name: "Search destinations" });
+    await moveSearch.fill("shared target");
+    const moveSearchResults = dialog.locator('[aria-label="Search move destinations"]');
+    await expect(moveSearchResults.getByRole("button", { name: /Systems map \/ Shared target/ })).toBeVisible();
+    await expect(moveSearchResults.getByRole("button", { name: /Research notes \/ Shared target/ })).toBeVisible();
+    await moveSearch.fill("");
+    await dialog
+      .getByRole("button", { name: "Choose placement relative to Research notes" })
+      .click();
+    await expect(dialog.getByRole("button", { name: "Move before Research notes" })).toBeFocused();
+    await dialog.getByRole("button", { name: "Back to destinations" }).click();
+    await expect(dialog.getByRole("button", { name: "Move here" })).toBeFocused();
     if (testInfo.project.name === "mobile") {
       await page.setViewportSize({ width: 667, height: 320 });
     }
     await dialog.getByRole("searchbox", { name: "Search destinations" }).fill("research");
+    await dialog
+      .locator('[aria-label="Search move destinations"]')
+      .getByRole("button", { name: /Research notes/ })
+      .click();
+    await dialog.getByRole("button", { name: "Back to destinations" }).click();
+    await expect(dialog.getByRole("searchbox", { name: "Search destinations" })).toBeFocused();
+    await dialog
+      .locator('[aria-label="Search move destinations"]')
+      .getByRole("button", { name: /Research notes/ })
+      .click();
     const insideResearch = dialog.getByRole("button", { name: "Move inside Research notes" });
     await insideResearch.scrollIntoViewIfNeeded();
     await expect(insideResearch).toBeVisible();
     await page.route("**/*", async (route) => {
       if (route.request().method() === "POST") {
-        await new Promise((resolve) => setTimeout(resolve, 350));
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
       }
       await route.continue();
     });
     await insideResearch.click();
     await expect(dialog).toHaveAttribute("aria-busy", "true");
     await expect(dialog.locator(".dialog-status")).toHaveText("Moving thought…");
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeVisible();
     await expect(dialog).toHaveCount(0);
     await page.unroute("**/*");
     if (testInfo.project.name === "mobile") {
@@ -368,10 +510,14 @@ test("searches the tree and moves a thought through the accessible dialog", asyn
         [feedbackId],
       );
       return result.rows[0];
-    }).toEqual({ parent_id: researchId, position: 0 });
+    }).toEqual({ parent_id: researchId, position: 1 });
 
     await moveTrigger.click();
     await dialog.getByRole("searchbox", { name: "Search destinations" }).fill("systems");
+    await dialog
+      .locator('[aria-label="Search move destinations"]')
+      .getByRole("button", { name: /Systems map/ })
+      .click();
     const beforeSystems = dialog.getByRole("button", { name: "Move before Systems map" });
     await beforeSystems.focus();
     await beforeSystems.press("Enter");
@@ -381,10 +527,14 @@ test("searches the tree and moves a thought through the accessible dialog", asyn
         [seeded.userId],
       );
       return result.rows.map(({ id }) => id);
-    }).toEqual([feedbackId, systemsId, researchId, ...searchOptionIds]);
+    }).toEqual([feedbackId, systemsId, researchId, ...searchOptionIds, archivedDestinationId]);
 
     await moveTrigger.click();
     await dialog.getByRole("searchbox", { name: "Search destinations" }).fill("research");
+    await dialog
+      .locator('[aria-label="Search move destinations"]')
+      .getByRole("button", { name: /Research notes/ })
+      .click();
     const afterResearch = dialog.getByRole("button", { name: "Move after Research notes" });
     await afterResearch.focus();
     await afterResearch.press("Enter");
@@ -394,7 +544,7 @@ test("searches the tree and moves a thought through the accessible dialog", asyn
         [seeded.userId],
       );
       return result.rows.map(({ id }) => id);
-    }).toEqual([systemsId, researchId, feedbackId, ...searchOptionIds]);
+    }).toEqual([systemsId, researchId, feedbackId, ...searchOptionIds, archivedDestinationId]);
   } finally {
     await seeded.cleanup();
   }
@@ -421,6 +571,14 @@ test("moves a root with pointer drag-and-drop before, inside, and after targets"
     await installBrowserSessionCookie(context, seeded.cookie);
     await page.goto("/");
 
+    async function settleDragUi() {
+      await page.evaluate(
+        () => new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        }),
+      );
+    }
+
     async function dragTo(
       targetTitle: string,
       targetFraction: number,
@@ -432,6 +590,8 @@ test("moves a root with pointer drag-and-drop before, inside, and after targets"
       const targetRow = page.locator(".node-row", {
         has: page.getByRole("link", { name: new RegExp(targetTitle) }),
       });
+      await targetRow.evaluate((row) => row.scrollIntoView({ block: "center" }));
+      await settleDragUi();
       const handleBox = await sourceRow.locator(".node-drag-handle").boundingBox();
       const targetBox = await targetRow.boundingBox();
       if (!handleBox || !targetBox) {
@@ -444,6 +604,16 @@ test("moves a root with pointer drag-and-drop before, inside, and after targets"
         targetBox.x + targetBox.width / 2,
         targetBox.y + targetBox.height * targetFraction,
         { steps: 8 },
+      );
+      await expect(sourceRow).toHaveClass(/node-row--dragging/);
+      const settledTargetBox = await targetRow.boundingBox();
+      if (!settledTargetBox) {
+        throw new Error("Drag target must remain measurable after pointer auto-scroll.");
+      }
+      await page.mouse.move(
+        settledTargetBox.x + settledTargetBox.width / 2,
+        settledTargetBox.y + settledTargetBox.height * targetFraction,
+        { steps: 3 },
       );
       await expect(targetRow).toHaveAttribute("data-drop-zone", expectedZone);
       const feedbackStyle = await targetRow.evaluate((row) => {
@@ -501,6 +671,8 @@ test("moves a root with pointer drag-and-drop before, inside, and after targets"
       );
       return result.rows[0];
     }).toEqual({ parent_id: secondId, position: 1 });
+    await expect(page.getByText("Moving thought…", { exact: true })).toHaveCount(0);
+    await settleDragUi();
 
     await expect(page.getByRole("button", { name: "Collapse Second root" })).toBeVisible();
     await dragTo("Third root", 0.1, "before");
@@ -512,6 +684,8 @@ test("moves a root with pointer drag-and-drop before, inside, and after targets"
       );
       return result.rows.map(({ id }) => id);
     }).toEqual([secondId, firstId, thirdId]);
+    await expect(page.getByText("Moving thought…", { exact: true })).toHaveCount(0);
+    await settleDragUi();
 
     await dragTo("Third root", 0.9, "after");
 

@@ -30,6 +30,56 @@ export function searchNodes(nodes: readonly TreeNode[], query: string) {
   return nodes.filter((node) => includesTitle(node, normalizedQuery));
 }
 
+export function getVisibleNodeRoots(
+  roots: readonly TreeNode[],
+  showArchived: boolean,
+) {
+  if (showArchived) {
+    return roots;
+  }
+
+  const visibilityCheck = [...roots];
+  let hasArchivedNode = false;
+  while (visibilityCheck.length > 0) {
+    const node = visibilityCheck.pop();
+    if (!node) {
+      break;
+    }
+    if (node.archivedAt !== null) {
+      hasArchivedNode = true;
+      break;
+    }
+    visibilityCheck.push(...node.children);
+  }
+  if (!hasArchivedNode) {
+    return roots;
+  }
+
+  const visibleRoots: TreeNode[] = [];
+  const work: Array<{ node: TreeNode; destination: TreeNode[] }> = [];
+  for (let index = roots.length - 1; index >= 0; index -= 1) {
+    work.push({ node: roots[index], destination: visibleRoots });
+  }
+
+  while (work.length > 0) {
+    const item = work.pop();
+    if (!item) {
+      break;
+    }
+    if (item.node.archivedAt !== null) {
+      continue;
+    }
+
+    const visibleNode: TreeNode = { ...item.node, children: [] };
+    item.destination.push(visibleNode);
+    for (let index = item.node.children.length - 1; index >= 0; index -= 1) {
+      work.push({ node: item.node.children[index], destination: visibleNode.children });
+    }
+  }
+
+  return visibleRoots;
+}
+
 export function getMoveDestinations(
   nodes: readonly TreeNode[],
   source: TreeNode,
@@ -47,11 +97,18 @@ export function getMoveDestinations(
   }
 
   const normalizedQuery = query.trim().toLocaleLowerCase();
-  return nodes.filter(
-    (node) =>
-      !blockedIds.has(node.id) &&
-      (!normalizedQuery || includesTitle(node, normalizedQuery)),
-  );
+  const resolveDestination = createNodeDropResolver(nodes, source);
+  return nodes.filter((node) => {
+    if (
+      blockedIds.has(node.id) ||
+      (normalizedQuery && !includesTitle(node, normalizedQuery))
+    ) {
+      return false;
+    }
+    return (["before", "inside", "after"] as const).some(
+      (zone) => resolveDestination(node, zone) !== null,
+    );
+  });
 }
 
 export function createNodeDropResolver(
@@ -59,6 +116,13 @@ export function createNodeDropResolver(
   source: TreeNode,
 ): NodeDropResolver {
   const blockedParentIds = new Set<string>();
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const archivedPathIds = new Set<string>();
+  for (const node of nodes) {
+    if (node.archivedAt !== null || (node.parentId !== null && archivedPathIds.has(node.parentId))) {
+      archivedPathIds.add(node.id);
+    }
+  }
   const work = [source];
   while (work.length > 0) {
     const node = work.pop();
@@ -94,6 +158,11 @@ export function createNodeDropResolver(
     const parentId = zone === "inside" ? target.id : target.parentId;
     if (parentId !== null && blockedParentIds.has(parentId)) {
       return null;
+    }
+    if (source.archivedAt === null && parentId !== null) {
+      if (!nodeById.has(parentId) || archivedPathIds.has(parentId)) {
+        return null;
+      }
     }
 
     let position = siblingsByParent.get(parentId)?.length ?? 0;
