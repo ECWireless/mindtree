@@ -7,6 +7,7 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@/app/actions/nodes", () => ({
   createNode: vi.fn(),
+  moveNode: vi.fn(),
   renameNode: vi.fn(),
 }));
 
@@ -36,6 +37,14 @@ describe("DashboardShell", () => {
     expect(markup).toContain('aria-current="page"');
     expect(markup).toContain('aria-label="Breadcrumb"');
     expect(markup).toContain("Add child to Feedback loops");
+    expect(markup).toContain("Search thought titles");
+    expect(markup).toContain("3 nodes");
+    expect(markup).toContain('data-tooltip="Show archived"');
+    expect(markup).toContain('data-tooltip="New root thought"');
+    expect(markup).toContain('<path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"></path>');
+    expect(markup).toContain('<path d="m16.5 16.5 4 4"></path>');
+    expect(markup).toContain("Move to…");
+    expect(markup).toContain('class="node-drag-handle"');
     expect(markup).toContain('data-tooltip="Add child to Feedback loops"');
     expect(markup).toContain('<path d="m5 9 7 7 7-7"></path>');
     expect(markup).toContain('<path d="M12 5v14M5 12h14"></path>');
