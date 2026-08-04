@@ -4,10 +4,10 @@ MindTree is a private, self-hostable workspace for developing thoughts, ideas,
 and concepts in an infinitely nestable tree. Each node will pair a persistent
 conversation with a concise synthesis that only the owner can approve.
 
-The project is in its persistence and authentication phase. The current
-runtime supports the configured single Google account, an empty authenticated
-dashboard, and sign-out. Node editing, chat, and AI behavior arrive in later
-reviewed phases.
+The current runtime supports the configured single Google account, an ordered
+and archivable node tree, persistent per-node conversations, and streamed
+OpenAI chat generation when server credentials are configured. Synthesis,
+citations, and web research arrive in later reviewed phases.
 
 MindTree adapts the general stack, interaction restraint, and visual language of
 [ECWireless/TimeTree](https://github.com/ECWireless/timetree) at commit
@@ -33,8 +33,7 @@ Intentional Phase 1 divergences from that baseline are narrow and explicit:
 - Corepack and pnpm 11.13.1
 - PostgreSQL 15 or newer
 - Google OAuth credentials
-
-An OpenAI API key is not needed until the later model-integration phase.
+- An OpenAI API key for runtime assistant generation
 
 ## Local setup
 
@@ -53,7 +52,8 @@ An OpenAI API key is not needed until the later model-integration phase.
    - `BETTER_AUTH_TRUSTED_ORIGINS`: optional comma-separated additional origins
      allowed to submit authentication requests;
    - `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`;
-   - `ALLOWED_EMAIL`: the one verified Google account allowed to sign in.
+   - `ALLOWED_EMAIL`: the one verified Google account allowed to sign in;
+   - `OPENAI_API_KEY`: server-only Responses API access for assistant turns.
 
    Local PostgreSQL may use the same connection for both database URL fields.
    Keep local environment files ignored and never commit credentials.
@@ -77,6 +77,13 @@ session for the previous account. MindTree retains the Google account identity
 but discards provider access, refresh, and ID tokens because it does not call
 Google APIs after authentication.
 
+MindTree sends a bounded local node conversation to `gpt-5.6-sol` for each
+assistant turn with provider response storage disabled. The application keeps
+its own canonical conversation history, does not request or persist hidden
+reasoning output, and does not enable tools or web search in this phase. Chat
+messages are immutable; deleting their node or subtree is the v0.1.0
+history-removal boundary.
+
 ## Verification
 
 Run each available check independently:
@@ -97,7 +104,8 @@ corepack pnpm exec playwright install chromium
 ```
 
 Integration tests require the migrated PostgreSQL database. Browser tests use
-synthetic authentication configuration and do not contact Google.
+synthetic authentication and deterministic provider fixtures; normal automated
+verification does not contact Google or OpenAI.
 
 ## Database changes
 

@@ -41,7 +41,7 @@ describe("DashboardShell", () => {
     expect(markup).toContain("Open questions");
     expect(markup).toContain("No synthesis yet");
     expect(markup).toContain("Develop this thought");
-    expect(markup).toContain("Assistant replies arrive in the next phase.");
+    expect(markup).toContain("Assistant replies require OpenAI configuration.");
     expect(markup).toContain('textarea id="chat-draft-feedback"');
     expect(markup).toContain("disabled");
     expect(markup).toContain('aria-label="Thought tree"');

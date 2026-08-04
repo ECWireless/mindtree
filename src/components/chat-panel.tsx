@@ -301,11 +301,11 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
           maxLength={MAX_USER_MESSAGE_LENGTH}
           rows={3}
           disabled={!generationEnabled}
-          placeholder={generationEnabled ? "Develop this thought…" : "Assistant replies arrive in the next phase."}
+          placeholder={generationEnabled ? "Develop this thought…" : "Assistant replies require OpenAI configuration."}
           onChange={(event) => setDraft(event.target.value)}
         />
         <div className="chat-composer__actions">
-          <small>{generationEnabled ? `${draft.length.toLocaleString()} / ${MAX_USER_MESSAGE_LENGTH.toLocaleString()}` : "History is available; new replies are not enabled yet."}</small>
+          <small>{generationEnabled ? `${draft.length.toLocaleString()} / ${MAX_USER_MESSAGE_LENGTH.toLocaleString()}` : "History remains available; configure OPENAI_API_KEY to generate replies."}</small>
           {activeClientMessageId ? (
             <button type="button" className="secondary-button" onClick={() => void stop()}>Stop</button>
           ) : (

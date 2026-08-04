@@ -4,7 +4,7 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 
 import {
-  appendChatTurnContentForUser,
+  persistChatTurnContentPrefixForUser,
   cancelChatTurnForUser,
   ChatServiceError,
   completeChatTurnForUser,
@@ -12,10 +12,13 @@ import {
   failChatTurnForUser,
   getChatMessagesForUser,
   getChatTurnForUser,
+  recordChatTurnContextForUser,
+  recordChatTurnProviderResponseForUser,
   retryChatTurnForUser,
   startChatTurnForUser,
 } from "../../src/lib/server/chat-service";
 import type { FailChatTurnInput } from "../../src/lib/chat/contracts";
+import { prepareChatContextForUser } from "../../src/lib/server/chat-context";
 import { deleteNodeForUser } from "../../src/lib/server/node-service";
 
 const connectionString = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
@@ -104,6 +107,120 @@ describe("persistent chat ledger", () => {
     });
   });
 
+  it("builds and records a bounded deterministic context snapshot for the claimed turn", async () => {
+    const userId = await insertUser();
+    const rootId = await insertNode(userId, "Context root");
+    const nodeId = await insertNode(userId, "Context leaf", rootId);
+    const priorClientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: priorClientMessageId,
+      content: "Earlier owner message",
+      webSearchAuthorized: false,
+    }, { claimAssistant: true });
+    await persistChatTurnContentPrefixForUser(userId, {
+      nodeId,
+      clientMessageId: priorClientMessageId,
+      contentPrefix: "Earlier assistant response",
+    });
+    await completeChatTurnForUser(userId, { nodeId, clientMessageId: priorClientMessageId });
+
+    const clientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId,
+      content: "Current owner request",
+      webSearchAuthorized: false,
+    }, { claimAssistant: true });
+
+    const prepared = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
+    const repeated = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
+    expect(prepared.snapshot).toMatchObject({
+      version: 1,
+      node: {
+        id: nodeId,
+        title: "Context leaf",
+        breadcrumb: {
+          items: [
+            { id: rootId, title: "Context root" },
+            { id: nodeId, title: "Context leaf" },
+          ],
+          hasOmittedAncestors: false,
+        },
+        publishedSynthesis: { state: "none" },
+      },
+      messages: [
+        { role: "user", content: "Earlier owner message" },
+        { role: "assistant", content: "Earlier assistant response" },
+        { role: "user", content: "Current owner request" },
+      ],
+    });
+    expect(prepared.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(repeated.fingerprint).toBe(prepared.fingerprint);
+    expect(prepared.input.at(-1)).toEqual({
+      role: "user",
+      content: "Current owner request",
+    });
+
+    await recordChatTurnContextForUser(userId, {
+      nodeId,
+      clientMessageId,
+      model: "gpt-5.6-sol",
+      contextFingerprint: prepared.fingerprint,
+    });
+    await recordChatTurnProviderResponseForUser(userId, {
+      nodeId,
+      clientMessageId,
+      providerResponseId: "resp_synthetic",
+    });
+    const stored = await pool.query<{
+      context_fingerprint: string;
+      model: string;
+      provider_response_id: string;
+    }>(
+      `select context_fingerprint, model, provider_response_id
+       from chat_messages
+       where user_id = $1 and node_id = $2 and client_message_id = $3 and role = 'assistant'`,
+      [userId, nodeId, clientMessageId],
+    );
+    expect(stored.rows).toEqual([{
+      context_fingerprint: prepared.fingerprint,
+      model: "gpt-5.6-sol",
+      provider_response_id: "resp_synthetic",
+    }]);
+  });
+
+  it("bounds a deep breadcrumb while accounting for omitted ancestors", async () => {
+    const userId = await insertUser();
+    const nodeIds: string[] = [];
+    let parentId: string | null = null;
+    for (let depth = 0; depth < 70; depth += 1) {
+      parentId = await insertNode(userId, `Context depth ${depth}`, parentId);
+      nodeIds.push(parentId);
+    }
+    const nodeId = nodeIds.at(-1)!;
+    const clientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId,
+      content: "Use bounded ancestors",
+      webSearchAuthorized: false,
+    }, { claimAssistant: true });
+
+    const prepared = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
+
+    expect(prepared.snapshot.node.breadcrumb.items).toHaveLength(64);
+    expect(prepared.snapshot.node.breadcrumb.items[0]).toEqual({
+      id: nodeIds[6],
+      title: "Context depth 6",
+    });
+    expect(prepared.snapshot.node.breadcrumb.items.at(-1)).toEqual({
+      id: nodeId,
+      title: "Context depth 69",
+    });
+    expect(prepared.snapshot.node.breadcrumb.hasOmittedAncestors).toBe(true);
+  });
+
   it("persists bounded streaming, completion, cancellation, and retry transitions", async () => {
     const userId = await insertUser();
     const nodeId = await insertNode(userId);
@@ -118,15 +235,37 @@ describe("persistent chat ledger", () => {
     await expect(
       startChatTurnForUser(userId, { nodeId, clientMessageId: completedClientMessageId }),
     ).rejects.toEqual(new ChatServiceError("retry-unavailable"));
-    await appendChatTurnContentForUser(userId, {
+    await persistChatTurnContentPrefixForUser(userId, {
       nodeId,
       clientMessageId: completedClientMessageId,
-      content: "A partial ",
+      contentPrefix: "A partial ",
     });
-    await appendChatTurnContentForUser(userId, {
+    await persistChatTurnContentPrefixForUser(userId, {
       nodeId,
       clientMessageId: completedClientMessageId,
-      content: "answer.",
+      contentPrefix: "A partial ",
+    });
+    await persistChatTurnContentPrefixForUser(userId, {
+      nodeId,
+      clientMessageId: completedClientMessageId,
+      contentPrefix: "A partial answer.",
+    });
+    await expect(persistChatTurnContentPrefixForUser(userId, {
+      nodeId,
+      clientMessageId: completedClientMessageId,
+      contentPrefix: "A divergent response.",
+    })).rejects.toEqual(new ChatServiceError("retry-unavailable"));
+    const afterDivergentPrefix = await getChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: completedClientMessageId,
+    });
+    expect(
+      afterDivergentPrefix.find((message) => message.role === "assistant")?.content,
+    ).toBe("A partial answer.");
+    await persistChatTurnContentPrefixForUser(userId, {
+      nodeId,
+      clientMessageId: completedClientMessageId,
+      contentPrefix: "A partial ",
     });
     const completed = await completeChatTurnForUser(userId, {
       nodeId,

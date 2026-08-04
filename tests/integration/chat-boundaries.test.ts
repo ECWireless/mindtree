@@ -93,6 +93,32 @@ describe("chat authorization boundaries", () => {
     }));
     expect(streamedOversized.status).toBe(413);
 
+    const ownedNodeId = randomUUID();
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values ($1, $2, null, 0, 'Owned chat')`,
+      [ownedNodeId, userId],
+    );
+    const webRequest = await postChat(new Request("http://127.0.0.1:3188/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", cookie },
+      body: JSON.stringify({
+        nodeId: ownedNodeId,
+        clientMessageId: randomUUID(),
+        content: "Search the web",
+        webSearchAuthorized: true,
+      }),
+    }));
+    expect(webRequest.status).toBe(400);
+    await expect(webRequest.json()).resolves.toEqual({
+      message: "Web sources are not available yet.",
+    });
+    const rejectedWebRows = await pool.query<{ count: number }>(
+      `select count(*)::int as count from chat_messages where user_id = $1 and node_id = $2`,
+      [userId, ownedNodeId],
+    );
+    expect(rejectedWebRows.rows[0]?.count).toBe(0);
+
     foreignUserId = `foreign-chat-boundary-${randomUUID()}`;
     const foreignNodeId = randomUUID();
     const missingNodeId = randomUUID();

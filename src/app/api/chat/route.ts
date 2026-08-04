@@ -5,19 +5,31 @@ import {
   type ChatStreamEvent,
   type RetryChatTurnInput,
 } from "@/lib/chat/contracts";
+import { OPENAI_CHAT_MODEL } from "@/lib/ai/openai-profiles";
+import { getServerEnvironment } from "@/lib/env/server";
 import { requireAuthorizedSession } from "@/lib/server/authorization";
+import { prepareChatContextForUser } from "@/lib/server/chat-context";
 import {
-  appendChatTurnContentForUser,
+  persistChatTurnContentPrefixForUser,
   cancelChatTurnForUser,
   completeChatTurnForUser,
   createChatTurnForUser,
   failChatTurnForUser,
+  recordChatTurnContextForUser,
+  recordChatTurnProviderResponseForUser,
   retryChatTurnForUser,
 } from "@/lib/server/chat-service";
-import { generateDeterministicChatReply, isDeterministicChatFixtureEnabled } from "@/lib/server/chat-runtime";
+import {
+  createOpenAISafetyIdentifier,
+  getChatGenerationMode,
+  streamChatResponse,
+} from "@/lib/server/chat-runtime";
+import { OpenAIChatAbortError, OpenAIChatError } from "@/lib/server/openai-chat";
 
 export const runtime = "nodejs";
 const MAX_CHAT_REQUEST_BYTES = 128_000;
+const PERSISTENCE_BATCH_CHARACTERS = 1_024;
+const PERSISTENCE_BATCH_MS = 250;
 
 class ChatRequestTooLargeError extends Error {}
 
@@ -79,7 +91,7 @@ export async function POST(request: Request) {
     return jsonError(401, "Authentication is required.");
   }
 
-  if (!isDeterministicChatFixtureEnabled()) {
+  if (getChatGenerationMode() === "unavailable") {
     return jsonError(503, "Assistant replies are not available yet.");
   }
 
@@ -110,6 +122,9 @@ export async function POST(request: Request) {
       if (!parsed.success) {
         return jsonError(400, "The message is invalid.");
       }
+      if (parsed.data.webSearchAuthorized) {
+        return jsonError(400, "Web sources are not available yet.");
+      }
       input = {
         nodeId: parsed.data.nodeId,
         clientMessageId: parsed.data.clientMessageId,
@@ -124,36 +139,119 @@ export async function POST(request: Request) {
     return terminalResponse(turn) ?? jsonError(409, "The message is already in progress.");
   }
 
+  let preparedContext;
+  try {
+    preparedContext = await prepareChatContextForUser(userId, input);
+    await recordChatTurnContextForUser(userId, {
+      ...input,
+      model: OPENAI_CHAT_MODEL,
+      contextFingerprint: preparedContext.fingerprint,
+    });
+  } catch {
+    const assistantMessage = await failChatTurnForUser(userId, {
+      ...input,
+      failureCode: "generation-failed",
+    });
+    return terminalResponse({ userMessage: turn.userMessage, assistantMessage }) ??
+      jsonError(500, "The response could not be prepared.");
+  }
+
+  const authEnvironment = getServerEnvironment(["authentication"]);
+  const safetyIdentifier = createOpenAISafetyIdentifier(
+    userId,
+    authEnvironment.BETTER_AUTH_SECRET,
+  );
+
   const encoder = new TextEncoder();
   const event = (value: ChatStreamEvent) => encoder.encode(`${JSON.stringify(value)}\n`);
+  const downstreamAbortController = new AbortController();
+  const generationSignal = AbortSignal.any([
+    request.signal,
+    downstreamAbortController.signal,
+  ]);
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       controller.enqueue(event({ type: "turn", ...turn }));
-      try {
-        for await (const content of generateDeterministicChatReply(turn.userMessage.content)) {
-          if (request.signal.aborted) {
-            await cancelChatTurnForUser(userId, input);
-            return;
-          }
-          await appendChatTurnContentForUser(userId, { ...input, content });
-          controller.enqueue(event({ type: "delta", content }));
+      let visibleContent = "";
+      let persistedCharacterCount = 0;
+      let lastPersistenceAt = Date.now();
+      const flushPersistence = async (force = false) => {
+        if (
+          visibleContent.length === persistedCharacterCount ||
+          (!force &&
+            visibleContent.length - persistedCharacterCount <
+              PERSISTENCE_BATCH_CHARACTERS &&
+            Date.now() - lastPersistenceAt < PERSISTENCE_BATCH_MS)
+        ) {
+          return;
         }
-        const assistantMessage = await completeChatTurnForUser(userId, input);
-        controller.enqueue(event({ type: "completed", assistantMessage }));
-      } catch {
+        const contentPrefix = visibleContent;
+        await persistChatTurnContentPrefixForUser(userId, {
+          ...input,
+          contentPrefix,
+        });
+        persistedCharacterCount = contentPrefix.length;
+        lastPersistenceAt = Date.now();
+      };
+
+      try {
+        for await (const providerEvent of streamChatResponse({
+          messages: preparedContext.input,
+          safetyIdentifier,
+          signal: generationSignal,
+        })) {
+          if (generationSignal.aborted) {
+            throw new OpenAIChatAbortError();
+          }
+          if (providerEvent.type === "started") {
+            await recordChatTurnProviderResponseForUser(userId, {
+              ...input,
+              providerResponseId: providerEvent.providerResponseId,
+            });
+          } else if (providerEvent.type === "text-delta") {
+            visibleContent += providerEvent.content;
+            controller.enqueue(event({ type: "delta", content: providerEvent.content }));
+            await flushPersistence();
+          } else {
+            await flushPersistence(true);
+            const assistantMessage = await completeChatTurnForUser(userId, input);
+            controller.enqueue(event({ type: "completed", assistantMessage }));
+          }
+        }
+      } catch (error) {
         try {
-          const assistantMessage = request.signal.aborted
+          await flushPersistence(true);
+        } catch {
+          // Preserve the authoritative persisted prefix and continue to a terminal state.
+        }
+        try {
+          const cancelled =
+            generationSignal.aborted || error instanceof OpenAIChatAbortError;
+          const assistantMessage = cancelled
             ? await cancelChatTurnForUser(userId, input)
-            : await failChatTurnForUser(userId, { ...input, failureCode: "generation-failed" });
-          if (!request.signal.aborted && assistantMessage.status === "failed") {
+            : await failChatTurnForUser(userId, {
+                ...input,
+                failureCode:
+                  error instanceof OpenAIChatError
+                    ? error.failureCode
+                    : "generation-failed",
+              });
+          if (!cancelled && assistantMessage.status === "failed") {
             controller.enqueue(event({ type: "failed", assistantMessage }));
           }
         } catch {
           // The persisted state remains authoritative when the client reloads.
         }
       } finally {
-        controller.close();
+        try {
+          controller.close();
+        } catch {
+          // The downstream reader may already be gone.
+        }
       }
+    },
+    cancel() {
+      downstreamAbortController.abort();
     },
   });
 

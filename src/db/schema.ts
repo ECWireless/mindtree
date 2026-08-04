@@ -131,6 +131,7 @@ export const chatMessages = pgTable(
     content: text("content").default("").notNull(),
     model: varchar("model", { length: 100 }),
     providerResponseId: varchar("provider_response_id", { length: 255 }),
+    contextFingerprint: varchar("context_fingerprint", { length: 64 }),
     failureCode: varchar("failure_code", { length: 64 }),
     webSearchAuthorized: boolean("web_search_authorized").default(false).notNull(),
     createdAt: createdAt(),
@@ -167,6 +168,7 @@ export const chatMessages = pgTable(
         and ${table.completedAt} is not null
         and ${table.model} is null
         and ${table.providerResponseId} is null
+        and ${table.contextFingerprint} is null
         and ${table.failureCode} is null
       ) or (
         ${table.role} = 'assistant'
@@ -188,6 +190,10 @@ export const chatMessages = pgTable(
         and ${table.completedAt} is null
         and ${table.failureCode} is null
       )`,
+    ),
+    check(
+      "chat_messages_context_fingerprint_check",
+      sql`${table.contextFingerprint} is null or ${table.contextFingerprint} ~ '^[0-9a-f]{64}$'`,
     ),
     check(
       "chat_messages_failure_code_check",

@@ -133,6 +133,32 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
     await page.reload();
     await expect(page.locator(".chat-message--user").getByText("A fresh angle", { exact: true })).toBeVisible();
     await expect(page.getByText(/What evidence would change your view/).last()).toBeVisible();
+    const generated = await pool.query<{
+      context_fingerprint: string;
+      model: string;
+      provider_response_id: string;
+      status: string;
+    }>(
+      `select assistant.context_fingerprint, assistant.model,
+              assistant.provider_response_id, assistant.status
+       from chat_messages as owner_message
+       join chat_messages as assistant
+         on assistant.user_id = owner_message.user_id
+        and assistant.node_id = owner_message.node_id
+        and assistant.client_message_id = owner_message.client_message_id
+        and assistant.role = 'assistant'
+       where owner_message.user_id = $1
+         and owner_message.node_id = $2
+         and owner_message.role = 'user'
+         and owner_message.content = 'A fresh angle'`,
+      [seeded.userId, firstNodeId],
+    );
+    expect(generated.rows).toEqual([{
+      context_fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+      model: "gpt-5.6-sol",
+      provider_response_id: "fixture-response",
+      status: "completed",
+    }]);
 
     if (testInfo.project.name === "mobile") {
       await page.getByRole("link", { name: "Back to thoughts" }).click();

@@ -52,6 +52,7 @@ describe("initial authentication schema", () => {
     expect(constraints.rows.map(({ conname }) => conname)).toEqual([
       "chat_messages_completion_check",
       "chat_messages_content_length_check",
+      "chat_messages_context_fingerprint_check",
       "chat_messages_failure_code_check",
       "chat_messages_node_owner_fk",
       "chat_messages_node_sequence_unique",
@@ -163,6 +164,28 @@ describe("initial authentication schema", () => {
           [ownerId, nodeId, randomUUID()],
         ),
       "chat_messages_role_state_check",
+    );
+    await expectConstraintViolation(
+      () =>
+        client.query(
+          `insert into chat_messages
+             (user_id, node_id, client_message_id, sequence, role, status, content,
+              context_fingerprint, completed_at)
+           values ($1, $2, $3, 2, 'user', 'completed', 'Question', $4, now())`,
+          [ownerId, nodeId, randomUUID(), "a".repeat(64)],
+        ),
+      "chat_messages_role_state_check",
+    );
+    await expectConstraintViolation(
+      () =>
+        client.query(
+          `insert into chat_messages
+             (user_id, node_id, client_message_id, sequence, role, status, content,
+              context_fingerprint)
+           values ($1, $2, $3, 2, 'assistant', 'pending', '', 'not-a-fingerprint')`,
+          [ownerId, nodeId, randomUUID()],
+        ),
+      "chat_messages_context_fingerprint_check",
     );
     await expectConstraintViolation(
       () =>
