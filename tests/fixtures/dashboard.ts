@@ -1,24 +1,27 @@
-import type { DashboardFixtureNode } from "@/components/dashboard-shell";
+import type { FlatNode } from "@/lib/nodes/tree";
 
 export const syntheticDashboardEmail = "thinker@example.test";
 
 export const syntheticDashboardNodes = [
   {
     id: "systems",
+    parentId: null,
+    position: 0,
     title: "Living systems",
-    depth: 0,
-    synthesisState: "approved",
+    archivedAt: null,
   },
   {
     id: "feedback",
+    parentId: "systems",
+    position: 0,
     title: "Feedback loops",
-    depth: 1,
-    synthesisState: "stale",
+    archivedAt: null,
   },
   {
     id: "questions",
+    parentId: "systems",
+    position: 1,
     title: "Open questions",
-    depth: 1,
-    synthesisState: "missing",
+    archivedAt: null,
   },
-] satisfies readonly DashboardFixtureNode[];
+] satisfies readonly FlatNode[];

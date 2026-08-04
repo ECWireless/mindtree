@@ -1,32 +1,630 @@
-import { BrandMark } from "./brand-mark";
-import { SignOutButton } from "./auth-buttons";
-import type { CSSProperties } from "react";
-import Link from "next/link";
+"use client";
 
-export type DashboardFixtureNode = {
-  id: string;
-  title: string;
-  depth: number;
-  synthesisState: "approved" | "missing" | "stale";
-};
+import {
+  DndContext,
+  DragOverlay,
+  MeasuringStrategy,
+  PointerSensor,
+  pointerWithin,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragMoveEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
+
+import { createNode, moveNode, renameNode } from "@/app/actions/nodes";
+import { MoveNodeDialog } from "@/components/move-node-dialog";
+import { NodeTreeList } from "@/components/node-tree-list";
+import {
+  createNodeDropResolver,
+  formatBreadcrumb,
+  searchNodes,
+  type NodeDropDestination,
+  type NodeDropZone,
+} from "@/lib/nodes/presentation";
+import { assembleNodeTree, type FlatNode, type TreeNode } from "@/lib/nodes/tree";
+
+import { SignOutButton } from "./auth-buttons";
+import { BrandMark } from "./brand-mark";
 
 type DashboardShellProps = {
   email: string;
-  nodes: readonly DashboardFixtureNode[];
+  nodes: readonly FlatNode[];
   selectedNodeId?: string;
 };
 
-const synthesisLabels: Record<DashboardFixtureNode["synthesisState"], string> = {
-  approved: "Synthesis approved",
-  missing: "No synthesis yet",
-  stale: "Synthesis needs review",
-};
+const pendingTreeFocusKey = "mindtree:pending-tree-focus";
 
-export function DashboardShell({ email, nodes, selectedNodeId }: DashboardShellProps) {
-  const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? nodes[0];
+function nodeHref(nodeId: string) {
+  return `/?node=${encodeURIComponent(nodeId)}`;
+}
+
+function ChevronIcon({ expanded }: { expanded: boolean }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d={expanded ? "m5 9 7 7 7-7" : "m9 5 7 7-7 7"} />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg
+      className="search-icon"
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="m16.5 16.5 4 4" />
+    </svg>
+  );
+}
+
+function EyeIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+      <circle cx="12" cy="12" r="2.5" />
+    </svg>
+  );
+}
+
+function GripIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="9" cy="6" r="1" />
+      <circle cx="15" cy="6" r="1" />
+      <circle cx="9" cy="12" r="1" />
+      <circle cx="15" cy="12" r="1" />
+      <circle cx="9" cy="18" r="1" />
+      <circle cx="15" cy="18" r="1" />
+    </svg>
+  );
+}
+
+function dropZoneForEvent(event: DragMoveEvent | DragEndEvent): NodeDropZone | null {
+  const activeRect = event.active.rect.current.translated;
+  const overRect = event.over?.rect;
+  if (!activeRect || !overRect) {
+    return null;
+  }
+
+  const activeCenter = activeRect.top + activeRect.height / 2;
+  const relativePosition = (activeCenter - overRect.top) / overRect.height;
+  if (relativePosition < 0.25) {
+    return "before";
+  }
+  if (relativePosition > 0.65) {
+    return "after";
+  }
+  return "inside";
+}
+
+function describeDrop(node: TreeNode, zone: NodeDropZone) {
+  return zone === "inside" ? `Move inside ${node.title}` : `Move ${zone} ${node.title}`;
+}
+
+function DraggableNodeRow({
+  children,
+  dragPending,
+  dropIntent,
+  expandPending,
+  isSelected,
+  node,
+  visualDepth,
+}: {
+  children: ReactNode;
+  dragPending: boolean;
+  dropIntent: NodeDropDestination | null;
+  expandPending: boolean;
+  isSelected: boolean;
+  node: TreeNode;
+  visualDepth: number;
+}) {
+  const {
+    isDragging,
+    listeners,
+    setActivatorNodeRef,
+    setNodeRef: setDraggableNodeRef,
+  } = useDraggable({ id: node.id, disabled: dragPending });
+  const { setNodeRef: setDroppableNodeRef } = useDroppable({
+    id: node.id,
+    disabled: dragPending,
+  });
+  const setRowRef = useCallback(
+    (element: HTMLDivElement | null) => {
+      setDraggableNodeRef(element);
+      setDroppableNodeRef(element);
+    },
+    [setDraggableNodeRef, setDroppableNodeRef],
+  );
+  const isDropTarget = dropIntent?.targetId === node.id;
 
   return (
-    <main className="dashboard" data-testid="dashboard-shell">
+    <div
+      ref={setRowRef}
+      className={[
+        "node-row",
+        isSelected ? "node-row--selected" : "",
+        isDragging ? "node-row--dragging" : "",
+        expandPending ? "node-row--drag-expand-pending" : "",
+      ].filter(Boolean).join(" ")}
+      data-drop-zone={isDropTarget ? dropIntent.zone : undefined}
+      data-drop-label={isDropTarget ? describeDrop(node, dropIntent.zone) : undefined}
+      style={{ "--node-depth": visualDepth } as CSSProperties}
+    >
+      {visualDepth > 0 ? (
+        <span className="node-depth-markers" aria-hidden="true">
+          {Array.from({ length: visualDepth }, (_, index) => (
+            <span key={index} />
+          ))}
+        </span>
+      ) : null}
+      <span
+        ref={setActivatorNodeRef}
+        className="node-drag-handle"
+        data-tooltip={`Drag ${node.title}`}
+        aria-hidden="true"
+        {...listeners}
+      >
+        <GripIcon />
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function NodeCreateForm({
+  parentId,
+  parentTitle,
+  onCancel,
+  onCreated,
+}: {
+  parentId: string | null;
+  parentTitle?: string;
+  onCancel: () => void;
+  onCreated: (nodeId: string, parentId: string | null) => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const label = parentTitle ? `Child thought title for ${parentTitle}` : "Root thought title";
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPending(true);
+    setError(null);
+    try {
+      const result = await createNode({ title, parentId });
+      if (!result.ok) {
+        setError(result.fieldErrors?.title?.[0] ?? result.message);
+        return;
+      }
+      onCreated(result.nodeId, parentId);
+    } catch {
+      setError("MindTree couldn’t add that thought. Please try again.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  function keyDown(event: KeyboardEvent<HTMLFormElement>) {
+    if (event.key === "Escape" && !pending) {
+      event.preventDefault();
+      onCancel();
+    }
+  }
+
+  return (
+    <form className="node-create" onSubmit={submit} onKeyDown={keyDown}>
+      <label>
+        <span className="sr-only">{label}</span>
+        <input
+          autoFocus
+          value={title}
+          onChange={(event) => setTitle(event.target.value)}
+          placeholder={parentTitle ? "Child thought" : "Root thought"}
+          maxLength={200}
+          disabled={pending}
+        />
+      </label>
+      <button className="button button--primary button--small" type="submit" disabled={pending}>
+        {pending ? "Adding…" : "Add"}
+      </button>
+      <button
+        className="button button--quiet button--small"
+        type="button"
+        disabled={pending}
+        onClick={onCancel}
+      >
+        Cancel
+      </button>
+      {error ? <p role="alert">{error}</p> : null}
+    </form>
+  );
+}
+
+function TitleEditor({ node, onSaved }: { node: TreeNode; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(node.title);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const editButtonRef = useRef<HTMLButtonElement>(null);
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (pending) {
+      return;
+    }
+    if (draft.trim() === node.title) {
+      setEditing(false);
+      setDraft(node.title);
+      return;
+    }
+
+    setPending(true);
+    setError(null);
+    try {
+      const result = await renameNode({ id: node.id, title: draft });
+      if (!result.ok) {
+        setError(result.fieldErrors?.title?.[0] ?? result.message);
+        return;
+      }
+      setEditing(false);
+      onSaved();
+    } catch {
+      setError("MindTree couldn’t rename that thought. Please try again.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  function cancel() {
+    setDraft(node.title);
+    setError(null);
+    setEditing(false);
+    requestAnimationFrame(() => editButtonRef.current?.focus());
+  }
+
+  if (editing) {
+    return (
+      <form className="inline-editor inline-editor--title" onSubmit={save}>
+        <label>
+          <span className="sr-only">Thought title</span>
+          <input
+            autoFocus
+            value={draft}
+            maxLength={200}
+            disabled={pending}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && !pending) {
+                event.preventDefault();
+                cancel();
+              }
+            }}
+          />
+        </label>
+        <button className="button button--primary button--small" type="submit" disabled={pending}>
+          {pending ? "Saving…" : "Save"}
+        </button>
+        <button
+          className="button button--quiet button--small"
+          type="button"
+          disabled={pending}
+          onClick={cancel}
+        >
+          Cancel
+        </button>
+        {error ? <p role="alert">{error}</p> : null}
+      </form>
+    );
+  }
+
+  return (
+    <div className="detail-title">
+      <h1 id="node-detail-title" tabIndex={-1}>{node.title}</h1>
+      <button
+        ref={editButtonRef}
+        className="text-action"
+        type="button"
+        onClick={() => {
+          setDraft(node.title);
+          setError(null);
+          setEditing(true);
+        }}
+      >
+        Edit title
+      </button>
+    </div>
+  );
+}
+
+function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProps) {
+  const router = useRouter();
+  const tree = useMemo(() => assembleNodeTree(nodes), [nodes]);
+  const selectedNode = selectedNodeId ? tree.byId.get(selectedNodeId) ?? null : null;
+  const [expanded, setExpanded] = useState<Set<string>>(
+    () =>
+      new Set(
+        selectedNode?.breadcrumb.slice(0, -1).map(({ id }) => id) ?? [],
+      ),
+  );
+  const [creatingParentId, setCreatingParentId] = useState<
+    string | null | undefined
+  >(undefined);
+  const [creatingChildSurface, setCreatingChildSurface] = useState<"tree" | "detail" | null>(null);
+  const [searchText, setSearchText] = useState("");
+  const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [dragPending, setDragPending] = useState(false);
+  const [dragError, setDragError] = useState<string | null>(null);
+  const [activeDragId, setActiveDragId] = useState<string | null>(null);
+  const [dropIntent, setDropIntent] = useState<NodeDropDestination | null>(null);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const createReturnFocus = useRef<HTMLElement | null>(null);
+  const moveTriggerRef = useRef<HTMLButtonElement>(null);
+  const pendingTreeFocus = useRef<string | null>(null);
+  const rowLinkRefs = useRef(new Map<string, HTMLAnchorElement>());
+  const searchOptionRefs = useRef(new Map<number, HTMLLIElement>());
+  const searchResults = useMemo(
+    () => searchNodes(tree.ordered, searchText),
+    [searchText, tree.ordered],
+  );
+  const activeDragNode = activeDragId ? tree.byId.get(activeDragId) ?? null : null;
+  const activeDropResolver = useMemo(
+    () => activeDragNode ? createNodeDropResolver(tree.ordered, activeDragNode) : null,
+    [activeDragNode, tree.ordered],
+  );
+  const autoExpandTarget = dropIntent ? tree.byId.get(dropIntent.targetId) : undefined;
+  const autoExpandCandidateId =
+    dropIntent?.zone === "inside" &&
+    autoExpandTarget &&
+    autoExpandTarget.children.length > 0 &&
+    !expanded.has(autoExpandTarget.id)
+      ? autoExpandTarget.id
+      : null;
+
+  useEffect(() => {
+    const nodeId = sessionStorage.getItem(pendingTreeFocusKey);
+    if (!nodeId || !tree.byId.has(nodeId)) {
+      return;
+    }
+    sessionStorage.removeItem(pendingTreeFocusKey);
+    pendingTreeFocus.current = nodeId;
+  }, [tree]);
+
+  useEffect(() => {
+    const nodeId = pendingTreeFocus.current;
+    if (!nodeId || !tree.byId.has(nodeId)) {
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      const target = window.matchMedia("(max-width: 760px)").matches
+        ? document.getElementById("node-detail-title")
+        : rowLinkRefs.current.get(nodeId);
+      target?.scrollIntoView({ block: "center" });
+      target?.focus();
+      pendingTreeFocus.current = null;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [tree]);
+
+  useEffect(() => {
+    if (activeSearchIndex < 0) {
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      searchOptionRefs.current.get(activeSearchIndex)?.scrollIntoView({ block: "nearest" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeSearchIndex]);
+
+  useEffect(() => {
+    if (!autoExpandCandidateId) {
+      return;
+    }
+    const delay = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 500 : 1_200;
+    const timer = window.setTimeout(() => {
+      setExpanded((current) => new Set(current).add(autoExpandCandidateId));
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [autoExpandCandidateId]);
+
+  function created(nodeId: string, parentId: string | null) {
+    if (parentId !== null) {
+      setExpanded((current) => new Set(current).add(parentId));
+    }
+    setCreatingParentId(undefined);
+    setCreatingChildSurface(null);
+    createReturnFocus.current = null;
+    router.push(nodeHref(nodeId));
+  }
+
+  function cancelCreating() {
+    setCreatingParentId(undefined);
+    setCreatingChildSurface(null);
+    requestAnimationFrame(() => createReturnFocus.current?.focus());
+  }
+
+  function beginChild(
+    node: TreeNode,
+    trigger: HTMLElement,
+    surface: "tree" | "detail" = "tree",
+  ) {
+    setExpanded((current) => {
+      const next = new Set(current);
+      for (const item of node.breadcrumb) {
+        next.add(item.id);
+      }
+      return next;
+    });
+    createReturnFocus.current = trigger;
+    setCreatingChildSurface(surface);
+    setCreatingParentId(node.id);
+  }
+
+  function registerRowLink(nodeId: string, element: HTMLAnchorElement | null) {
+    if (element) {
+      rowLinkRefs.current.set(nodeId, element);
+    } else {
+      rowLinkRefs.current.delete(nodeId);
+    }
+  }
+
+  function chooseSearchResult(node: TreeNode) {
+    setSearchText("");
+    setActiveSearchIndex(-1);
+    setExpanded((current) => {
+      const next = new Set(current);
+      for (const ancestor of node.breadcrumb.slice(0, -1)) {
+        next.add(ancestor.id);
+      }
+      return next;
+    });
+    pendingTreeFocus.current = node.id;
+    if (node.id !== selectedNode?.id) {
+      sessionStorage.setItem(pendingTreeFocusKey, node.id);
+      router.push(nodeHref(node.id));
+      return;
+    }
+    requestAnimationFrame(() => {
+      const link = rowLinkRefs.current.get(node.id);
+      link?.scrollIntoView({ block: "center" });
+      link?.focus();
+      pendingTreeFocus.current = null;
+    });
+  }
+
+  function resolveDropIntent(event: DragMoveEvent | DragEndEvent) {
+    const source = tree.byId.get(String(event.active.id));
+    const target = event.over ? tree.byId.get(String(event.over.id)) : undefined;
+    const zone = dropZoneForEvent(event);
+    if (!source || !target || !zone) {
+      return null;
+    }
+    const resolver = activeDropResolver ?? createNodeDropResolver(tree.ordered, source);
+    return resolver(target, zone);
+  }
+
+  async function dropped(event: DragEndEvent) {
+    const destination = resolveDropIntent(event);
+    const sourceId = String(event.active.id);
+    setActiveDragId(null);
+    setDropIntent(null);
+    if (!destination || dragPending) {
+      return;
+    }
+
+    setDragPending(true);
+    setDragError(null);
+    try {
+      const result = await moveNode({
+        id: sourceId,
+        parentId: destination.parentId,
+        position: destination.position,
+      });
+      if (!result.ok) {
+        setDragError(result.message);
+        return;
+      }
+      if (destination.parentId !== null) {
+        const parentId = destination.parentId;
+        setExpanded((current) => new Set(current).add(parentId));
+      }
+      pendingTreeFocus.current = sourceId;
+      router.refresh();
+    } catch {
+      setDragError("MindTree couldn’t move that thought. Please try again.");
+    } finally {
+      setDragPending(false);
+    }
+  }
+
+  function moved(parentId: string | null) {
+    setMoveDialogOpen(false);
+    if (parentId !== null) {
+      const parent = tree.byId.get(parentId);
+      setExpanded((current) => {
+        const next = new Set(current);
+        for (const ancestor of parent?.breadcrumb ?? []) {
+          next.add(ancestor.id);
+        }
+        return next;
+      });
+    }
+    if (selectedNode) {
+      pendingTreeFocus.current = selectedNode.id;
+    }
+    router.refresh();
+  }
+
+  return (
+    <main
+      className={`dashboard${selectedNode ? " dashboard--detail" : ""}`}
+      data-testid="dashboard-shell"
+    >
       <header className="dashboard-header">
         <Link className="wordmark wordmark--compact" href="/" aria-label="MindTree home">
           <BrandMark />
@@ -39,55 +637,324 @@ export function DashboardShell({ email, nodes, selectedNodeId }: DashboardShellP
       </header>
 
       <div className="dashboard-toolbar" aria-label="MindTree tools">
-        <label className="tree-search">
-          <span className="sr-only">Search nodes</span>
-          <input type="search" placeholder="Search thoughts" disabled />
-        </label>
+        <div className="toolbar-count">
+          <p className="eyebrow">{nodes.length === 1 ? "1 node" : `${nodes.length} nodes`}</p>
+        </div>
+        <div className="tree-search">
+          <SearchIcon />
+          <label>
+            <span className="sr-only">Search thought titles</span>
+            <input
+              role="combobox"
+              type="search"
+              value={searchText}
+              placeholder="Search thoughts"
+              aria-autocomplete="list"
+              aria-controls={searchText.trim() ? "tree-search-results" : undefined}
+              aria-describedby="tree-search-status"
+              aria-expanded={Boolean(searchText.trim())}
+              aria-activedescendant={
+                activeSearchIndex >= 0 ? `tree-search-result-${activeSearchIndex}` : undefined
+              }
+              onChange={(event) => {
+                setSearchText(event.target.value);
+                setActiveSearchIndex(-1);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  setSearchText("");
+                  setActiveSearchIndex(-1);
+                  return;
+                }
+                if (searchResults.length === 0) {
+                  return;
+                }
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setActiveSearchIndex((current) => {
+                    if (event.key === "ArrowDown") {
+                      return current >= searchResults.length - 1 ? 0 : current + 1;
+                    }
+                    return current <= 0 ? searchResults.length - 1 : current - 1;
+                  });
+                  return;
+                }
+                if (event.key === "Enter" && activeSearchIndex >= 0) {
+                  event.preventDefault();
+                  chooseSearchResult(searchResults[activeSearchIndex]);
+                }
+              }}
+            />
+          </label>
+          <p id="tree-search-status" className="sr-only" role="status" aria-live="polite">
+            {searchText.trim()
+              ? searchResults.length === 0
+                ? "No matching thoughts."
+                : `${searchResults.length} ${searchResults.length === 1 ? "result" : "results"} available.`
+              : ""}
+          </p>
+          {searchText.trim() ? (
+            <ul
+              id="tree-search-results"
+              className="search-results"
+              aria-label="Search results"
+              role="listbox"
+            >
+              {searchResults.map((node, index) => (
+                <li
+                  id={`tree-search-result-${index}`}
+                  className="search-result"
+                  key={node.id}
+                  role="option"
+                  ref={(element) => {
+                    if (element) {
+                      searchOptionRefs.current.set(index, element);
+                    } else {
+                      searchOptionRefs.current.delete(index);
+                    }
+                  }}
+                  aria-selected={index === activeSearchIndex}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => chooseSearchResult(node)}
+                >
+                  <strong>{node.title}</strong>
+                  <span>
+                    {formatBreadcrumb(node)}
+                    {node.archivedAt ? " · Archived" : ""}
+                  </span>
+                </li>
+              ))}
+              {searchResults.length === 0 ? (
+                <li className="search-results__empty">No matching thoughts.</li>
+              ) : null}
+            </ul>
+          ) : null}
+        </div>
         <div className="toolbar-actions">
-          <button className="button button--quiet" type="button" disabled>
-            Show archived
+          <button
+            className="icon-button icon-button--toggle"
+            type="button"
+            aria-label="Show archived"
+            aria-pressed="false"
+            data-tooltip="Show archived"
+            disabled
+          >
+            <EyeIcon />
           </button>
-          <button className="button button--primary" type="button" disabled>
-            New root
+          <button
+            className="icon-button icon-button--primary"
+            type="button"
+            aria-label="New root thought"
+            aria-expanded={creatingParentId === null}
+            data-tooltip="New root thought"
+            onClick={(event) => {
+              if (creatingParentId === null) {
+                setCreatingParentId(undefined);
+              } else {
+                createReturnFocus.current = event.currentTarget;
+                setCreatingChildSurface(null);
+                setCreatingParentId(null);
+              }
+            }}
+          >
+            <PlusIcon />
           </button>
         </div>
       </div>
 
-      <div className="dashboard-main">
+      {creatingParentId === null ? (
+        <div className="root-create-panel">
+          <NodeCreateForm
+            parentId={null}
+            onCancel={cancelCreating}
+            onCreated={created}
+          />
+        </div>
+      ) : null}
+
+      <div className={`dashboard-main${selectedNode ? " dashboard-main--detail" : ""}`}>
         <nav className="tree-pane" aria-label="Thought tree">
           <p className="pane-eyebrow">Thoughts</p>
-          <ul className="node-list">
-            {nodes.map((node) => {
-              const selected = node.id === selectedNode?.id;
-              return (
-                <li key={node.id} style={{ "--node-depth": node.depth } as CSSProperties}>
-                  <button
-                    className={`node-row${selected ? " node-row--selected" : ""}`}
-                    type="button"
-                    aria-current={selected ? "page" : undefined}
-                    disabled
-                  >
-                    <span>{node.title}</span>
-                    <small>{synthesisLabels[node.synthesisState]}</small>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-          {nodes.length === 0 ? <p className="tree-empty">No thoughts yet.</p> : null}
+          {tree.roots.length > 0 ? (
+            <>
+              {dragPending ? <p className="tree-move-status" role="status">Moving thought…</p> : null}
+              {dragError ? <p className="tree-move-error" role="alert">{dragError}</p> : null}
+              <DndContext
+                sensors={sensors}
+                collisionDetection={pointerWithin}
+                measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
+                onDragStart={(event: DragStartEvent) => {
+                  setActiveDragId(String(event.active.id));
+                  setDragError(null);
+                }}
+                onDragMove={(event: DragMoveEvent) => setDropIntent(resolveDropIntent(event))}
+                onDragEnd={(event: DragEndEvent) => void dropped(event)}
+                onDragCancel={() => {
+                  setActiveDragId(null);
+                  setDropIntent(null);
+                }}
+              >
+                <NodeTreeList
+                  roots={tree.roots}
+                  expanded={expanded}
+                  renderNode={(node, depth) => {
+                    const visualDepth = Math.min(depth, 12);
+                    const isExpanded = expanded.has(node.id);
+                    const isSelected = node.id === selectedNode?.id;
+                    return (
+                      <>
+                        <DraggableNodeRow
+                          node={node}
+                          visualDepth={visualDepth}
+                          isSelected={isSelected}
+                          dragPending={dragPending}
+                          dropIntent={dropIntent}
+                          expandPending={autoExpandCandidateId === node.id}
+                        >
+                      {node.children.length > 0 ? (
+                        <button
+                          className="node-expander"
+                          type="button"
+                          aria-label={`${isExpanded ? "Collapse" : "Expand"} ${node.title}`}
+                          aria-expanded={isExpanded}
+                          onClick={() =>
+                            setExpanded((current) => {
+                              const next = new Set(current);
+                              if (next.has(node.id)) {
+                                next.delete(node.id);
+                              } else {
+                                next.add(node.id);
+                              }
+                              return next;
+                            })
+                          }
+                        >
+                          <ChevronIcon expanded={isExpanded} />
+                        </button>
+                      ) : (
+                        <span className="node-expander node-expander--placeholder" aria-hidden="true" />
+                      )}
+                      <Link
+                        ref={(element) => registerRowLink(node.id, element)}
+                        className="node-row__link"
+                        href={nodeHref(node.id)}
+                        aria-current={isSelected ? "page" : undefined}
+                      >
+                        <span>{node.title}</span>
+                        <small>{node.archivedAt ? "Archived" : "No synthesis yet"}</small>
+                      </Link>
+                      <button
+                        className="add-child-button icon-button"
+                        type="button"
+                        aria-label={`Add child to ${node.title}`}
+                        data-tooltip={`Add child to ${node.title}`}
+                        onClick={(event) => beginChild(node, event.currentTarget)}
+                      >
+                        <PlusIcon />
+                      </button>
+                        </DraggableNodeRow>
+                        {creatingParentId === node.id && creatingChildSurface === "tree" ? (
+                          <div
+                            className="tree-child-create"
+                            style={{ "--node-depth": Math.min(depth + 1, 12) } as CSSProperties}
+                          >
+                            <NodeCreateForm
+                              parentId={node.id}
+                              parentTitle={node.title}
+                              onCancel={cancelCreating}
+                              onCreated={created}
+                            />
+                          </div>
+                        ) : null}
+                      </>
+                    );
+                  }}
+                />
+                <DragOverlay dropAnimation={null}>
+                  {activeDragNode ? (
+                    <div className="node-drag-overlay">
+                      <GripIcon />
+                      <span>{activeDragNode.title}</span>
+                    </div>
+                  ) : null}
+                </DragOverlay>
+              </DndContext>
+            </>
+          ) : (
+            <div className="tree-empty">
+              <p>No thoughts yet.</p>
+              <button
+                className="text-action"
+                type="button"
+                onClick={(event) => {
+                  createReturnFocus.current = event.currentTarget;
+                  setCreatingChildSurface(null);
+                  setCreatingParentId(null);
+                }}
+              >
+                Create the first thought
+              </button>
+            </div>
+          )}
         </nav>
 
-        <section className="detail-pane" aria-labelledby="fixture-node-title">
+        <section className="detail-pane" aria-labelledby={selectedNode ? "node-detail-title" : "detail-empty-title"}>
           {selectedNode ? (
             <>
-              <p className="pane-eyebrow">Selected thought</p>
-              <h1 id="fixture-node-title">{selectedNode.title}</h1>
+              <Link className="mobile-back" href="/">
+                <span aria-hidden="true">←</span> Back to thoughts
+              </Link>
+              <nav className="breadcrumbs" aria-label="Breadcrumb">
+                <ol>
+                  {selectedNode.breadcrumb.map((item, index) => (
+                    <li key={item.id}>
+                      {index < selectedNode.breadcrumb.length - 1 ? (
+                        <Link href={nodeHref(item.id)}>{item.title}</Link>
+                      ) : (
+                        <span aria-current="page">{item.title}</span>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              </nav>
+              <TitleEditor
+                key={`${selectedNode.id}:${selectedNode.title}`}
+                node={selectedNode}
+                onSaved={() => router.refresh()}
+              />
+              <div className="detail-actions">
+                <button
+                  className="button button--quiet"
+                  type="button"
+                  onClick={(event) => beginChild(
+                    selectedNode,
+                    event.currentTarget,
+                    window.matchMedia("(max-width: 760px)").matches ? "detail" : "tree",
+                  )}
+                >
+                  Add child
+                </button>
+                <button
+                  ref={moveTriggerRef}
+                  className="button button--quiet"
+                  type="button"
+                  onClick={() => setMoveDialogOpen(true)}
+                >
+                  Move to…
+                </button>
+              </div>
+              {creatingParentId === selectedNode.id && creatingChildSurface === "detail" ? (
+                <NodeCreateForm
+                  parentId={selectedNode.id}
+                  parentTitle={selectedNode.title}
+                  onCancel={cancelCreating}
+                  onCreated={created}
+                />
+              ) : null}
               <section className="synthesis-placeholder" aria-labelledby="fixture-synthesis-title">
                 <p className="pane-eyebrow">Synthesis</p>
-                <h2 id="fixture-synthesis-title">Clarity lives here.</h2>
-                <p>
-                  Approved synthesis will stay distinct from the conversation that shaped it.
-                </p>
+                <h2 id="fixture-synthesis-title">No synthesis yet</h2>
+                <p>Approved synthesis will stay distinct from the conversation that shaped it.</p>
               </section>
               <section className="chat-placeholder" aria-labelledby="fixture-chat-title">
                 <p className="pane-eyebrow">Conversation</p>
@@ -98,11 +965,31 @@ export function DashboardShell({ email, nodes, selectedNodeId }: DashboardShellP
           ) : (
             <div className="empty-state">
               <p className="pane-eyebrow">MindTree</p>
-              <h1 id="fixture-node-title">Start with one thought.</h1>
+              <h1 id="detail-empty-title">
+                {tree.roots.length === 0 ? "Start with one thought." : "Choose a thought."}
+              </h1>
+              <p>
+                {tree.roots.length === 0
+                  ? "Create a root thought, then grow it at any depth."
+                  : "Select any thought to open its workspace."}
+              </p>
             </div>
           )}
         </section>
       </div>
+      {selectedNode && moveDialogOpen ? (
+        <MoveNodeDialog
+          node={selectedNode}
+          nodes={tree.ordered}
+          onClose={() => setMoveDialogOpen(false)}
+          onMoved={moved}
+          returnFocusRef={moveTriggerRef}
+        />
+      ) : null}
     </main>
   );
+}
+
+export function DashboardShell(props: DashboardShellProps) {
+  return <DashboardWorkspace key={props.selectedNodeId ?? "tree"} {...props} />;
 }
