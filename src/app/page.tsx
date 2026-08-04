@@ -43,12 +43,27 @@ export default async function Home({ searchParams }: HomeProps) {
   if (session) {
     const { getNodeTreeForUser } = await import("@/lib/server/node-service");
     const tree = await getNodeTreeForUser(session.user.id);
+    const selectedNodeExists = selectedNodeId
+      ? tree.nodes.some((node) => node.id === selectedNodeId)
+      : false;
+    let initialChatPage;
+    let chatGenerationEnabled = false;
+    if (selectedNodeId && selectedNodeExists) {
+      const [{ getChatMessagesForUser }, { isDeterministicChatFixtureEnabled }] = await Promise.all([
+        import("@/lib/server/chat-service"),
+        import("@/lib/server/chat-runtime"),
+      ]);
+      initialChatPage = await getChatMessagesForUser(session.user.id, { nodeId: selectedNodeId });
+      chatGenerationEnabled = isDeterministicChatFixtureEnabled();
+    }
 
     return (
       <DashboardShell
         email={session.user.email}
         nodes={tree.nodes}
         selectedNodeId={selectedNodeId}
+        initialChatPage={initialChatPage}
+        chatGenerationEnabled={chatGenerationEnabled}
       />
     );
   }

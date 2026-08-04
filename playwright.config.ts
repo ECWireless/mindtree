@@ -19,6 +19,7 @@ const testAuthEnvironment = {
   GOOGLE_CLIENT_ID: "synthetic-google-client-id",
   GOOGLE_CLIENT_SECRET: "synthetic-google-client-secret",
   ALLOWED_EMAIL: browserAllowedEmail,
+  MINDTREE_TEST_CHAT_FIXTURE: "1",
 };
 
 export default defineConfig({

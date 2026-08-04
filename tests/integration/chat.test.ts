@@ -4,11 +4,16 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 
 import {
+  appendChatTurnContentForUser,
+  cancelChatTurnForUser,
   ChatServiceError,
+  completeChatTurnForUser,
   createChatTurnForUser,
   failChatTurnForUser,
   getChatMessagesForUser,
+  getChatTurnForUser,
   retryChatTurnForUser,
+  startChatTurnForUser,
 } from "../../src/lib/server/chat-service";
 import type { FailChatTurnInput } from "../../src/lib/chat/contracts";
 import { deleteNodeForUser } from "../../src/lib/server/node-service";
@@ -61,6 +66,114 @@ afterAll(async () => {
 });
 
 describe("persistent chat ledger", () => {
+  it("atomically claims generation and recovers abandoned active turns after the lease", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId);
+    const clientMessageId = randomUUID();
+    const claimed = await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId,
+      content: "Claim this once",
+      webSearchAuthorized: false,
+    }, { claimAssistant: true });
+    expect(claimed).toMatchObject({
+      generationClaimed: true,
+      assistantMessage: { status: "streaming" },
+    });
+    const replayed = await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId,
+      content: "Claim this once",
+      webSearchAuthorized: false,
+    }, { claimAssistant: true });
+    expect(replayed).toMatchObject({
+      replayed: true,
+      generationClaimed: false,
+      assistantMessage: { status: "streaming" },
+    });
+
+    await pool.query(
+      `update chat_messages set updated_at = now() - interval '6 minutes'
+       where user_id = $1 and node_id = $2 and client_message_id = $3 and role = 'assistant'`,
+      [userId, nodeId, clientMessageId],
+    );
+    const recovered = await getChatMessagesForUser(userId, { nodeId });
+    expect(recovered.messages.find((message) => message.role === "assistant")).toMatchObject({
+      status: "failed",
+      failureCode: "stream-disconnected",
+    });
+  });
+
+  it("persists bounded streaming, completion, cancellation, and retry transitions", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId);
+    const completedClientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: completedClientMessageId,
+      content: "Complete this",
+      webSearchAuthorized: false,
+    });
+    await startChatTurnForUser(userId, { nodeId, clientMessageId: completedClientMessageId });
+    await expect(
+      startChatTurnForUser(userId, { nodeId, clientMessageId: completedClientMessageId }),
+    ).rejects.toEqual(new ChatServiceError("retry-unavailable"));
+    await appendChatTurnContentForUser(userId, {
+      nodeId,
+      clientMessageId: completedClientMessageId,
+      content: "A partial ",
+    });
+    await appendChatTurnContentForUser(userId, {
+      nodeId,
+      clientMessageId: completedClientMessageId,
+      content: "answer.",
+    });
+    const completed = await completeChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: completedClientMessageId,
+    });
+    expect(completed).toMatchObject({ status: "completed", content: "A partial answer." });
+    expect(completed.completedAt).not.toBeNull();
+
+    const cancelledClientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: cancelledClientMessageId,
+      content: "Stop this",
+      webSearchAuthorized: false,
+    });
+    await startChatTurnForUser(userId, { nodeId, clientMessageId: cancelledClientMessageId });
+    const cancelled = await cancelChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: cancelledClientMessageId,
+    });
+    expect(cancelled).toMatchObject({ status: "cancelled", content: "" });
+    const retriedCancelled = await retryChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: cancelledClientMessageId,
+    });
+    expect(retriedCancelled.assistantMessage).toMatchObject({ status: "pending" });
+
+    const failedClientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: failedClientMessageId,
+      content: "Retry this",
+      webSearchAuthorized: false,
+    });
+    await startChatTurnForUser(userId, { nodeId, clientMessageId: failedClientMessageId });
+    await failChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: failedClientMessageId,
+      failureCode: "generation-failed",
+    });
+    const retried = await retryChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: failedClientMessageId,
+    });
+    expect(retried.assistantMessage).toMatchObject({ status: "pending", content: "", failureCode: null });
+  });
+
   it("creates one replay-safe user and assistant row per client message", async () => {
     const userId = await insertUser();
     const nodeId = await insertNode(userId);
@@ -137,6 +250,12 @@ describe("persistent chat ledger", () => {
     await expect(getChatMessagesForUser(userId, { nodeId: missingNodeId })).rejects.toEqual(
       new ChatServiceError("node-not-found"),
     );
+    await expect(
+      getChatTurnForUser(userId, { nodeId: foreignNodeId, clientMessageId }),
+    ).rejects.toEqual(new ChatServiceError("node-not-found"));
+    await expect(
+      getChatTurnForUser(userId, { nodeId: missingNodeId, clientMessageId }),
+    ).rejects.toEqual(new ChatServiceError("node-not-found"));
   });
 
   it("paginates one node in stable order without mixing another conversation", async () => {

@@ -1,12 +1,13 @@
 import "server-only";
 
-import { and, asc, desc, eq, lt, max } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt, max } from "drizzle-orm";
 import { DrizzleError, DrizzleQueryError } from "drizzle-orm/errors";
 
 import { chatMessages, nodes } from "@/db/schema";
 import { db } from "@/db/client";
 import {
   CHAT_PAGE_SIZE,
+  MAX_ASSISTANT_MESSAGE_LENGTH,
   chatFailureCodeSchema,
   type ChatMessage,
   type ChatMessagePage,
@@ -31,6 +32,7 @@ type ChatCursor = {
 };
 
 const MAX_ENCODED_CURSOR_LENGTH = 128;
+export const CHAT_STALE_AFTER_MS = 5 * 60 * 1_000;
 
 export class ChatServiceError extends Error {
   constructor(public readonly reason: ChatServiceReason) {
@@ -164,6 +166,23 @@ export async function getChatMessagesForUser(
         throw new ChatServiceError("node-not-found");
       }
 
+      await tx
+        .update(chatMessages)
+        .set({
+          status: "failed",
+          failureCode: "stream-disconnected",
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(chatMessages.userId, userId),
+            eq(chatMessages.nodeId, input.nodeId),
+            eq(chatMessages.role, "assistant"),
+            inArray(chatMessages.status, ["pending", "streaming"]),
+            lt(chatMessages.updatedAt, new Date(Date.now() - CHAT_STALE_AFTER_MS)),
+          ),
+        );
+
       const cursorCondition = cursor
         ? lt(chatMessages.sequence, cursor.sequence)
         : undefined;
@@ -196,7 +215,47 @@ export async function getChatMessagesForUser(
   }
 }
 
-export async function createChatTurnForUser(userId: string, input: CreateChatTurnInput) {
+export async function getChatTurnForUser(userId: string, input: RetryChatTurnInput) {
+  try {
+    return await db.transaction(async (tx) => {
+      await lockOwnedNode(tx, userId, input.nodeId);
+      await tx
+        .update(chatMessages)
+        .set({ status: "failed", failureCode: "stream-disconnected", updatedAt: new Date() })
+        .where(
+          and(
+            eq(chatMessages.userId, userId),
+            eq(chatMessages.nodeId, input.nodeId),
+            eq(chatMessages.clientMessageId, input.clientMessageId),
+            eq(chatMessages.role, "assistant"),
+            inArray(chatMessages.status, ["pending", "streaming"]),
+            lt(chatMessages.updatedAt, new Date(Date.now() - CHAT_STALE_AFTER_MS)),
+          ),
+        );
+      const messages = await tx
+        .select()
+        .from(chatMessages)
+        .where(
+          and(
+            eq(chatMessages.userId, userId),
+            eq(chatMessages.nodeId, input.nodeId),
+            eq(chatMessages.clientMessageId, input.clientMessageId),
+          ),
+        )
+        .orderBy(asc(chatMessages.sequence));
+      if (messages.length !== 2) throw new ChatServiceError("turn-not-found");
+      return messages.map(toChatMessage);
+    });
+  } catch (error) {
+    throw sanitizeChatServiceError(error);
+  }
+}
+
+export async function createChatTurnForUser(
+  userId: string,
+  input: CreateChatTurnInput,
+  options: { claimAssistant?: boolean } = {},
+) {
   try {
     return await db.transaction(async (tx) => {
       await lockOwnedNode(tx, userId, input.nodeId);
@@ -224,10 +283,22 @@ export async function createChatTurnForUser(userId: string, input: CreateChatTur
         ) {
           throw new ChatServiceError("turn-conflict");
         }
+        let returnedAssistant = assistantMessage;
+        let generationClaimed = false;
+        if (options.claimAssistant && assistantMessage.status === "pending") {
+          const [claimed] = await tx
+            .update(chatMessages)
+            .set({ status: "streaming", updatedAt: new Date() })
+            .where(eq(chatMessages.id, assistantMessage.id))
+            .returning();
+          returnedAssistant = claimed;
+          generationClaimed = true;
+        }
         return {
           userMessage: toChatMessage(userMessage),
-          assistantMessage: toChatMessage(assistantMessage),
+          assistantMessage: toChatMessage(returnedAssistant),
           replayed: true,
+          generationClaimed,
         };
       }
 
@@ -264,7 +335,7 @@ export async function createChatTurnForUser(userId: string, input: CreateChatTur
             clientMessageId: input.clientMessageId,
             sequence: userSequence + 1,
             role: "assistant",
-            status: "pending",
+            status: options.claimAssistant ? "streaming" : "pending",
             createdAt: userCreatedAt,
             updatedAt: userCreatedAt,
           },
@@ -280,6 +351,7 @@ export async function createChatTurnForUser(userId: string, input: CreateChatTur
         userMessage: toChatMessage(userMessage),
         assistantMessage: toChatMessage(assistantMessage),
         replayed: false,
+        generationClaimed: Boolean(options.claimAssistant),
       };
     });
   } catch (error) {
@@ -326,7 +398,11 @@ export async function failChatTurnForUser(userId: string, input: FailChatTurnInp
   }
 }
 
-export async function retryChatTurnForUser(userId: string, input: RetryChatTurnInput) {
+export async function retryChatTurnForUser(
+  userId: string,
+  input: RetryChatTurnInput,
+  options: { claimAssistant?: boolean } = {},
+) {
   try {
     return await db.transaction(async (tx) => {
       await lockOwnedNode(tx, userId, input.nodeId);
@@ -347,14 +423,14 @@ export async function retryChatTurnForUser(userId: string, input: RetryChatTurnI
       if (!userMessage || !assistantMessage) {
         throw new ChatServiceError("turn-not-found");
       }
-      if (assistantMessage.status !== "failed") {
+      if (assistantMessage.status !== "failed" && assistantMessage.status !== "cancelled") {
         throw new ChatServiceError("retry-unavailable");
       }
 
       const [retriedAssistant] = await tx
         .update(chatMessages)
         .set({
-          status: "pending",
+          status: options.claimAssistant ? "streaming" : "pending",
           content: "",
           model: null,
           providerResponseId: null,
@@ -368,9 +444,98 @@ export async function retryChatTurnForUser(userId: string, input: RetryChatTurnI
       return {
         userMessage: toChatMessage(userMessage),
         assistantMessage: toChatMessage(retriedAssistant),
+        replayed: false,
+        generationClaimed: Boolean(options.claimAssistant),
       };
     });
   } catch (error) {
     throw sanitizeChatServiceError(error);
   }
+}
+
+async function updateAssistantTurnForUser(
+  userId: string,
+  input: RetryChatTurnInput,
+  update: (
+    message: typeof chatMessages.$inferSelect,
+  ) => Partial<typeof chatMessages.$inferInsert>,
+) {
+  try {
+    return await db.transaction(async (tx) => {
+      await lockOwnedNode(tx, userId, input.nodeId);
+      const [assistantMessage] = await tx
+        .select()
+        .from(chatMessages)
+        .where(
+          and(
+            eq(chatMessages.userId, userId),
+            eq(chatMessages.nodeId, input.nodeId),
+            eq(chatMessages.clientMessageId, input.clientMessageId),
+            eq(chatMessages.role, "assistant"),
+          ),
+        )
+        .for("update");
+      if (!assistantMessage) {
+        throw new ChatServiceError("turn-not-found");
+      }
+
+      const [updated] = await tx
+        .update(chatMessages)
+        .set({ ...update(assistantMessage), updatedAt: new Date() })
+        .where(eq(chatMessages.id, assistantMessage.id))
+        .returning();
+      return toChatMessage(updated);
+    });
+  } catch (error) {
+    throw sanitizeChatServiceError(error);
+  }
+}
+
+export function appendChatTurnContentForUser(
+  userId: string,
+  input: RetryChatTurnInput & { content: string },
+) {
+  if (!input.content) {
+    throw new ChatServiceError("unavailable");
+  }
+  return updateAssistantTurnForUser(userId, input, (message) => {
+    if (message.status !== "streaming") {
+      throw new ChatServiceError("retry-unavailable");
+    }
+    const content = `${message.content}${input.content}`;
+    if (content.length > MAX_ASSISTANT_MESSAGE_LENGTH) {
+      throw new ChatServiceError("unavailable");
+    }
+    return { status: "streaming", content };
+  });
+}
+
+export function startChatTurnForUser(userId: string, input: RetryChatTurnInput) {
+  return updateAssistantTurnForUser(userId, input, (message) => {
+    if (message.status !== "pending") {
+      throw new ChatServiceError("retry-unavailable");
+    }
+    return { status: "streaming" };
+  });
+}
+
+export function completeChatTurnForUser(userId: string, input: RetryChatTurnInput) {
+  return updateAssistantTurnForUser(userId, input, (message) => {
+    if (
+      (message.status !== "pending" && message.status !== "streaming") ||
+      message.content.length === 0
+    ) {
+      throw new ChatServiceError("retry-unavailable");
+    }
+    return { status: "completed", completedAt: new Date(), failureCode: null };
+  });
+}
+
+export function cancelChatTurnForUser(userId: string, input: RetryChatTurnInput) {
+  return updateAssistantTurnForUser(userId, input, (message) => {
+    if (message.status !== "pending" && message.status !== "streaming") {
+      throw new ChatServiceError("retry-unavailable");
+    }
+    return { status: "cancelled", completedAt: null, failureCode: null };
+  });
 }

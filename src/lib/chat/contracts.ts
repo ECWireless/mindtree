@@ -37,12 +37,25 @@ export const failChatTurnInputSchema = retryChatTurnInputSchema.extend({
   failureCode: chatFailureCodeSchema,
 });
 
+export const loadChatMessagesInputSchema = z.object({
+  nodeId: z.uuid(),
+  cursor: z.string().min(1).max(128).optional(),
+});
+
 export type ChatRole = z.infer<typeof chatRoleSchema>;
 export type ChatStatus = z.infer<typeof chatStatusSchema>;
 export type ChatFailureCode = z.infer<typeof chatFailureCodeSchema>;
 export type CreateChatTurnInput = z.infer<typeof createChatTurnInputSchema>;
 export type RetryChatTurnInput = z.infer<typeof retryChatTurnInputSchema>;
 export type FailChatTurnInput = z.infer<typeof failChatTurnInputSchema>;
+export type LoadChatMessagesInput = z.infer<typeof loadChatMessagesInputSchema>;
+
+export type ChatStreamEvent =
+  | { type: "turn"; userMessage: ChatMessage; assistantMessage: ChatMessage }
+  | { type: "delta"; content: string }
+  | { type: "completed"; assistantMessage: ChatMessage }
+  | { type: "failed"; assistantMessage: ChatMessage }
+  | { type: "cancelled"; assistantMessage: ChatMessage };
 
 export type ChatMessage = {
   id: string;
