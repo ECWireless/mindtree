@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, eq, max, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, max, sql } from "drizzle-orm";
 import { DrizzleError, DrizzleQueryError } from "drizzle-orm/errors";
 
 import { db } from "@/db/client";
@@ -8,6 +8,7 @@ import { nodes, user } from "@/db/schema";
 import type {
   CreateNodeInput,
   MoveNodeInput,
+  NodeLifecycleInput,
   RenameNodeInput,
 } from "@/lib/nodes/contracts";
 import {
@@ -19,6 +20,7 @@ import {
 type NodeTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 type NodeMutationReason =
+  | "archived-parent"
   | "cycle"
   | "invalid-position"
   | "node-not-found"
@@ -61,6 +63,32 @@ function requireNode(lockedNodes: readonly FlatNode[], nodeId: string) {
     throw new NodeMutationError("node-not-found");
   }
   return node;
+}
+
+function requireActiveDestinationPath(
+  lockedNodes: readonly FlatNode[],
+  destinationParent: FlatNode,
+) {
+  const nodeById = new Map(lockedNodes.map((node) => [node.id, node]));
+  const visited = new Set<string>();
+  let current: FlatNode | undefined = destinationParent;
+
+  while (current) {
+    if (visited.has(current.id)) {
+      throw new NodeMutationError("cycle");
+    }
+    visited.add(current.id);
+    if (current.archivedAt !== null) {
+      throw new NodeMutationError("archived-parent");
+    }
+    if (current.parentId === null) {
+      return;
+    }
+    current = nodeById.get(current.parentId);
+    if (!current) {
+      throw new NodeMutationError("unavailable");
+    }
+  }
 }
 
 function getSubtreeIds(lockedNodes: readonly FlatNode[], rootId: string) {
@@ -179,8 +207,12 @@ export async function createNodeForUser(userId: string, input: CreateNodeInput) 
     return await db.transaction(async (tx) => {
       const lockedNodes = await lockOwnerNodes(tx, userId);
       const parentId = input.parentId ?? null;
-      if (parentId !== null && !lockedNodes.some((node) => node.id === parentId)) {
-        throw new NodeMutationError("parent-not-found");
+      if (parentId !== null) {
+        const parent = lockedNodes.find((node) => node.id === parentId);
+        if (!parent) {
+          throw new NodeMutationError("parent-not-found");
+        }
+        requireActiveDestinationPath(lockedNodes, parent);
       }
 
       const [positionResult] = await tx
@@ -230,11 +262,15 @@ export async function moveNodeForUser(userId: string, input: MoveNodeInput) {
     return await db.transaction(async (tx) => {
       const lockedNodes = await lockOwnerNodes(tx, userId);
       const source = requireNode(lockedNodes, input.id);
-      if (
-        input.parentId !== null &&
-        !lockedNodes.some((node) => node.id === input.parentId)
-      ) {
+      const destinationParent =
+        input.parentId === null
+          ? null
+          : lockedNodes.find((node) => node.id === input.parentId);
+      if (input.parentId !== null && !destinationParent) {
         throw new NodeMutationError("parent-not-found");
+      }
+      if (source.archivedAt === null && destinationParent) {
+        requireActiveDestinationPath(lockedNodes, destinationParent);
       }
       if (
         input.parentId !== null &&
@@ -269,6 +305,117 @@ export async function moveNodeForUser(userId: string, input: MoveNodeInput) {
       await rewriteSiblingGroup(tx, userId, reorderedDestination, input.parentId);
 
       return { ...source, parentId: input.parentId, position };
+    });
+  } catch (error) {
+    throw sanitizeNodeServiceError(error);
+  }
+}
+
+export async function archiveNodeForUser(userId: string, input: NodeLifecycleInput) {
+  try {
+    return await db.transaction(async (tx) => {
+      const lockedNodes = await lockOwnerNodes(tx, userId);
+      const target = requireNode(lockedNodes, input.id);
+      const subtreeIds = getSubtreeIds(lockedNodes, target.id);
+      const archivedAt = new Date();
+
+      await tx
+        .update(nodes)
+        .set({ archivedAt, updatedAt: archivedAt })
+        .where(
+          and(
+            eq(nodes.userId, userId),
+            inArray(nodes.id, subtreeIds),
+            isNull(nodes.archivedAt),
+          ),
+        );
+
+      return { ...target, archivedAt: target.archivedAt ?? archivedAt.toISOString() };
+    });
+  } catch (error) {
+    throw sanitizeNodeServiceError(error);
+  }
+}
+
+export async function unarchiveNodeForUser(userId: string, input: NodeLifecycleInput) {
+  try {
+    return await db.transaction(async (tx) => {
+      const lockedNodes = await lockOwnerNodes(tx, userId);
+      const target = requireNode(lockedNodes, input.id);
+      const nodeById = new Map(lockedNodes.map((node) => [node.id, node]));
+      const pathIds: string[] = [];
+      const visited = new Set<string>();
+      let current: FlatNode | undefined = target;
+
+      while (current) {
+        if (visited.has(current.id)) {
+          throw new NodeMutationError("cycle");
+        }
+        visited.add(current.id);
+        pathIds.push(current.id);
+        const parentId = current.parentId;
+        if (parentId === null) {
+          current = undefined;
+          continue;
+        }
+        current = nodeById.get(parentId);
+        if (!current) {
+          throw new NodeMutationError("unavailable");
+        }
+      }
+
+      const updatedAt = new Date();
+      await tx
+        .update(nodes)
+        .set({ archivedAt: null, updatedAt })
+        .where(
+          and(
+            eq(nodes.userId, userId),
+            inArray(nodes.id, pathIds),
+            isNotNull(nodes.archivedAt),
+          ),
+        );
+
+      return { ...target, archivedAt: null };
+    });
+  } catch (error) {
+    throw sanitizeNodeServiceError(error);
+  }
+}
+
+export async function deleteNodeForUser(userId: string, input: NodeLifecycleInput) {
+  try {
+    return await db.transaction(async (tx) => {
+      const lockedNodes = await lockOwnerNodes(tx, userId);
+      const target = requireNode(lockedNodes, input.id);
+      const subtreeIds = new Set(getSubtreeIds(lockedNodes, target.id));
+      const remainingSiblings = lockedNodes
+        .filter(
+          (node) => node.parentId === target.parentId && !subtreeIds.has(node.id),
+        )
+        .sort(
+          (left, right) =>
+            left.position - right.position || left.id.localeCompare(right.id),
+        );
+      const recoveryNodeId = target.parentId ?? (
+        remainingSiblings.find((node) => node.position > target.position)?.id ??
+        remainingSiblings.at(-1)?.id ??
+        null
+      );
+
+      await tx.execute(sql`set constraints nodes_sibling_position_unique deferred`);
+      const [deleted] = await tx
+        .delete(nodes)
+        .where(and(eq(nodes.userId, userId), eq(nodes.id, target.id)))
+        .returning({ id: nodes.id });
+
+      if (!deleted) {
+        throw new NodeMutationError("node-not-found");
+      }
+
+      await rewriteSiblingGroup(tx, userId, remainingSiblings, target.parentId);
+
+      return { nodeId: deleted.id, parentId: target.parentId, recoveryNodeId };
     });
   } catch (error) {
     throw sanitizeNodeServiceError(error);

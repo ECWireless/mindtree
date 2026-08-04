@@ -5,6 +5,7 @@ import {
   getMoveDestinations,
   getNodeDropDestination,
   getRootEndDestination,
+  getVisibleNodeRoots,
   searchNodes,
 } from "../../src/lib/nodes/presentation";
 import { assembleNodeTree, type FlatNode } from "../../src/lib/nodes/tree";
@@ -29,16 +30,57 @@ describe("node presentation", () => {
     );
   });
 
+  it("hides archived branches without changing the source tree or sibling positions", () => {
+    const visibleRoots = getVisibleNodeRoots(tree.roots, false);
+    expect(visibleRoots.map(({ id, position }) => [id, position])).toEqual([["alpha", 0]]);
+    expect(visibleRoots[0]?.children[0]?.id).toBe("child");
+    expect(tree.roots.map(({ id }) => id)).toEqual(["alpha", "beta"]);
+    expect(getVisibleNodeRoots(tree.roots, true)).toBe(tree.roots);
+  });
+
+  it("filters a deeply nested tree without recursive stack growth", () => {
+    let root: (typeof tree.roots)[number] = {
+      id: "deep-4999",
+      parentId: "deep-4998",
+      position: 0,
+      title: "Deep 4999",
+      archivedAt: "2026-01-01T00:00:00.000Z",
+      children: [],
+      breadcrumb: [],
+      depth: 4_999,
+    };
+    for (let depth = 4_998; depth >= 0; depth -= 1) {
+      root = {
+        id: `deep-${depth}`,
+        parentId: depth === 0 ? null : `deep-${depth - 1}`,
+        position: 0,
+        title: `Deep ${depth}`,
+        archivedAt: null,
+        children: [root],
+        breadcrumb: [],
+        depth,
+      };
+    }
+
+    const sourceRoots = [root];
+    const visible = getVisibleNodeRoots(sourceRoots, false);
+    expect(visible === sourceRoots).toBe(false);
+    let current = visible[0];
+    let count = 0;
+    while (current) {
+      count += 1;
+      current = current.children[0];
+    }
+    expect(count).toBe(4_999);
+  });
+
   it("excludes the moving subtree from searchable destinations", () => {
     const source = tree.byId.get("child")!;
     expect(getMoveDestinations(tree.ordered, source, "").map(({ id }) => id)).toEqual([
       "alpha",
       "beta",
-      "beta-child",
     ]);
-    expect(getMoveDestinations(tree.ordered, source, "other").map(({ id }) => id)).toEqual([
-      "beta-child",
-    ]);
+    expect(getMoveDestinations(tree.ordered, source, "other")).toEqual([]);
   });
 
   it("maps before, after, and inside drops to contiguous destination positions", () => {
@@ -58,12 +100,26 @@ describe("node presentation", () => {
       targetId: "beta",
       zone: "after",
     });
-    expect(getNodeDropDestination(tree.ordered, source, betaChild, "inside")).toEqual({
-      parentId: "beta-child",
-      position: 0,
-      targetId: "beta-child",
-      zone: "inside",
-    });
+    expect(getNodeDropDestination(tree.ordered, source, beta, "inside")).toBeNull();
+    expect(getNodeDropDestination(tree.ordered, source, betaChild, "inside")).toBeNull();
+  });
+
+  it("keeps root drop resolution valid after moving the source out of a child group", () => {
+    const movedTree = assembleNodeTree([
+      { id: "second", parentId: null, position: 0, title: "Second", archivedAt: null },
+      { id: "existing", parentId: "second", position: 0, title: "Existing", archivedAt: null },
+      { id: "first", parentId: "second", position: 1, title: "First", archivedAt: null },
+      { id: "third", parentId: null, position: 1, title: "Third", archivedAt: null },
+    ]);
+
+    expect(
+      getNodeDropDestination(
+        movedTree.ordered,
+        movedTree.byId.get("first")!,
+        movedTree.byId.get("third")!,
+        "before",
+      ),
+    ).toEqual({ parentId: null, position: 1, targetId: "third", zone: "before" });
   });
 
   it("rejects self and subtree destinations and computes root-end movement", () => {

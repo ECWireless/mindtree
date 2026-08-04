@@ -28,12 +28,20 @@ import {
   type ReactNode,
 } from "react";
 
-import { createNode, moveNode, renameNode } from "@/app/actions/nodes";
+import {
+  archiveNode,
+  createNode,
+  moveNode,
+  renameNode,
+  unarchiveNode,
+} from "@/app/actions/nodes";
+import { DeleteNodeDialog } from "@/components/delete-node-dialog";
 import { MoveNodeDialog } from "@/components/move-node-dialog";
 import { NodeTreeList } from "@/components/node-tree-list";
 import {
   createNodeDropResolver,
   formatBreadcrumb,
+  getVisibleNodeRoots,
   searchNodes,
   type NodeDropDestination,
   type NodeDropZone,
@@ -50,6 +58,8 @@ type DashboardShellProps = {
 };
 
 const pendingTreeFocusKey = "mindtree:pending-tree-focus";
+const pendingShowArchivedKey = "mindtree:pending-show-archived";
+const pendingNewRootFocusKey = "mindtree:pending-new-root-focus";
 
 function nodeHref(nodeId: string) {
   return `/?node=${encodeURIComponent(nodeId)}`;
@@ -118,6 +128,93 @@ function EyeIcon() {
     >
       <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
       <circle cx="12" cy="12" r="2.5" />
+    </svg>
+  );
+}
+
+function EyeOffIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3 3l18 18" />
+      <path d="M10.6 5.2A10.8 10.8 0 0 1 12 5c6 0 9.5 7 9.5 7a16.8 16.8 0 0 1-2.1 3" />
+      <path d="M6.1 6.1A16.5 16.5 0 0 0 2.5 12S6 19 12 19c1.6 0 3-.5 4.3-1.1" />
+    </svg>
+  );
+}
+
+function ArchiveIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <rect x="3" y="4" width="18" height="4" rx="1" />
+      <path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8" />
+      <path d="M10 12h4" />
+    </svg>
+  );
+}
+
+function UnarchiveIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M4 7v5h5" />
+      <path d="M5.6 16.5A8 8 0 1 0 6 7L4 9" />
+    </svg>
+  );
+}
+
+function MoveIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3 7.5h7l2 2h9v9H3z" />
+      <path d="m10 14 2-2 2 2M12 12v5" />
+    </svg>
+  );
+}
+
+function DeleteIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13" />
+      <path d="M10 11v5M14 11v5" />
     </svg>
   );
 }
@@ -207,6 +304,7 @@ function DraggableNodeRow({
       className={[
         "node-row",
         isSelected ? "node-row--selected" : "",
+        node.archivedAt ? "node-row--archived" : "",
         isDragging ? "node-row--dragging" : "",
         expandPending ? "node-row--drag-expand-pending" : "",
       ].filter(Boolean).join(" ")}
@@ -411,6 +509,7 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
         selectedNode?.breadcrumb.slice(0, -1).map(({ id }) => id) ?? [],
       ),
   );
+  const [showArchived, setShowArchived] = useState(selectedNode?.archivedAt != null);
   const [creatingParentId, setCreatingParentId] = useState<
     string | null | undefined
   >(undefined);
@@ -418,6 +517,10 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
   const [searchText, setSearchText] = useState("");
   const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [lifecyclePending, setLifecyclePending] = useState(false);
+  const [lifecycleError, setLifecycleError] = useState<string | null>(null);
+  const [lifecycleStatus, setLifecycleStatus] = useState("");
   const [dragPending, setDragPending] = useState(false);
   const [dragError, setDragError] = useState<string | null>(null);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
@@ -425,12 +528,19 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const createReturnFocus = useRef<HTMLElement | null>(null);
   const moveTriggerRef = useRef<HTMLButtonElement>(null);
+  const deleteTriggerRef = useRef<HTMLButtonElement>(null);
+  const newRootTriggerRef = useRef<HTMLButtonElement>(null);
+  const lifecycleRequestInFlight = useRef(false);
   const pendingTreeFocus = useRef<string | null>(null);
   const rowLinkRefs = useRef(new Map<string, HTMLAnchorElement>());
   const searchOptionRefs = useRef(new Map<number, HTMLLIElement>());
   const searchResults = useMemo(
     () => searchNodes(tree.ordered, searchText),
     [searchText, tree.ordered],
+  );
+  const visibleRoots = useMemo(
+    () => getVisibleNodeRoots(tree.roots, showArchived),
+    [showArchived, tree.roots],
   );
   const activeDragNode = activeDragId ? tree.byId.get(activeDragId) ?? null : null;
   const activeDropResolver = useMemo(
@@ -447,12 +557,47 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
       : null;
 
   useEffect(() => {
-    const nodeId = sessionStorage.getItem(pendingTreeFocusKey);
-    if (!nodeId || !tree.byId.has(nodeId)) {
+    if (selectedNode?.archivedAt === null || selectedNode?.archivedAt === undefined) {
       return;
     }
-    sessionStorage.removeItem(pendingTreeFocusKey);
-    pendingTreeFocus.current = nodeId;
+    const frame = requestAnimationFrame(() => setShowArchived(true));
+    return () => cancelAnimationFrame(frame);
+  }, [selectedNode?.archivedAt, selectedNode?.id]);
+
+  useEffect(() => {
+    let showArchivedFrame: number | null = null;
+    let newRootFocusFrame: number | null = null;
+    let newRootSettleFrame: number | null = null;
+    if (sessionStorage.getItem(pendingShowArchivedKey) === "true") {
+      showArchivedFrame = requestAnimationFrame(() => {
+        sessionStorage.removeItem(pendingShowArchivedKey);
+        setShowArchived(true);
+      });
+    }
+    const nodeId = sessionStorage.getItem(pendingTreeFocusKey);
+    if (nodeId && tree.byId.has(nodeId)) {
+      sessionStorage.removeItem(pendingTreeFocusKey);
+      pendingTreeFocus.current = nodeId;
+    }
+    if (sessionStorage.getItem(pendingNewRootFocusKey) === "true") {
+      newRootFocusFrame = requestAnimationFrame(() => {
+        newRootSettleFrame = requestAnimationFrame(() => {
+          newRootTriggerRef.current?.focus();
+          sessionStorage.removeItem(pendingNewRootFocusKey);
+        });
+      });
+    }
+    return () => {
+      if (showArchivedFrame !== null) {
+        cancelAnimationFrame(showArchivedFrame);
+      }
+      if (newRootFocusFrame !== null) {
+        cancelAnimationFrame(newRootFocusFrame);
+      }
+      if (newRootSettleFrame !== null) {
+        cancelAnimationFrame(newRootSettleFrame);
+      }
+    };
   }, [tree]);
 
   useEffect(() => {
@@ -460,15 +605,23 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
     if (!nodeId || !tree.byId.has(nodeId)) {
       return;
     }
+    let settleFrame: number | null = null;
     const frame = requestAnimationFrame(() => {
-      const target = window.matchMedia("(max-width: 760px)").matches
-        ? document.getElementById("node-detail-title")
-        : rowLinkRefs.current.get(nodeId);
-      target?.scrollIntoView({ block: "center" });
-      target?.focus();
-      pendingTreeFocus.current = null;
+      settleFrame = requestAnimationFrame(() => {
+        const target = window.matchMedia("(max-width: 760px)").matches
+          ? document.getElementById("node-detail-title")
+          : rowLinkRefs.current.get(nodeId);
+        target?.scrollIntoView({ block: "center" });
+        target?.focus();
+        pendingTreeFocus.current = null;
+      });
     });
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(frame);
+      if (settleFrame !== null) {
+        cancelAnimationFrame(settleFrame);
+      }
+    };
   }, [tree]);
 
   useEffect(() => {
@@ -534,6 +687,9 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
   }
 
   function chooseSearchResult(node: TreeNode) {
+    if (node.archivedAt !== null) {
+      setShowArchived(true);
+    }
     setSearchText("");
     setActiveSearchIndex(-1);
     setExpanded((current) => {
@@ -618,6 +774,59 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
       pendingTreeFocus.current = selectedNode.id;
     }
     router.refresh();
+  }
+
+  function deleted(recoveryNodeId: string | null) {
+    setDeleteDialogOpen(false);
+
+    if (recoveryNodeId) {
+      sessionStorage.setItem(pendingTreeFocusKey, recoveryNodeId);
+      router.push(nodeHref(recoveryNodeId));
+      return;
+    }
+    sessionStorage.setItem(pendingNewRootFocusKey, "true");
+    router.push("/");
+  }
+
+  async function changeArchiveState() {
+    if (!selectedNode || lifecycleRequestInFlight.current) {
+      return;
+    }
+    lifecycleRequestInFlight.current = true;
+    setLifecyclePending(true);
+    setLifecycleError(null);
+    setLifecycleStatus(
+      `${selectedNode.archivedAt ? "Unarchiving" : "Archiving"} ${selectedNode.title}…`,
+    );
+    setCreatingParentId(undefined);
+    setCreatingChildSurface(null);
+    try {
+      const result = selectedNode.archivedAt
+        ? await unarchiveNode({ id: selectedNode.id })
+        : await archiveNode({ id: selectedNode.id });
+      if (!result.ok) {
+        setLifecycleStatus("");
+        setLifecycleError(result.message);
+        return;
+      }
+      setLifecycleStatus(
+        `${selectedNode.title} ${selectedNode.archivedAt ? "unarchived" : "archived"}.`,
+      );
+      if (selectedNode.archivedAt === null) {
+        setShowArchived(true);
+      }
+      router.refresh();
+    } catch {
+      setLifecycleStatus("");
+      setLifecycleError(
+        selectedNode.archivedAt
+          ? "MindTree couldn’t unarchive that thought. Please try again."
+          : "MindTree couldn’t archive that thought. Please try again.",
+      );
+    } finally {
+      lifecycleRequestInFlight.current = false;
+      setLifecyclePending(false);
+    }
   }
 
   return (
@@ -735,13 +944,20 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
             className="icon-button icon-button--toggle"
             type="button"
             aria-label="Show archived"
-            aria-pressed="false"
-            data-tooltip="Show archived"
-            disabled
+            aria-pressed={showArchived}
+            data-tooltip={showArchived ? "Hide archived" : "Show archived"}
+            onClick={() => {
+              const next = !showArchived;
+              setShowArchived(next);
+              if (!next && selectedNode?.archivedAt != null) {
+                router.push("/");
+              }
+            }}
           >
-            <EyeIcon />
+            {showArchived ? <EyeOffIcon /> : <EyeIcon />}
           </button>
           <button
+            ref={newRootTriggerRef}
             className="icon-button icon-button--primary"
             type="button"
             aria-label="New root thought"
@@ -775,7 +991,29 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
       <div className={`dashboard-main${selectedNode ? " dashboard-main--detail" : ""}`}>
         <nav className="tree-pane" aria-label="Thought tree">
           <p className="pane-eyebrow">Thoughts</p>
-          {tree.roots.length > 0 ? (
+          {tree.roots.length === 0 ? (
+            <div className="tree-empty">
+              <p>No thoughts yet.</p>
+              <button
+                className="text-action"
+                type="button"
+                onClick={(event) => {
+                  createReturnFocus.current = event.currentTarget;
+                  setCreatingChildSurface(null);
+                  setCreatingParentId(null);
+                }}
+              >
+                Create the first thought
+              </button>
+            </div>
+          ) : visibleRoots.length === 0 ? (
+            <div className="tree-empty">
+              <p>No active thoughts.</p>
+              <button className="text-action" type="button" onClick={() => setShowArchived(true)}>
+                Show archived thoughts
+              </button>
+            </div>
+          ) : (
             <>
               {dragPending ? <p className="tree-move-status" role="status">Moving thought…</p> : null}
               {dragError ? <p className="tree-move-error" role="alert">{dragError}</p> : null}
@@ -795,7 +1033,7 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
                 }}
               >
                 <NodeTreeList
-                  roots={tree.roots}
+                  roots={visibleRoots}
                   expanded={expanded}
                   renderNode={(node, depth) => {
                     const visualDepth = Math.min(depth, 12);
@@ -843,15 +1081,19 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
                         <span>{node.title}</span>
                         <small>{node.archivedAt ? "Archived" : "No synthesis yet"}</small>
                       </Link>
-                      <button
-                        className="add-child-button icon-button"
-                        type="button"
-                        aria-label={`Add child to ${node.title}`}
-                        data-tooltip={`Add child to ${node.title}`}
-                        onClick={(event) => beginChild(node, event.currentTarget)}
-                      >
-                        <PlusIcon />
-                      </button>
+                      {node.archivedAt === null ? (
+                        <button
+                          className="add-child-button icon-button"
+                          type="button"
+                          aria-label={`Add child to ${node.title}`}
+                          data-tooltip={`Add child to ${node.title}`}
+                          onClick={(event) => beginChild(node, event.currentTarget)}
+                        >
+                          <PlusIcon />
+                        </button>
+                      ) : (
+                        <span className="add-child-button" aria-hidden="true" />
+                      )}
                         </DraggableNodeRow>
                         {creatingParentId === node.id && creatingChildSurface === "tree" ? (
                           <div
@@ -880,28 +1122,21 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
                 </DragOverlay>
               </DndContext>
             </>
-          ) : (
-            <div className="tree-empty">
-              <p>No thoughts yet.</p>
-              <button
-                className="text-action"
-                type="button"
-                onClick={(event) => {
-                  createReturnFocus.current = event.currentTarget;
-                  setCreatingChildSurface(null);
-                  setCreatingParentId(null);
-                }}
-              >
-                Create the first thought
-              </button>
-            </div>
           )}
         </nav>
 
         <section className="detail-pane" aria-labelledby={selectedNode ? "node-detail-title" : "detail-empty-title"}>
           {selectedNode ? (
             <>
-              <Link className="mobile-back" href="/">
+              <Link
+                className="mobile-back"
+                href="/"
+                onClick={() => {
+                  if (showArchived) {
+                    sessionStorage.setItem(pendingShowArchivedKey, "true");
+                  }
+                }}
+              >
                 <span aria-hidden="true">←</span> Back to thoughts
               </Link>
               <nav className="breadcrumbs" aria-label="Breadcrumb">
@@ -922,27 +1157,66 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
                 node={selectedNode}
                 onSaved={() => router.refresh()}
               />
-              <div className="detail-actions">
+              <p className="node-status-line">
+                {selectedNode.archivedAt ? "Archived" : "Active"}
+              </p>
+              <div className="node-actions" aria-label="Thought actions">
+                {selectedNode.archivedAt === null ? (
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label="Add child"
+                    data-tooltip="Add child"
+                    onClick={(event) => beginChild(
+                      selectedNode,
+                      event.currentTarget,
+                      window.matchMedia("(max-width: 760px)").matches ? "detail" : "tree",
+                    )}
+                  >
+                    <PlusIcon />
+                  </button>
+                ) : null}
                 <button
-                  className="button button--quiet"
+                  className="icon-button"
                   type="button"
-                  onClick={(event) => beginChild(
-                    selectedNode,
-                    event.currentTarget,
-                    window.matchMedia("(max-width: 760px)").matches ? "detail" : "tree",
-                  )}
+                  aria-label={
+                    lifecyclePending
+                      ? "Saving archive state"
+                      : selectedNode.archivedAt
+                        ? "Unarchive"
+                        : "Archive"
+                  }
+                  data-tooltip={selectedNode.archivedAt ? "Unarchive thought" : "Archive thought"}
+                  disabled={lifecyclePending}
+                  onClick={() => void changeArchiveState()}
                 >
-                  Add child
+                  {selectedNode.archivedAt ? <UnarchiveIcon /> : <ArchiveIcon />}
                 </button>
                 <button
                   ref={moveTriggerRef}
-                  className="button button--quiet"
+                  className="icon-button"
                   type="button"
+                  aria-label="Move To…"
+                  data-tooltip="Move To…"
                   onClick={() => setMoveDialogOpen(true)}
                 >
-                  Move to…
+                  <MoveIcon />
+                </button>
+                <button
+                  ref={deleteTriggerRef}
+                  className="icon-button icon-button--danger"
+                  type="button"
+                  aria-label="Delete"
+                  data-tooltip="Delete thought"
+                  onClick={() => setDeleteDialogOpen(true)}
+                >
+                  <DeleteIcon />
                 </button>
               </div>
+              <p className="sr-only" role="status" aria-live="polite">
+                {lifecycleStatus}
+              </p>
+              {lifecycleError ? <p role="alert">{lifecycleError}</p> : null}
               {creatingParentId === selectedNode.id && creatingChildSurface === "detail" ? (
                 <NodeCreateForm
                   parentId={selectedNode.id}
@@ -984,6 +1258,14 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
           onClose={() => setMoveDialogOpen(false)}
           onMoved={moved}
           returnFocusRef={moveTriggerRef}
+        />
+      ) : null}
+      {selectedNode && deleteDialogOpen ? (
+        <DeleteNodeDialog
+          node={selectedNode}
+          onClose={() => setDeleteDialogOpen(false)}
+          onDeleted={deleted}
+          returnFocusRef={deleteTriggerRef}
         />
       ) : null}
     </main>

@@ -13,6 +13,10 @@ const pool = new Pool({ connectionString });
 const userIds = new Set<string>();
 
 let createNodeForUser: typeof import("../../src/lib/server/node-service").createNodeForUser;
+let deleteNodeForUser: typeof import("../../src/lib/server/node-service").deleteNodeForUser;
+let archiveNodeForUser: typeof import(
+  "../../src/lib/server/node-service"
+).archiveNodeForUser;
 let getNodeTreeForUser: typeof import(
   "../../src/lib/server/node-service"
 ).getNodeTreeForUser;
@@ -21,6 +25,9 @@ let NodeMutationError: typeof import("../../src/lib/server/node-service").NodeMu
 let renameNodeForUser: typeof import(
   "../../src/lib/server/node-service"
 ).renameNodeForUser;
+let unarchiveNodeForUser: typeof import(
+  "../../src/lib/server/node-service"
+).unarchiveNodeForUser;
 
 async function insertUser() {
   const userId = `node-user-${randomUUID()}`;
@@ -47,11 +54,14 @@ async function siblingPositions(userId: string, parentId: string | null) {
 describe("owner-scoped node service", () => {
   beforeAll(async () => {
     ({
+      archiveNodeForUser,
       createNodeForUser,
+      deleteNodeForUser,
       getNodeTreeForUser,
       moveNodeForUser,
       NodeMutationError,
       renameNodeForUser,
+      unarchiveNodeForUser,
     } = await import("../../src/lib/server/node-service"));
   });
 
@@ -204,5 +214,185 @@ describe("owner-scoped node service", () => {
     expect((await siblingPositions(userId, null)).map(({ id }) => id)).toEqual(
       expect.arrayContaining([third.id, destination.id]),
     );
+  });
+
+  it("archives active subtree nodes while preserving earlier archive timestamps", async () => {
+    const userId = await insertUser();
+    const root = await createNodeForUser(userId, { title: "Root" });
+    const child = await createNodeForUser(userId, { title: "Child", parentId: root.id });
+    const grandchild = await createNodeForUser(userId, {
+      title: "Grandchild",
+      parentId: child.id,
+    });
+    const earlierArchive = new Date("2026-07-01T12:00:00.000Z");
+    await pool.query(`update nodes set archived_at = $1 where id = $2`, [
+      earlierArchive,
+      grandchild.id,
+    ]);
+
+    await archiveNodeForUser(userId, { id: root.id });
+
+    const result = await pool.query<{ id: string; archived_at: Date | null }>(
+      `select id, archived_at from nodes where user_id = $1 order by id`,
+      [userId],
+    );
+    const archivedAtById = new Map(
+      result.rows.map((row) => [row.id, row.archived_at?.toISOString() ?? null]),
+    );
+    expect(archivedAtById.get(root.id)).not.toBeNull();
+    expect(archivedAtById.get(child.id)).toBe(archivedAtById.get(root.id));
+    expect(archivedAtById.get(grandchild.id)).toBe(earlierArchive.toISOString());
+  });
+
+  it("unarchives only the selected node and its archived ancestor path", async () => {
+    const userId = await insertUser();
+    const root = await createNodeForUser(userId, { title: "Root" });
+    const child = await createNodeForUser(userId, { title: "Child", parentId: root.id });
+    const grandchild = await createNodeForUser(userId, {
+      title: "Grandchild",
+      parentId: child.id,
+    });
+    await archiveNodeForUser(userId, { id: root.id });
+
+    await unarchiveNodeForUser(userId, { id: child.id });
+
+    const tree = await getNodeTreeForUser(userId);
+    expect(tree.byId.get(root.id)?.archivedAt).toBeNull();
+    expect(tree.byId.get(child.id)?.archivedAt).toBeNull();
+    expect(tree.byId.get(grandchild.id)?.archivedAt).not.toBeNull();
+  });
+
+  it("rejects active creation or movement anywhere beneath an archived ancestor", async () => {
+    const userId = await insertUser();
+    const archivedRoot = await createNodeForUser(userId, { title: "Archived root" });
+    const archivedChild = await createNodeForUser(userId, {
+      title: "Archived child",
+      parentId: archivedRoot.id,
+    });
+    const activeSource = await createNodeForUser(userId, { title: "Active source" });
+    await archiveNodeForUser(userId, { id: archivedRoot.id });
+    await pool.query(`update nodes set archived_at = null where id = $1`, [archivedChild.id]);
+
+    await expect(
+      createNodeForUser(userId, { title: "Blocked", parentId: archivedChild.id }),
+    ).rejects.toEqual(new NodeMutationError("archived-parent"));
+    await expect(
+      moveNodeForUser(userId, { id: activeSource.id, parentId: archivedChild.id }),
+    ).rejects.toEqual(new NodeMutationError("archived-parent"));
+
+    await archiveNodeForUser(userId, { id: archivedChild.id });
+    await expect(
+      moveNodeForUser(userId, { id: archivedChild.id, parentId: activeSource.id }),
+    ).resolves.toMatchObject({ parentId: activeSource.id, archivedAt: expect.any(String) });
+  });
+
+  it("serializes archive with movement without leaving active nodes under an archive", async () => {
+    const userId = await insertUser();
+    const destination = await createNodeForUser(userId, { title: "Destination" });
+    const source = await createNodeForUser(userId, { title: "Source" });
+
+    const [archiveResult, moveResult] = await Promise.allSettled([
+      archiveNodeForUser(userId, { id: destination.id }),
+      moveNodeForUser(userId, { id: source.id, parentId: destination.id }),
+    ]);
+
+    expect(archiveResult.status).toBe("fulfilled");
+    if (moveResult.status === "rejected") {
+      expect(moveResult.reason).toEqual(new NodeMutationError("archived-parent"));
+    }
+    const tree = await getNodeTreeForUser(userId);
+    const storedSource = tree.byId.get(source.id);
+    if (storedSource?.parentId === destination.id) {
+      expect(storedSource.archivedAt).not.toBeNull();
+    }
+  });
+
+  it("does not distinguish foreign archive lifecycle targets from missing nodes", async () => {
+    const userId = await insertUser();
+    const otherUserId = await insertUser();
+    const foreign = await createNodeForUser(otherUserId, { title: "Foreign" });
+    const missingNodeId = randomUUID();
+
+    await expect(archiveNodeForUser(userId, { id: foreign.id })).rejects.toEqual(
+      new NodeMutationError("node-not-found"),
+    );
+    await expect(archiveNodeForUser(userId, { id: missingNodeId })).rejects.toEqual(
+      new NodeMutationError("node-not-found"),
+    );
+    await expect(unarchiveNodeForUser(userId, { id: foreign.id })).rejects.toEqual(
+      new NodeMutationError("node-not-found"),
+    );
+  });
+
+  it("permanently deletes only the owned subtree and closes its sibling gap", async () => {
+    const userId = await insertUser();
+    const otherUserId = await insertUser();
+    const first = await createNodeForUser(userId, { title: "First" });
+    const doomed = await createNodeForUser(userId, { title: "Doomed" });
+    const third = await createNodeForUser(userId, { title: "Third" });
+    const child = await createNodeForUser(userId, {
+      title: "Doomed child",
+      parentId: doomed.id,
+    });
+    const grandchild = await createNodeForUser(userId, {
+      title: "Doomed grandchild",
+      parentId: child.id,
+    });
+
+    await expect(deleteNodeForUser(otherUserId, { id: doomed.id })).rejects.toEqual(
+      new NodeMutationError("node-not-found"),
+    );
+    await expect(deleteNodeForUser(userId, { id: doomed.id })).resolves.toEqual({
+      nodeId: doomed.id,
+      parentId: null,
+      recoveryNodeId: third.id,
+    });
+
+    expect(await siblingPositions(userId, null)).toEqual([
+      { id: first.id, position: 0 },
+      { id: third.id, position: 1 },
+    ]);
+    const deletedRows = await pool.query<{ id: string }>(
+      `select id from nodes where id = any($1::uuid[])`,
+      [[doomed.id, child.id, grandchild.id]],
+    );
+    expect(deletedRows.rows).toEqual([]);
+  });
+
+  it("serializes subtree deletion with movement without partial trees or order gaps", async () => {
+    const userId = await insertUser();
+    const doomed = await createNodeForUser(userId, { title: "Doomed root" });
+    const child = await createNodeForUser(userId, {
+      title: "Movable child",
+      parentId: doomed.id,
+    });
+    const destination = await createNodeForUser(userId, { title: "Destination" });
+    const survivor = await createNodeForUser(userId, { title: "Survivor" });
+
+    const [deleteResult, moveResult] = await Promise.allSettled([
+      deleteNodeForUser(userId, { id: doomed.id }),
+      moveNodeForUser(userId, { id: child.id, parentId: destination.id }),
+    ]);
+
+    expect(deleteResult).toEqual({
+      status: "fulfilled",
+      value: {
+        nodeId: doomed.id,
+        parentId: null,
+        recoveryNodeId: destination.id,
+      },
+    });
+    const tree = await getNodeTreeForUser(userId);
+    expect(tree.byId.has(doomed.id)).toBe(false);
+    if (moveResult.status === "fulfilled") {
+      expect(tree.byId.get(child.id)?.parentId).toBe(destination.id);
+    } else {
+      expect(moveResult.reason).toEqual(new NodeMutationError("node-not-found"));
+      expect(tree.byId.has(child.id)).toBe(false);
+    }
+    expect(await siblingPositions(userId, null)).toEqual([
+      { id: destination.id, position: 0 },
+      { id: survivor.id, position: 1 },
+    ]);
   });
 });

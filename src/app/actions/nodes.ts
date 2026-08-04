@@ -7,14 +7,18 @@ import type {
   CreateNodeInput,
   MoveNodeInput,
   NodeActionResult,
+  NodeLifecycleInput,
   RenameNodeInput,
 } from "@/lib/nodes/contracts";
 import { requireAuthorizedSession } from "@/lib/server/authorization";
 import {
+  archiveNodeForUser,
   createNodeForUser,
+  deleteNodeForUser,
   moveNodeForUser,
   NodeMutationError,
   renameNodeForUser,
+  unarchiveNodeForUser,
 } from "@/lib/server/node-service";
 
 const titleSchema = z
@@ -39,6 +43,10 @@ const moveNodeSchema = z.object({
   position: z.int().min(0).optional(),
 });
 
+const nodeLifecycleSchema = z.object({
+  id: z.uuid(),
+});
+
 function validationFailure(error: z.ZodError): NodeActionResult {
   const fieldErrors: Record<string, string[]> = {};
   for (const issue of error.issues) {
@@ -51,6 +59,11 @@ function validationFailure(error: z.ZodError): NodeActionResult {
 function mutationFailure(error: unknown): NodeActionResult {
   if (error instanceof NodeMutationError) {
     switch (error.reason) {
+      case "archived-parent":
+        return {
+          ok: false,
+          message: "Unarchive that destination before placing an active thought there.",
+        };
       case "cycle":
         return { ok: false, message: "A node cannot be moved inside its own subtree." };
       case "invalid-position":
@@ -111,6 +124,58 @@ export async function moveNode(input: MoveNodeInput): Promise<NodeActionResult> 
     const moved = await moveNodeForUser(session.user.id, parsed.data);
     revalidatePath("/");
     return { ok: true, nodeId: moved.id };
+  } catch (error) {
+    return mutationFailure(error);
+  }
+}
+
+export async function archiveNode(input: NodeLifecycleInput): Promise<NodeActionResult> {
+  const session = await requireAuthorizedSession();
+  const parsed = nodeLifecycleSchema.safeParse(input);
+  if (!parsed.success) {
+    return validationFailure(parsed.error);
+  }
+
+  try {
+    const archived = await archiveNodeForUser(session.user.id, parsed.data);
+    revalidatePath("/");
+    return { ok: true, nodeId: archived.id };
+  } catch (error) {
+    return mutationFailure(error);
+  }
+}
+
+export async function unarchiveNode(input: NodeLifecycleInput): Promise<NodeActionResult> {
+  const session = await requireAuthorizedSession();
+  const parsed = nodeLifecycleSchema.safeParse(input);
+  if (!parsed.success) {
+    return validationFailure(parsed.error);
+  }
+
+  try {
+    const unarchived = await unarchiveNodeForUser(session.user.id, parsed.data);
+    revalidatePath("/");
+    return { ok: true, nodeId: unarchived.id };
+  } catch (error) {
+    return mutationFailure(error);
+  }
+}
+
+export async function deleteNode(input: NodeLifecycleInput): Promise<NodeActionResult> {
+  const session = await requireAuthorizedSession();
+  const parsed = nodeLifecycleSchema.safeParse(input);
+  if (!parsed.success) {
+    return validationFailure(parsed.error);
+  }
+
+  try {
+    const deleted = await deleteNodeForUser(session.user.id, parsed.data);
+    revalidatePath("/");
+    return {
+      ok: true,
+      nodeId: deleted.nodeId,
+      recoveryNodeId: deleted.recoveryNodeId,
+    };
   } catch (error) {
     return mutationFailure(error);
   }
