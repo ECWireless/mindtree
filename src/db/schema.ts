@@ -122,7 +122,7 @@ export const chatMessages = pgTable(
     userId: text("user_id").notNull(),
     nodeId: uuid("node_id").notNull(),
     clientMessageId: uuid("client_message_id").notNull(),
-    sequence: bigint("sequence", { mode: "number" }).notNull(),
+    sequence: bigint("sequence", { mode: "bigint" }).notNull(),
     role: varchar("role", { length: 16, enum: ["user", "assistant"] }).notNull(),
     status: varchar("status", {
       length: 16,

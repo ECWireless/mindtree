@@ -312,12 +312,27 @@ describe("persistent chat ledger", () => {
     await expect(
       getChatMessagesForUser(userId, { nodeId, cursor: "not-a-cursor" }),
     ).rejects.toEqual(new ChatServiceError("invalid-cursor"));
+    const validCursor = firstPage.nextCursor;
+    expect(validCursor).not.toBeNull();
+    await expect(
+      getChatMessagesForUser(userId, { nodeId, cursor: `${validCursor}$` }),
+    ).rejects.toEqual(new ChatServiceError("invalid-cursor"));
+    await expect(
+      getChatMessagesForUser(userId, { nodeId, cursor: `${validCursor}===` }),
+    ).rejects.toEqual(new ChatServiceError("invalid-cursor"));
     const malformedSequenceCursor = Buffer.from(
       JSON.stringify({ sequence: -1 }),
       "utf8",
     ).toString("base64url");
     await expect(
       getChatMessagesForUser(userId, { nodeId, cursor: malformedSequenceCursor }),
+    ).rejects.toEqual(new ChatServiceError("invalid-cursor"));
+    const outOfRangeSequenceCursor = Buffer.from(
+      JSON.stringify({ sequence: "9223372036854775808" }),
+      "utf8",
+    ).toString("base64url");
+    await expect(
+      getChatMessagesForUser(userId, { nodeId, cursor: outOfRangeSequenceCursor }),
     ).rejects.toEqual(new ChatServiceError("invalid-cursor"));
     await expect(
       getChatMessagesForUser(userId, { nodeId, cursor: "x".repeat(129) }),
@@ -360,6 +375,62 @@ describe("persistent chat ledger", () => {
         stored.rows[index + 1]?.client_message_id,
       );
     }
+  });
+
+  it("preserves pagination and allocation above the safe integer range", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId, "High sequence chat");
+    const existingClientMessageId = randomUUID();
+    const createdAt = new Date();
+    await pool.query(
+      `insert into chat_messages
+         (user_id, node_id, client_message_id, sequence, role, status, content,
+          web_search_authorized, created_at, updated_at, completed_at)
+       values
+         ($1, $2, $3, $4, 'user', 'completed', 'High user message', false, $6, $6, $6),
+         ($1, $2, $3, $5, 'assistant', 'completed', 'High assistant message', false, $6, $6, $6)`,
+      [
+        userId,
+        nodeId,
+        existingClientMessageId,
+        "9007199254740992",
+        "9007199254740993",
+        createdAt,
+      ],
+    );
+
+    const firstPage = await getChatMessagesForUser(userId, { nodeId, limit: 1 });
+    expect(firstPage.messages).toMatchObject([
+      { role: "assistant", content: "High assistant message" },
+    ]);
+    expect(firstPage.nextCursor).not.toBeNull();
+    const secondPage = await getChatMessagesForUser(userId, {
+      nodeId,
+      limit: 1,
+      cursor: firstPage.nextCursor ?? undefined,
+    });
+    expect(secondPage.messages).toMatchObject([
+      { role: "user", content: "High user message" },
+    ]);
+
+    const nextClientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: nextClientMessageId,
+      content: "Continue exactly",
+      webSearchAuthorized: false,
+    });
+    const stored = await pool.query<{ sequence: string }>(
+      `select sequence::text
+       from chat_messages
+       where user_id = $1 and node_id = $2 and client_message_id = $3
+       order by sequence`,
+      [userId, nodeId, nextClientMessageId],
+    );
+    expect(stored.rows.map(({ sequence }) => sequence)).toEqual([
+      "9007199254740994",
+      "9007199254740995",
+    ]);
   });
 
   it("retries a failed assistant placeholder without duplicating the user turn", async () => {

@@ -28,10 +28,14 @@ type ChatServiceReason =
   | "unavailable";
 
 type ChatCursor = {
-  sequence: number;
+  sequence: bigint;
 };
 
 const MAX_ENCODED_CURSOR_LENGTH = 128;
+const BIGINT_NEGATIVE_ONE = BigInt(-1);
+const BIGINT_ONE = BigInt(1);
+const BIGINT_TWO = BigInt(2);
+const POSTGRES_BIGINT_MAX = BigInt("9223372036854775807");
 export const CHAT_STALE_AFTER_MS = 5 * 60 * 1_000;
 
 export class ChatServiceError extends Error {
@@ -61,7 +65,7 @@ function toChatMessage(row: typeof chatMessages.$inferSelect): ChatMessage {
 
 function encodeCursor(cursor: ChatCursor) {
   return Buffer.from(
-    JSON.stringify({ sequence: cursor.sequence }),
+    JSON.stringify({ sequence: cursor.sequence.toString() }),
     "utf8",
   ).toString("base64url");
 }
@@ -71,19 +75,26 @@ function decodeCursor(value: string): ChatCursor {
     throw new ChatServiceError("invalid-cursor");
   }
   try {
-    const parsed: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    const decoded = Buffer.from(value, "base64url");
+    if (decoded.toString("base64url") !== value) {
+      throw new Error("invalid cursor encoding");
+    }
+    const parsed: unknown = JSON.parse(decoded.toString("utf8"));
     if (typeof parsed !== "object" || parsed === null) {
       throw new Error("invalid cursor payload");
     }
     const sequence = "sequence" in parsed ? parsed.sequence : undefined;
     if (
-      typeof sequence !== "number" ||
-      !Number.isSafeInteger(sequence) ||
-      sequence < 0
+      typeof sequence !== "string" ||
+      !/^(0|[1-9]\d*)$/.test(sequence)
     ) {
       throw new Error("invalid cursor values");
     }
-    return { sequence };
+    const parsedSequence = BigInt(sequence);
+    if (parsedSequence > POSTGRES_BIGINT_MAX) {
+      throw new Error("invalid cursor values");
+    }
+    return { sequence: parsedSequence };
   } catch {
     throw new ChatServiceError("invalid-cursor");
   }
@@ -312,7 +323,11 @@ export async function createChatTurnForUser(
             eq(chatMessages.nodeId, input.nodeId),
           ),
         );
-      const userSequence = (sequenceResult?.value ?? -1) + 1;
+      const currentSequence = sequenceResult?.value ?? BIGINT_NEGATIVE_ONE;
+      if (currentSequence > POSTGRES_BIGINT_MAX - BIGINT_TWO) {
+        throw new ChatServiceError("unavailable");
+      }
+      const userSequence = currentSequence + BIGINT_ONE;
       const createdMessages = await tx
         .insert(chatMessages)
         .values([
@@ -333,7 +348,7 @@ export async function createChatTurnForUser(
             userId,
             nodeId: input.nodeId,
             clientMessageId: input.clientMessageId,
-            sequence: userSequence + 1,
+            sequence: userSequence + BIGINT_ONE,
             role: "assistant",
             status: options.claimAssistant ? "streaming" : "pending",
             createdAt: userCreatedAt,

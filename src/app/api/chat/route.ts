@@ -3,6 +3,7 @@ import {
   retryChatTurnInputSchema,
   type ChatMessage,
   type ChatStreamEvent,
+  type RetryChatTurnInput,
 } from "@/lib/chat/contracts";
 import { requireAuthorizedSession } from "@/lib/server/authorization";
 import {
@@ -56,10 +57,14 @@ async function readBoundedJson(request: Request): Promise<unknown> {
 function terminalResponse(turn: {
   userMessage: ChatMessage;
   assistantMessage: ChatMessage;
-}) {
+}): Response | null {
+  const status = turn.assistantMessage.status;
+  if (status !== "completed" && status !== "failed" && status !== "cancelled") {
+    return null;
+  }
   const events: ChatStreamEvent[] = [
     { type: "turn", userMessage: turn.userMessage, assistantMessage: turn.assistantMessage },
-    { type: turn.assistantMessage.status as "completed" | "failed" | "cancelled", assistantMessage: turn.assistantMessage },
+    { type: status, assistantMessage: turn.assistantMessage },
   ];
   return new Response(events.map((value) => JSON.stringify(value)).join("\n") + "\n", {
     headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" },
@@ -87,30 +92,36 @@ export async function POST(request: Request) {
     }
     return jsonError(400, "The message could not be read.");
   }
-  const retry = typeof body === "object" && body !== null && "retry" in body && body.retry === true;
-  const parsed = retry
-    ? retryChatTurnInputSchema.safeParse(body)
-    : createChatTurnInputSchema.safeParse(body);
-  if (!parsed.success) {
-    return jsonError(400, "The message is invalid.");
-  }
-
+  const retryRequested =
+    typeof body === "object" && body !== null && "retry" in body && body.retry === true;
   const userId = session.user.id;
-  const input = parsed.data;
-  let turn;
+  let turn: Awaited<ReturnType<typeof createChatTurnForUser>>;
+  let input: RetryChatTurnInput;
   try {
-    turn = retry
-      ? await retryChatTurnForUser(userId, input, { claimAssistant: true })
-      : await createChatTurnForUser(userId, parsed.data as never, { claimAssistant: true });
+    if (retryRequested) {
+      const parsed = retryChatTurnInputSchema.safeParse(body);
+      if (!parsed.success) {
+        return jsonError(400, "The message is invalid.");
+      }
+      input = parsed.data;
+      turn = await retryChatTurnForUser(userId, input, { claimAssistant: true });
+    } else {
+      const parsed = createChatTurnInputSchema.safeParse(body);
+      if (!parsed.success) {
+        return jsonError(400, "The message is invalid.");
+      }
+      input = {
+        nodeId: parsed.data.nodeId,
+        clientMessageId: parsed.data.clientMessageId,
+      };
+      turn = await createChatTurnForUser(userId, parsed.data, { claimAssistant: true });
+    }
   } catch {
     return jsonError(409, "The message could not be started.");
   }
 
   if (!turn.generationClaimed) {
-    if (["completed", "failed", "cancelled"].includes(turn.assistantMessage.status)) {
-      return terminalResponse(turn);
-    }
-    return jsonError(409, "The message is already in progress.");
+    return terminalResponse(turn) ?? jsonError(409, "The message is already in progress.");
   }
 
   const encoder = new TextEncoder();
