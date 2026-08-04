@@ -1,0 +1,66 @@
+import { z } from "zod";
+
+export const CHAT_PAGE_SIZE = 50;
+export const MAX_USER_MESSAGE_LENGTH = 16_000;
+export const MAX_ASSISTANT_MESSAGE_LENGTH = 64_000;
+
+export const chatRoleSchema = z.enum(["user", "assistant"]);
+export const chatStatusSchema = z.enum([
+  "pending",
+  "streaming",
+  "completed",
+  "failed",
+  "cancelled",
+]);
+export const chatFailureCodeSchema = z.enum([
+  "assistant-unavailable",
+  "generation-failed",
+  "provider-refusal",
+  "provider-timeout",
+  "response-invalid",
+  "stream-disconnected",
+]);
+
+export const createChatTurnInputSchema = z.object({
+  nodeId: z.uuid(),
+  clientMessageId: z.uuid(),
+  content: z.string().trim().min(1).max(MAX_USER_MESSAGE_LENGTH),
+  webSearchAuthorized: z.boolean().default(false),
+});
+
+export const retryChatTurnInputSchema = z.object({
+  nodeId: z.uuid(),
+  clientMessageId: z.uuid(),
+});
+
+export const failChatTurnInputSchema = retryChatTurnInputSchema.extend({
+  failureCode: chatFailureCodeSchema,
+});
+
+export type ChatRole = z.infer<typeof chatRoleSchema>;
+export type ChatStatus = z.infer<typeof chatStatusSchema>;
+export type ChatFailureCode = z.infer<typeof chatFailureCodeSchema>;
+export type CreateChatTurnInput = z.infer<typeof createChatTurnInputSchema>;
+export type RetryChatTurnInput = z.infer<typeof retryChatTurnInputSchema>;
+export type FailChatTurnInput = z.infer<typeof failChatTurnInputSchema>;
+
+export type ChatMessage = {
+  id: string;
+  nodeId: string;
+  clientMessageId: string;
+  role: ChatRole;
+  status: ChatStatus;
+  content: string;
+  model: string | null;
+  providerResponseId: string | null;
+  failureCode: string | null;
+  webSearchAuthorized: boolean;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+};
+
+export type ChatMessagePage = {
+  messages: ChatMessage[];
+  nextCursor: string | null;
+};

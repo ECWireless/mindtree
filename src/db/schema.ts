@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   boolean,
+  bigint,
   check,
   foreignKey,
   index,
@@ -114,6 +115,106 @@ export const nodes = pgTable(
   ],
 );
 
+export const chatMessages = pgTable(
+  "chat_messages",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id").notNull(),
+    nodeId: uuid("node_id").notNull(),
+    clientMessageId: uuid("client_message_id").notNull(),
+    sequence: bigint("sequence", { mode: "number" }).notNull(),
+    role: varchar("role", { length: 16, enum: ["user", "assistant"] }).notNull(),
+    status: varchar("status", {
+      length: 16,
+      enum: ["pending", "streaming", "completed", "failed", "cancelled"],
+    }).notNull(),
+    content: text("content").default("").notNull(),
+    model: varchar("model", { length: 100 }),
+    providerResponseId: varchar("provider_response_id", { length: 255 }),
+    failureCode: varchar("failure_code", { length: 64 }),
+    webSearchAuthorized: boolean("web_search_authorized").default(false).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    unique("chat_messages_turn_role_unique").on(
+      table.userId,
+      table.nodeId,
+      table.clientMessageId,
+      table.role,
+    ),
+    foreignKey({
+      name: "chat_messages_node_owner_fk",
+      columns: [table.userId, table.nodeId],
+      foreignColumns: [nodes.userId, nodes.id],
+    }).onDelete("cascade"),
+    unique("chat_messages_node_sequence_unique").on(
+      table.userId,
+      table.nodeId,
+      table.sequence,
+    ),
+    check("chat_messages_role_check", sql`${table.role} in ('user', 'assistant')`),
+    check(
+      "chat_messages_status_check",
+      sql`${table.status} in ('pending', 'streaming', 'completed', 'failed', 'cancelled')`,
+    ),
+    check(
+      "chat_messages_role_state_check",
+      sql`(
+        ${table.role} = 'user'
+        and ${table.status} = 'completed'
+        and ${table.completedAt} is not null
+        and ${table.model} is null
+        and ${table.providerResponseId} is null
+        and ${table.failureCode} is null
+      ) or (
+        ${table.role} = 'assistant'
+        and ${table.webSearchAuthorized} = false
+      )`,
+    ),
+    check(
+      "chat_messages_completion_check",
+      sql`(
+        ${table.status} = 'completed'
+        and ${table.completedAt} is not null
+        and ${table.failureCode} is null
+      ) or (
+        ${table.status} = 'failed'
+        and ${table.completedAt} is null
+        and ${table.failureCode} is not null
+      ) or (
+        ${table.status} in ('pending', 'streaming', 'cancelled')
+        and ${table.completedAt} is null
+        and ${table.failureCode} is null
+      )`,
+    ),
+    check(
+      "chat_messages_failure_code_check",
+      sql`${table.failureCode} is null or ${table.failureCode} in (
+        'assistant-unavailable',
+        'generation-failed',
+        'provider-refusal',
+        'provider-timeout',
+        'response-invalid',
+        'stream-disconnected'
+      )`,
+    ),
+    check(
+      "chat_messages_content_length_check",
+      sql`(
+        ${table.role} = 'user'
+        and char_length(${table.content}) between 1 and 16000
+        and btrim(${table.content}) <> ''
+      ) or (
+        ${table.role} = 'assistant'
+        and char_length(${table.content}) <= 64000
+        and (${table.status} <> 'completed' or char_length(${table.content}) >= 1)
+      )`,
+    ),
+  ],
+);
+
 export const authSchema = {
   user,
   session,
@@ -124,4 +225,5 @@ export const authSchema = {
 export const schema = {
   ...authSchema,
   nodes,
+  chatMessages,
 };
