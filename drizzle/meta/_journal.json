@@ -15,6 +15,20 @@
       "when": 1785778134116,
       "tag": "0001_great_giant_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785855711765,
+      "tag": "0002_giant_sentinels",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785856767458,
+      "tag": "0003_flippant_vivisector",
+      "breakpoints": true
     }
   ]
 }

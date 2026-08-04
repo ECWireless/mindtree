@@ -30,11 +30,171 @@ describe("initial authentication schema", () => {
 
     expect(result.rows.map((row) => row.tablename)).toEqual([
       "account",
+      "chat_messages",
       "nodes",
       "session",
       "user",
       "verification",
     ]);
+  });
+
+  it("defines the owner-scoped persistent chat ledger constraints", async () => {
+    const constraints = await client.query<{
+      conname: string;
+      definition: string;
+    }>(
+      `select conname, pg_get_constraintdef(oid) as definition
+       from pg_constraint
+       where conname like 'chat_messages_%'
+       order by conname`,
+    );
+
+    expect(constraints.rows.map(({ conname }) => conname)).toEqual([
+      "chat_messages_completion_check",
+      "chat_messages_content_length_check",
+      "chat_messages_failure_code_check",
+      "chat_messages_node_owner_fk",
+      "chat_messages_node_sequence_unique",
+      "chat_messages_pkey",
+      "chat_messages_role_check",
+      "chat_messages_role_state_check",
+      "chat_messages_status_check",
+      "chat_messages_turn_role_unique",
+    ]);
+    expect(
+      constraints.rows.find(({ conname }) => conname === "chat_messages_node_owner_fk")
+        ?.definition,
+    ).toContain(
+      "FOREIGN KEY (user_id, node_id) REFERENCES nodes(user_id, id) ON DELETE CASCADE",
+    );
+
+    const indexes = await client.query<{ indexdef: string; indexname: string }>(
+      `select indexname, indexdef
+       from pg_indexes
+       where tablename = 'chat_messages'
+       order by indexname`,
+    );
+    expect(indexes.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          indexname: "chat_messages_node_sequence_unique",
+          indexdef: expect.stringContaining("(user_id, node_id, sequence)"),
+        }),
+        expect.objectContaining({ indexname: "chat_messages_turn_role_unique" }),
+      ]),
+    );
+  });
+
+  it("enforces chat ownership, replay, lifecycle, and content constraints", async () => {
+    const ownerId = `chat-owner-${randomUUID()}`;
+    const otherOwnerId = `chat-owner-${randomUUID()}`;
+    const nodeId = randomUUID();
+    await client.query(
+      `insert into "user" (id, name, email, email_verified)
+       values
+         ($1, 'Synthetic Chat Owner', $2, true),
+         ($3, 'Synthetic Other Chat Owner', $4, true)`,
+      [
+        ownerId,
+        `${randomUUID()}@example.test`,
+        otherOwnerId,
+        `${randomUUID()}@example.test`,
+      ],
+    );
+    await client.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values ($1, $2, null, 0, 'Chat node')`,
+      [nodeId, ownerId],
+    );
+
+    const clientMessageId = randomUUID();
+    await client.query(
+      `insert into chat_messages
+         (user_id, node_id, client_message_id, sequence, role, status, content,
+          web_search_authorized, completed_at)
+       values ($1, $2, $3, 0, 'user', 'completed', 'Question', true, now())`,
+      [ownerId, nodeId, clientMessageId],
+    );
+    await client.query(
+      `insert into chat_messages
+         (user_id, node_id, client_message_id, sequence, role, status, content)
+       values ($1, $2, $3, 1, 'assistant', 'pending', '')`,
+      [ownerId, nodeId, clientMessageId],
+    );
+
+    await expectConstraintViolation(
+      () =>
+        client.query(
+          `insert into chat_messages
+             (user_id, node_id, client_message_id, sequence, role, status, content)
+           values ($1, $2, $3, 2, 'assistant', 'pending', '')`,
+          [ownerId, nodeId, clientMessageId],
+        ),
+      "chat_messages_turn_role_unique",
+    );
+    await expectConstraintViolation(
+      () =>
+        client.query(
+          `insert into chat_messages
+             (user_id, node_id, client_message_id, sequence, role, status, content,
+              web_search_authorized, completed_at)
+           values ($1, $2, $3, 0, 'user', 'completed', 'Cross owner', false, now())`,
+          [otherOwnerId, nodeId, randomUUID()],
+        ),
+      "chat_messages_node_owner_fk",
+    );
+    await expectConstraintViolation(
+      () =>
+        client.query(
+          `insert into chat_messages
+             (user_id, node_id, client_message_id, sequence, role, status, content, completed_at)
+           values ($1, $2, $3, 2, 'user', 'completed', '   ', now())`,
+          [ownerId, nodeId, randomUUID()],
+        ),
+      "chat_messages_content_length_check",
+    );
+    await expectConstraintViolation(
+      () =>
+        client.query(
+          `insert into chat_messages
+             (user_id, node_id, client_message_id, sequence, role, status, content,
+              model, completed_at)
+           values ($1, $2, $3, 2, 'user', 'completed', 'Question', 'model', now())`,
+          [ownerId, nodeId, randomUUID()],
+        ),
+      "chat_messages_role_state_check",
+    );
+    await expectConstraintViolation(
+      () =>
+        client.query(
+          `insert into chat_messages
+             (user_id, node_id, client_message_id, sequence, role, status, content,
+              web_search_authorized)
+           values ($1, $2, $3, 2, 'assistant', 'pending', '', true)`,
+          [ownerId, nodeId, randomUUID()],
+        ),
+      "chat_messages_role_state_check",
+    );
+    await expectConstraintViolation(
+      () =>
+        client.query(
+          `insert into chat_messages
+             (user_id, node_id, client_message_id, sequence, role, status, content)
+           values ($1, $2, $3, 2, 'assistant', 'failed', '')`,
+          [ownerId, nodeId, randomUUID()],
+        ),
+      "chat_messages_completion_check",
+    );
+    await expectConstraintViolation(
+      () =>
+        client.query(
+          `insert into chat_messages
+             (user_id, node_id, client_message_id, sequence, role, status, content, failure_code)
+           values ($1, $2, $3, 2, 'assistant', 'failed', '', 'provider-request-id')`,
+          [ownerId, nodeId, randomUUID()],
+        ),
+      "chat_messages_failure_code_check",
+    );
   });
 
   it("defines the owner-scoped deferrable node hierarchy constraints", async () => {

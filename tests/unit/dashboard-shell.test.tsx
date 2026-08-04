@@ -14,6 +14,11 @@ vi.mock("@/app/actions/nodes", () => ({
   unarchiveNode: vi.fn(),
 }));
 
+vi.mock("@/app/actions/chat", () => ({
+  loadChatMessages: vi.fn(),
+  loadChatTurn: vi.fn(),
+}));
+
 import { DashboardShell } from "@/components/dashboard-shell";
 import {
   syntheticDashboardEmail,
@@ -36,6 +41,9 @@ describe("DashboardShell", () => {
     expect(markup).toContain("Open questions");
     expect(markup).toContain("No synthesis yet");
     expect(markup).toContain("Develop this thought");
+    expect(markup).toContain("Assistant replies arrive in the next phase.");
+    expect(markup).toContain('textarea id="chat-draft-feedback"');
+    expect(markup).toContain("disabled");
     expect(markup).toContain('aria-label="Thought tree"');
     expect(markup).toContain('aria-current="page"');
     expect(markup).toContain('aria-label="Breadcrumb"');

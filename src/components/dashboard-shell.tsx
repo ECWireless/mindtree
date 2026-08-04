@@ -36,6 +36,7 @@ import {
   unarchiveNode,
 } from "@/app/actions/nodes";
 import { DeleteNodeDialog } from "@/components/delete-node-dialog";
+import { ChatPanel } from "@/components/chat-panel";
 import { MoveNodeDialog } from "@/components/move-node-dialog";
 import { NodeTreeList } from "@/components/node-tree-list";
 import {
@@ -47,6 +48,7 @@ import {
   type NodeDropZone,
 } from "@/lib/nodes/presentation";
 import { assembleNodeTree, type FlatNode, type TreeNode } from "@/lib/nodes/tree";
+import type { ChatMessagePage } from "@/lib/chat/contracts";
 
 import { SignOutButton } from "./auth-buttons";
 import { BrandMark } from "./brand-mark";
@@ -55,6 +57,8 @@ type DashboardShellProps = {
   email: string;
   nodes: readonly FlatNode[];
   selectedNodeId?: string;
+  initialChatPage?: ChatMessagePage;
+  chatGenerationEnabled?: boolean;
 };
 
 const pendingTreeFocusKey = "mindtree:pending-tree-focus";
@@ -499,7 +503,7 @@ function TitleEditor({ node, onSaved }: { node: TreeNode; onSaved: () => void })
   );
 }
 
-function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProps) {
+function DashboardWorkspace({ email, nodes, selectedNodeId, initialChatPage, chatGenerationEnabled = false }: DashboardShellProps) {
   const router = useRouter();
   const tree = useMemo(() => assembleNodeTree(nodes), [nodes]);
   const selectedNode = selectedNodeId ? tree.byId.get(selectedNodeId) ?? null : null;
@@ -1230,11 +1234,12 @@ function DashboardWorkspace({ email, nodes, selectedNodeId }: DashboardShellProp
                 <h2 id="fixture-synthesis-title">No synthesis yet</h2>
                 <p>Approved synthesis will stay distinct from the conversation that shaped it.</p>
               </section>
-              <section className="chat-placeholder" aria-labelledby="fixture-chat-title">
-                <p className="pane-eyebrow">Conversation</p>
-                <h2 id="fixture-chat-title">Develop this thought</h2>
-                <p>Chat and proposal controls arrive in their dedicated phases.</p>
-              </section>
+              <ChatPanel
+                nodeId={selectedNode.id}
+                nodeTitle={selectedNode.title}
+                initialPage={initialChatPage ?? { messages: [], nextCursor: null }}
+                generationEnabled={chatGenerationEnabled}
+              />
             </>
           ) : (
             <div className="empty-state">
