@@ -925,7 +925,7 @@ button:not(:disabled) {
   border-radius: 0.75rem;
   margin: auto;
   padding: 1.25rem;
-  background: #0a0d12;
+  background: var(--color-surface);
   color: var(--color-ink);
   box-shadow: 0 1.5rem 5rem rgb(0 0 0 / 70%);
 }
@@ -1092,7 +1092,7 @@ button:not(:disabled) {
   gap: 0.7rem;
   border-bottom: 1px solid rgb(154 166 178 / 20%);
   padding: 0.65rem;
-  background: #080b0f;
+  background: var(--color-black);
 }
 
 .move-placement .move-browser__toolbar {
