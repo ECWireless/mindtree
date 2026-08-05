@@ -286,20 +286,385 @@ describe("Branch Outline persistence", () => {
     const node = await pool.query<{
       current_branch_outline_version_id: string;
       published_synthesis_version_id: string;
+      synthesis_stale_at: Date | null;
     }>(
-      `select current_branch_outline_version_id, published_synthesis_version_id
+      `select current_branch_outline_version_id, published_synthesis_version_id,
+              synthesis_stale_at
        from nodes where id = $1`,
       [nodeId],
     );
     expect(node.rows[0]).toEqual({
       current_branch_outline_version_id: claim.generation.id,
       published_synthesis_version_id: summaryId,
+      synthesis_stale_at: null,
     });
     await expect(pool.query(
       `update branch_outline_versions set content = 'Mutated' where id = $1`,
       [claim.generation.id],
     )).rejects.toMatchObject({
       constraint: "branch_outline_versions_immutable_transition_check",
+    });
+  });
+
+  it("stales ancestor artifacts when a child installs a replacement outline", async () => {
+    const userId = await insertUser();
+    const parentId = await insertNode(userId, "Recursive parent");
+    const childId = await insertNode(userId, "Recursive child", parentId);
+    const parentSummaryId = await insertApprovedSummary(
+      userId,
+      parentId,
+      "Parent Summary",
+    );
+    const childSummaryId = await insertApprovedSummary(
+      userId,
+      childId,
+      "Child Summary",
+    );
+    const initialParentClaim = await claimBranchOutlineGenerationForUser(
+      userId,
+      claimInput({
+        nodeId: parentId,
+        nodeTitle: "Recursive parent",
+        baseSynthesisVersionId: parentSummaryId,
+        inputs: [childInput({
+          sourceNodeId: childId,
+          title: "Recursive child",
+          sourceSynthesisVersionId: childSummaryId,
+        })],
+      }),
+    );
+    const initialParent = await completeBranchOutlineGenerationForUser(userId, {
+      nodeId: parentId,
+      generationId: initialParentClaim.generation.id,
+      draft: { content: "Parent outline before child outline" },
+    });
+    expect(initialParent.installed).toBe(true);
+
+    const firstChildClaim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+      nodeId: childId,
+      nodeTitle: "Recursive child",
+      baseSynthesisVersionId: childSummaryId,
+    }));
+    const firstChild = await completeBranchOutlineGenerationForUser(userId, {
+      nodeId: childId,
+      generationId: firstChildClaim.generation.id,
+      draft: { content: "First child outline" },
+    });
+    expect(firstChild.installed).toBe(true);
+    await expect(pool.query<{
+      synthesis_stale_at: Date | null;
+      branch_outline_stale_at: Date | null;
+      branch_outline_stale_reason: string | null;
+    }>(
+      `select synthesis_stale_at, branch_outline_stale_at,
+              branch_outline_stale_reason
+       from nodes where id = $1`,
+      [parentId],
+    )).resolves.toMatchObject({
+      rows: [{
+        synthesis_stale_at: expect.any(Date),
+        branch_outline_stale_at: expect.any(Date),
+        branch_outline_stale_reason: "branch-content-changed",
+      }],
+    });
+    await expect(pool.query<{
+      synthesis_stale_at: Date | null;
+      branch_outline_stale_at: Date | null;
+    }>(
+      `select synthesis_stale_at, branch_outline_stale_at
+       from nodes where id = $1`,
+      [childId],
+    )).resolves.toMatchObject({
+      rows: [{ synthesis_stale_at: null, branch_outline_stale_at: null }],
+    });
+
+    const parentInput = childInput({
+      sourceNodeId: childId,
+      title: "Recursive child",
+      sourceSynthesisVersionId: childSummaryId,
+      sourceBranchOutlineVersionId: firstChild.generation.id,
+      outlineState: "current",
+    });
+    const parentClaim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+      nodeId: parentId,
+      nodeTitle: "Recursive parent",
+      baseSynthesisVersionId: parentSummaryId,
+      inputs: [parentInput],
+    }));
+    const parentOutline = await completeBranchOutlineGenerationForUser(userId, {
+      nodeId: parentId,
+      generationId: parentClaim.generation.id,
+      draft: { content: "Parent outline from first child outline" },
+    });
+    expect(parentOutline.installed).toBe(true);
+    await pool.query(
+      `update nodes
+       set synthesis_stale_at = null,
+           branch_outline_stale_at = null,
+           branch_outline_stale_reason = null
+       where id = $1`,
+      [parentId],
+    );
+
+    const replacementClaim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+      nodeId: childId,
+      nodeTitle: "Recursive child",
+      baseSynthesisVersionId: parentInput.sourceSynthesisVersionId,
+    }));
+    const replacement = await completeBranchOutlineGenerationForUser(userId, {
+      nodeId: childId,
+      generationId: replacementClaim.generation.id,
+      draft: { content: "Replacement child outline" },
+    });
+    expect(replacement.installed).toBe(true);
+
+    const states = await pool.query<{
+      id: string;
+      synthesis_stale_at: Date | null;
+      branch_outline_stale_at: Date | null;
+      branch_outline_stale_reason: string | null;
+    }>(
+      `select id, synthesis_stale_at, branch_outline_stale_at,
+              branch_outline_stale_reason
+       from nodes where id = any($1::uuid[])`,
+      [[parentId, childId]],
+    );
+    const parent = states.rows.find(({ id }) => id === parentId);
+    const child = states.rows.find(({ id }) => id === childId);
+    expect(parent).toMatchObject({
+      synthesis_stale_at: expect.any(Date),
+      branch_outline_stale_at: expect.any(Date),
+      branch_outline_stale_reason: "branch-content-changed",
+    });
+    expect(child).toMatchObject({
+      synthesis_stale_at: null,
+      branch_outline_stale_at: null,
+      branch_outline_stale_reason: null,
+    });
+
+    const replay = await completeBranchOutlineGenerationForUser(userId, {
+      nodeId: childId,
+      generationId: replacementClaim.generation.id,
+      draft: { content: "Ignored replay body" },
+    });
+    expect(replay).toMatchObject({ replayed: true, installed: true });
+    const replayedParent = (await pool.query<{
+      synthesis_stale_at: Date | null;
+      branch_outline_stale_at: Date | null;
+    }>(
+      `select synthesis_stale_at, branch_outline_stale_at
+       from nodes where id = $1`,
+      [parentId],
+    )).rows[0];
+    expect(replayedParent?.synthesis_stale_at?.getTime())
+      .toBe(parent?.synthesis_stale_at?.getTime());
+    expect(replayedParent?.branch_outline_stale_at?.getTime())
+      .toBe(parent?.branch_outline_stale_at?.getTime());
+  });
+
+  it("rejects an ancestor regeneration when the child outline installs first", async () => {
+    const userId = await insertUser();
+    const parentId = await insertNode(userId, "Racing parent");
+    const childId = await insertNode(userId, "Racing child", parentId);
+    const parentSummaryId = await insertApprovedSummary(userId, parentId, "Parent Summary");
+    const childSummaryId = await insertApprovedSummary(userId, childId, "Child Summary");
+
+    const firstChildClaim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+      nodeId: childId,
+      nodeTitle: "Racing child",
+      baseSynthesisVersionId: childSummaryId,
+    }));
+    await completeBranchOutlineGenerationForUser(userId, {
+      nodeId: childId,
+      generationId: firstChildClaim.generation.id,
+      draft: { content: "First racing child outline" },
+    });
+    const firstParentInput = childInput({
+      sourceNodeId: childId,
+      title: "Racing child",
+      sourceSynthesisVersionId: childSummaryId,
+      sourceBranchOutlineVersionId: firstChildClaim.generation.id,
+      outlineState: "current",
+    });
+    const firstParentClaim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+      nodeId: parentId,
+      nodeTitle: "Racing parent",
+      baseSynthesisVersionId: parentSummaryId,
+      inputs: [firstParentInput],
+    }));
+    const firstParent = await completeBranchOutlineGenerationForUser(userId, {
+      nodeId: parentId,
+      generationId: firstParentClaim.generation.id,
+      draft: { content: "Current parent outline" },
+    });
+    expect(firstParent.installed).toBe(true);
+    await pool.query(
+      `update nodes
+       set synthesis_stale_at = null,
+           branch_outline_stale_at = null,
+           branch_outline_stale_reason = null
+       where id = $1`,
+      [parentId],
+    );
+
+    const pendingParent = await claimBranchOutlineGenerationForUser(userId, claimInput({
+      nodeId: parentId,
+      nodeTitle: "Racing parent",
+      baseSynthesisVersionId: parentSummaryId,
+      inputs: [firstParentInput],
+    }));
+    const replacementChild = await claimBranchOutlineGenerationForUser(userId, claimInput({
+      nodeId: childId,
+      nodeTitle: "Racing child",
+      baseSynthesisVersionId: childSummaryId,
+    }));
+    await completeBranchOutlineGenerationForUser(userId, {
+      nodeId: childId,
+      generationId: replacementChild.generation.id,
+      draft: { content: "Replacement racing child outline" },
+    });
+
+    const rejectedParent = await completeBranchOutlineGenerationForUser(userId, {
+      nodeId: parentId,
+      generationId: pendingParent.generation.id,
+      draft: { content: "Obsolete parent outline" },
+    });
+    expect(rejectedParent).toMatchObject({
+      installed: false,
+      generation: { status: "failed", failureCode: "inputs-changed" },
+    });
+    expect(await getBranchOutlineWorkspaceForUser(userId, parentId)).toMatchObject({
+      current: { id: firstParent.generation.id, content: "Current parent outline" },
+      pending: null,
+      latestFailure: {
+        id: pendingParent.generation.id,
+        failureCode: "inputs-changed",
+      },
+      staleAt: expect.any(String),
+      staleReason: "branch-content-changed",
+    });
+    const parent = await pool.query<{
+      synthesis_stale_at: Date | null;
+    }>(`select synthesis_stale_at from nodes where id = $1`, [parentId]);
+    expect(parent.rows[0]?.synthesis_stale_at).toBeInstanceOf(Date);
+  });
+
+  it("serializes concurrent ancestor and child outline completions safely", async () => {
+    const userId = await insertUser();
+    const parentId = await insertNode(userId, "Contended parent");
+    const childId = await insertNode(userId, "Contended child", parentId);
+    const parentSummaryId = await insertApprovedSummary(userId, parentId, "Parent Summary");
+    const childSummaryId = await insertApprovedSummary(userId, childId, "Child Summary");
+
+    const firstChildClaim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+      nodeId: childId,
+      nodeTitle: "Contended child",
+      baseSynthesisVersionId: childSummaryId,
+    }));
+    await completeBranchOutlineGenerationForUser(userId, {
+      nodeId: childId,
+      generationId: firstChildClaim.generation.id,
+      draft: { content: "First contended child outline" },
+    });
+    const firstParentInput = childInput({
+      sourceNodeId: childId,
+      title: "Contended child",
+      sourceSynthesisVersionId: childSummaryId,
+      sourceBranchOutlineVersionId: firstChildClaim.generation.id,
+      outlineState: "current",
+    });
+    const firstParentClaim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+      nodeId: parentId,
+      nodeTitle: "Contended parent",
+      baseSynthesisVersionId: parentSummaryId,
+      inputs: [firstParentInput],
+    }));
+    const firstParent = await completeBranchOutlineGenerationForUser(userId, {
+      nodeId: parentId,
+      generationId: firstParentClaim.generation.id,
+      draft: { content: "First contended parent outline" },
+    });
+    expect(firstParent.installed).toBe(true);
+    await pool.query(
+      `update nodes
+       set synthesis_stale_at = null,
+           branch_outline_stale_at = null,
+           branch_outline_stale_reason = null
+       where id = $1`,
+      [parentId],
+    );
+
+    const pendingParent = await claimBranchOutlineGenerationForUser(userId, claimInput({
+      nodeId: parentId,
+      nodeTitle: "Contended parent",
+      baseSynthesisVersionId: parentSummaryId,
+      inputs: [firstParentInput],
+    }));
+    const replacementChild = await claimBranchOutlineGenerationForUser(userId, claimInput({
+      nodeId: childId,
+      nodeTitle: "Contended child",
+      baseSynthesisVersionId: childSummaryId,
+    }));
+
+    const [parentResult, childResult] = await Promise.all([
+      completeBranchOutlineGenerationForUser(userId, {
+        nodeId: parentId,
+        generationId: pendingParent.generation.id,
+        draft: { content: "Concurrent parent outline" },
+      }),
+      completeBranchOutlineGenerationForUser(userId, {
+        nodeId: childId,
+        generationId: replacementChild.generation.id,
+        draft: { content: "Concurrent child replacement" },
+      }),
+    ]);
+
+    expect(childResult).toMatchObject({
+      installed: true,
+      generation: { id: replacementChild.generation.id, status: "completed" },
+    });
+    const parentWorkspace = await getBranchOutlineWorkspaceForUser(userId, parentId);
+    if (parentResult.installed) {
+      expect(parentResult.generation).toMatchObject({
+        id: pendingParent.generation.id,
+        status: "completed",
+      });
+      expect(parentWorkspace.current).toMatchObject({
+        id: pendingParent.generation.id,
+        content: "Concurrent parent outline",
+      });
+    } else {
+      expect(parentResult.generation).toMatchObject({
+        id: pendingParent.generation.id,
+        status: "failed",
+        failureCode: "inputs-changed",
+      });
+      expect(parentWorkspace.current).toMatchObject({
+        id: firstParent.generation.id,
+        content: "First contended parent outline",
+      });
+    }
+    expect(parentWorkspace).toMatchObject({
+      staleAt: expect.any(String),
+      staleReason: "branch-content-changed",
+    });
+    expect(await getBranchOutlineWorkspaceForUser(userId, childId)).toMatchObject({
+      current: {
+        id: replacementChild.generation.id,
+        content: "Concurrent child replacement",
+      },
+      staleAt: null,
+      staleReason: null,
+    });
+    await expect(pool.query<{
+      synthesis_stale_at: Date | null;
+      branch_outline_stale_at: Date | null;
+    }>(
+      `select synthesis_stale_at, branch_outline_stale_at
+       from nodes where id = $1`,
+      [childId],
+    )).resolves.toMatchObject({
+      rows: [{ synthesis_stale_at: null, branch_outline_stale_at: null }],
     });
   });
 

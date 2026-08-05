@@ -35,6 +35,11 @@ import {
   fingerprintBranchOutlineGeneration,
   fingerprintBranchOutlineSourceState,
 } from "@/lib/server/branch-outline-fingerprint";
+import {
+  collectAncestorPathIds,
+  markArtifactsStale,
+  StalenessTreeError,
+} from "@/lib/server/staleness";
 
 type BranchOutlineTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type LockedNode = typeof nodes.$inferSelect;
@@ -97,7 +102,8 @@ function sanitizeBranchOutlineServiceError(error: unknown): Error {
   if (
     error instanceof DrizzleError ||
     error instanceof DrizzleQueryError ||
-    postgresFailure !== null
+    postgresFailure !== null ||
+    error instanceof StalenessTreeError
   ) {
     return new BranchOutlineServiceError("unavailable");
   }
@@ -556,6 +562,14 @@ export async function completeBranchOutlineGenerationForUser(
           updatedAt: completedAt,
         })
         .where(and(eq(nodes.userId, userId), eq(nodes.id, node.id)));
+      const ancestorIds = collectAncestorPathIds(lockedNodes, node.id);
+      await markArtifactsStale(tx, {
+        userId,
+        summaryNodeIds: ancestorIds,
+        outlineNodeIds: ancestorIds,
+        outlineReason: "branch-content-changed",
+        at: completedAt,
+      });
       return {
         generation: toBranchOutlineVersion(completed),
         installed: true,

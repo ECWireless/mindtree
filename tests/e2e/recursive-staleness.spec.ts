@@ -149,6 +149,18 @@ test("recovers a stale Summary through Branch Outline regeneration and approval"
     await expect(outline).not.toContainText("Stale · the branch has changed");
     await expect(summary.getByRole("status")).toContainText("Update available");
 
+    await page.goto(`/?node=${rootId}`);
+    const rootSummaryAfterOutline = page.getByRole("region", { name: "Summary" });
+    const rootOutlineAfterOutline = page.getByRole("region", { name: "Branch Outline" });
+    await expect(rootSummaryAfterOutline.getByRole("status"))
+      .toContainText("Update available");
+    await expect(rootOutlineAfterOutline).toContainText("Stale · the branch has changed");
+
+    await page.goto(`/?node=${childId}`);
+    await expect(summary.getByRole("status")).toContainText("Update available");
+    await expect(outline).toContainText("Branch direction");
+    await expect(outline).not.toContainText("Stale · the branch has changed");
+
     await page.getByRole("button", { name: "Chat", exact: true }).click();
     await composer.fill("Create a synthesis Summary after Branch Outline regeneration");
     await chat.getByRole("button", { name: "Send" }).click();
