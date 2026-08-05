@@ -173,6 +173,7 @@ export async function POST(request: Request) {
     async start(controller) {
       controller.enqueue(event({ type: "turn", ...turn }));
       let visibleContent = "";
+      let providerCompleted = false;
       let persistedCharacterCount = 0;
       let lastPersistenceAt = Date.now();
       const flushPersistence = async (force = false) => {
@@ -215,8 +216,12 @@ export async function POST(request: Request) {
           } else {
             await flushPersistence(true);
             const assistantMessage = await completeChatTurnForUser(userId, input);
+            providerCompleted = true;
             controller.enqueue(event({ type: "completed", assistantMessage }));
           }
+        }
+        if (!providerCompleted) {
+          throw new OpenAIChatError("response-invalid");
         }
       } catch (error) {
         try {

@@ -136,11 +136,17 @@ export function createOpenAIChatRequest(input: {
   };
 }
 
-function classifySDKError(error: unknown, signal: AbortSignal): Error {
+export function classifyOpenAIChatSDKError(
+  error: unknown,
+  signal: AbortSignal,
+): Error {
+  if (signal.aborted) {
+    return new OpenAIChatAbortError();
+  }
   if (error instanceof OpenAIChatError || error instanceof OpenAIChatAbortError) {
     return error;
   }
-  if (signal.aborted || error instanceof APIUserAbortError) {
+  if (error instanceof APIUserAbortError) {
     return new OpenAIChatAbortError();
   }
   if (error instanceof APIConnectionTimeoutError) {
@@ -148,6 +154,12 @@ function classifySDKError(error: unknown, signal: AbortSignal): Error {
   }
   if (error instanceof APIConnectionError) {
     return new OpenAIChatError("stream-disconnected");
+  }
+  if (
+    error instanceof APIError &&
+    error.status === 408
+  ) {
+    return new OpenAIChatError("provider-timeout");
   }
   if (
     error instanceof APIError &&
@@ -174,13 +186,43 @@ export async function* streamOpenAIChat(input: {
     timeout: OPENAI_CHAT_TIMEOUT_MS,
   });
 
+  const deadlineController = new AbortController();
+  let deadlineExceeded = false;
+  const deadline = setTimeout(() => {
+    deadlineExceeded = true;
+    deadlineController.abort();
+  }, OPENAI_CHAT_TIMEOUT_MS);
+  const providerSignal = AbortSignal.any([
+    input.signal,
+    deadlineController.signal,
+  ]);
+
   try {
     const stream = await client.responses.create(
       createOpenAIChatRequest(input),
-      { signal: input.signal },
+      { signal: providerSignal },
     );
-    yield* normalizeOpenAIChatEvents(stream);
+    for await (const event of normalizeOpenAIChatEvents(stream)) {
+      if (input.signal.aborted) {
+        throw new OpenAIChatAbortError();
+      }
+      if (deadlineExceeded) {
+        throw new OpenAIChatError("provider-timeout");
+      }
+      if (event.type === "completed") {
+        clearTimeout(deadline);
+      }
+      yield event;
+    }
   } catch (error) {
-    throw classifySDKError(error, input.signal);
+    if (input.signal.aborted) {
+      throw new OpenAIChatAbortError();
+    }
+    if (deadlineExceeded && !input.signal.aborted) {
+      throw new OpenAIChatError("provider-timeout");
+    }
+    throw classifyOpenAIChatSDKError(error, input.signal);
+  } finally {
+    clearTimeout(deadline);
   }
 }
