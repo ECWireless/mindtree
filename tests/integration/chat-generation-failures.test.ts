@@ -10,6 +10,7 @@ const runtime = vi.hoisted(() => ({
     | "disconnect-after-delta"
     | "generic-failure"
     | "provider-refusal"
+    | "proposal-success"
     | "silent-end"
     | "success"
     | "timeout"
@@ -25,7 +26,7 @@ vi.mock("@/lib/server/chat-runtime", async () => {
   return {
     createOpenAISafetyIdentifier: () => "mt_synthetic_failure_test",
     getChatGenerationMode: () => "deterministic-fixture",
-    streamChatResponse: (input: { signal: AbortSignal }) => {
+    streamChatResponse: (input: { proposalRequested?: boolean; signal: AbortSignal }) => {
       runtime.invocations += 1;
       const scenario = runtime.scenarios.shift();
       return (async function* () {
@@ -69,7 +70,13 @@ vi.mock("@/lib/server/chat-runtime", async () => {
         }
 
         yield { type: "text-delta" as const, content: "Synthetic completed response." };
-        yield { type: "completed" as const, providerResponseId };
+        yield {
+          type: "completed" as const,
+          providerResponseId,
+          proposal: scenario === "proposal-success"
+            ? { content: "# Synthetic proposal\n\nA bounded synthesis draft." }
+            : null,
+        };
       })();
     },
   };
@@ -265,6 +272,57 @@ describe("chat generation failure boundaries", () => {
     const replayEvents = await readEvents(await post(createBody));
     expect(replayEvents.map(({ type }) => type)).toEqual(["turn", "completed"]);
     expect(runtime.invocations).toBe(2);
+  });
+
+  it("persists a requested synthesis proposal without publishing it", async () => {
+    runtime.scenarios.push("proposal-success");
+    const clientMessageId = randomUUID();
+    const events = await readEvents(await post({
+      nodeId,
+      clientMessageId,
+      content: "Propose a synthesis from the supplied context",
+      webSearchAuthorized: false,
+      proposalRequested: true,
+    }));
+
+    expect(events.at(-1)).toMatchObject({
+      type: "completed",
+      assistantMessage: { status: "completed" },
+    });
+
+    const proposalResult = await pool.query<{
+      base_version_id: string | null;
+      content: string;
+      generating_message_id: string;
+      reasoning_effort: string;
+      reasoning_mode: string;
+      status: string;
+    }>(
+      `select base_version_id, content, generating_message_id, reasoning_effort,
+              reasoning_mode, status
+       from synthesis_versions
+       where user_id = $1 and node_id = $2`,
+      [userId, nodeId],
+    );
+    const pointerResult = await pool.query<{ published_synthesis_version_id: string | null }>(
+      `select published_synthesis_version_id
+       from nodes
+       where user_id = $1 and id = $2`,
+      [userId, nodeId],
+    );
+    const assistantId = (await storedTurn(clientMessageId))
+      .find(({ role }) => role === "assistant")?.id;
+
+    expect(proposalResult.rows).toEqual([{
+      base_version_id: null,
+      content: "# Synthetic proposal\n\nA bounded synthesis draft.",
+      generating_message_id: assistantId,
+      reasoning_effort: "high",
+      reasoning_mode: "pro",
+      status: "pending",
+    }]);
+    expect(pointerResult.rows).toEqual([{ published_synthesis_version_id: null }]);
+    expect(runtime.invocations).toBe(1);
   });
 
   it("persists request abortion as cancellation and never completes the turn", async () => {

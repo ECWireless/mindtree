@@ -53,7 +53,7 @@ function deltaEvent(delta: string, sequenceNumber = 1) {
 const completedEvent = {
   type: "response.completed",
   sequence_number: 3,
-  response: { id: "resp_synthetic", status: "completed" },
+  response: { id: "resp_synthetic", status: "completed", output: [] },
 };
 
 async function expectInvalid(events: unknown[]) {
@@ -86,7 +86,7 @@ describe("OpenAI Responses chat stream", () => {
   });
 
   it("normalizes the consumed successful text lifecycle", async () => {
-    const response = { id: "resp_synthetic", status: "completed" };
+    const response = { id: "resp_synthetic", status: "completed", output: [] };
     const normalized = await Array.fromAsync(normalizeOpenAIChatEvents(fixture([
       {
         type: "response.created",
@@ -117,7 +117,7 @@ describe("OpenAI Responses chat stream", () => {
     expect(normalized).toEqual([
       { type: "started", providerResponseId: "resp_synthetic" },
       { type: "text-delta", content: "A useful response." },
-      { type: "completed", providerResponseId: "resp_synthetic" },
+      { type: "completed", providerResponseId: "resp_synthetic", proposal: null },
     ]);
   });
 
@@ -174,6 +174,11 @@ describe("OpenAI Responses chat stream", () => {
       deltaEvent("Wrong response"),
       { ...completedEvent, response: { id: "resp_other", status: "completed" } },
     ]);
+    await expectInvalid([
+      createdEvent,
+      deltaEvent("Missing output"),
+      { ...completedEvent, response: { id: "resp_synthetic", status: "completed" } },
+    ]);
   });
 
   it("ignores empty text deltas and unconsumed informational events", async () => {
@@ -188,8 +193,90 @@ describe("OpenAI Responses chat stream", () => {
     expect(normalized).toEqual([
       { type: "started", providerResponseId: "resp_synthetic" },
       { type: "text-delta", content: "Visible text" },
-      { type: "completed", providerResponseId: "resp_synthetic" },
+      { type: "completed", providerResponseId: "resp_synthetic", proposal: null },
     ]);
+  });
+
+  it("builds the explicit pro synthesis profile with one strict proposal tool", () => {
+    const request = createOpenAIChatRequest({
+      messages: [{ role: "user", content: "Propose a synthesis" }],
+      proposalRequested: true,
+      safetyIdentifier: "mt_synthetic",
+    });
+
+    expect(request).toMatchObject({
+      model: "gpt-5.6-sol",
+      reasoning: { context: "current_turn", effort: "high", mode: "pro" },
+      safety_identifier: "mt_synthetic",
+      store: false,
+      stream: true,
+      tool_choice: "auto",
+      parallel_tool_calls: false,
+      tools: [{
+        type: "function",
+        name: "propose_synthesis",
+        strict: true,
+      }],
+    });
+    expect(request.instructions).toContain("advisory generated content");
+  });
+
+  it("validates one optional structured proposal from a requested response", async () => {
+    const normalized = await Array.fromAsync(normalizeOpenAIChatEvents(fixture([
+      createdEvent,
+      deltaEvent("Here is a proposal for your review."),
+      {
+        ...completedEvent,
+        response: {
+          ...completedEvent.response,
+          output: [{
+            type: "function_call",
+            name: "propose_synthesis",
+            status: "completed",
+            arguments: JSON.stringify({ content: "# Synthetic synthesis\n\nA bounded proposal." }),
+          }],
+        },
+      },
+    ]), { proposalRequested: true }));
+
+    expect(normalized.at(-1)).toEqual({
+      type: "completed",
+      providerResponseId: "resp_synthetic",
+      proposal: { content: "# Synthetic synthesis\n\nA bounded proposal." },
+    });
+  });
+
+  it("rejects unrequested, repeated, invalid, and unsupported proposal calls", async () => {
+    const proposalCall = {
+      type: "function_call",
+      name: "propose_synthesis",
+      status: "completed",
+      arguments: JSON.stringify({ content: "Valid proposal" }),
+    };
+    await expectInvalid([
+      createdEvent,
+      deltaEvent("Unexpected proposal."),
+      { ...completedEvent, response: { ...completedEvent.response, output: [proposalCall] } },
+    ]);
+
+    for (const output of [
+      [proposalCall, proposalCall],
+      [{ ...proposalCall, name: "unknown_tool" }],
+      [{ ...proposalCall, status: "incomplete" }],
+      [{ ...proposalCall, arguments: "not-json" }],
+      [{ ...proposalCall, arguments: JSON.stringify({ content: "[unsafe](https://example.test)" }) }],
+      [{ ...proposalCall, arguments: JSON.stringify({ content: "Valid", unexpected: true }) }],
+      [{ ...proposalCall, arguments: JSON.stringify({ content: "x".repeat(32_001) }) }],
+      [{ type: "custom_tool_call", name: "unexpected", input: "{}" }],
+    ]) {
+      await expect(
+        Array.fromAsync(normalizeOpenAIChatEvents(fixture([
+          createdEvent,
+          deltaEvent("Invalid proposal."),
+          { ...completedEvent, response: { ...completedEvent.response, output } },
+        ]), { proposalRequested: true })),
+      ).rejects.toEqual(new OpenAIChatError("response-invalid"));
+    }
   });
 
   it("does not yield completion when the provider emits a trailing event", async () => {

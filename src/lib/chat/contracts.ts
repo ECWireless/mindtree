@@ -26,6 +26,7 @@ export const createChatTurnInputSchema = z.object({
   clientMessageId: z.uuid(),
   content: z.string().trim().min(1).max(MAX_USER_MESSAGE_LENGTH),
   webSearchAuthorized: z.boolean().default(false),
+  proposalRequested: z.boolean().default(false),
 });
 
 export const retryChatTurnInputSchema = z.object({
@@ -45,7 +46,10 @@ export const loadChatMessagesInputSchema = z.object({
 export type ChatRole = z.infer<typeof chatRoleSchema>;
 export type ChatStatus = z.infer<typeof chatStatusSchema>;
 export type ChatFailureCode = z.infer<typeof chatFailureCodeSchema>;
-export type CreateChatTurnInput = z.infer<typeof createChatTurnInputSchema>;
+type ParsedCreateChatTurnInput = z.infer<typeof createChatTurnInputSchema>;
+export type CreateChatTurnInput = Omit<ParsedCreateChatTurnInput, "proposalRequested"> & {
+  proposalRequested?: boolean;
+};
 export type RetryChatTurnInput = z.infer<typeof retryChatTurnInputSchema>;
 export type FailChatTurnInput = z.infer<typeof failChatTurnInputSchema>;
 export type LoadChatMessagesInput = z.infer<typeof loadChatMessagesInputSchema>;
@@ -68,6 +72,7 @@ export type ChatMessage = {
   providerResponseId: string | null;
   failureCode: string | null;
   webSearchAuthorized: boolean;
+  proposalRequested: boolean;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;

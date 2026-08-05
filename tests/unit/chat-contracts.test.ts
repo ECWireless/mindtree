@@ -20,6 +20,7 @@ describe("chat contracts", () => {
     expect(input).toMatchObject({
       content: "Develop this thought.",
       webSearchAuthorized: false,
+      proposalRequested: false,
     });
   });
 

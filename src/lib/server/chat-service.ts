@@ -15,6 +15,10 @@ import {
   type FailChatTurnInput,
   type RetryChatTurnInput,
 } from "@/lib/chat/contracts";
+import {
+  insertPendingSynthesisProposal,
+  type PendingSynthesisProposalInput,
+} from "@/lib/server/synthesis-service";
 
 type ChatTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -57,6 +61,7 @@ function toChatMessage(row: typeof chatMessages.$inferSelect): ChatMessage {
     providerResponseId: row.providerResponseId,
     failureCode: row.failureCode,
     webSearchAuthorized: row.webSearchAuthorized,
+    proposalRequested: row.proposalRequested,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     completedAt: row.completedAt?.toISOString() ?? null,
@@ -290,7 +295,8 @@ export async function createChatTurnForUser(
           !userMessage ||
           !assistantMessage ||
           userMessage.content !== input.content ||
-          userMessage.webSearchAuthorized !== input.webSearchAuthorized
+          userMessage.webSearchAuthorized !== input.webSearchAuthorized ||
+          userMessage.proposalRequested !== (input.proposalRequested ?? false)
         ) {
           throw new ChatServiceError("turn-conflict");
         }
@@ -340,6 +346,7 @@ export async function createChatTurnForUser(
             status: "completed",
             content: input.content,
             webSearchAuthorized: input.webSearchAuthorized,
+            proposalRequested: input.proposalRequested ?? false,
             createdAt: userCreatedAt,
             updatedAt: userCreatedAt,
             completedAt: userCreatedAt,
@@ -593,16 +600,70 @@ export function startChatTurnForUser(userId: string, input: RetryChatTurnInput) 
   });
 }
 
-export function completeChatTurnForUser(userId: string, input: RetryChatTurnInput) {
-  return updateAssistantTurnForUser(userId, input, (message) => {
-    if (
-      (message.status !== "pending" && message.status !== "streaming") ||
-      message.content.length === 0
-    ) {
-      throw new ChatServiceError("retry-unavailable");
-    }
-    return { status: "completed", completedAt: new Date(), failureCode: null };
-  });
+export async function completeChatTurnForUser(
+  userId: string,
+  input: RetryChatTurnInput,
+  options: { proposal?: PendingSynthesisProposalInput } = {},
+) {
+  try {
+    return await db.transaction(async (tx) => {
+      await lockOwnedNode(tx, userId, input.nodeId);
+      const messages = await tx
+        .select()
+        .from(chatMessages)
+        .where(
+          and(
+            eq(chatMessages.userId, userId),
+            eq(chatMessages.nodeId, input.nodeId),
+            eq(chatMessages.clientMessageId, input.clientMessageId),
+          ),
+        )
+        .orderBy(asc(chatMessages.sequence))
+        .for("update");
+      const userMessage = messages.find((message) => message.role === "user");
+      const assistantMessage = messages.find((message) => message.role === "assistant");
+      if (!userMessage || !assistantMessage) {
+        throw new ChatServiceError("turn-not-found");
+      }
+      if (
+        (assistantMessage.status !== "pending" && assistantMessage.status !== "streaming") ||
+        assistantMessage.content.length === 0
+      ) {
+        throw new ChatServiceError("retry-unavailable");
+      }
+
+      if (options.proposal) {
+        if (
+          !userMessage.proposalRequested ||
+          assistantMessage.model !== options.proposal.model ||
+          assistantMessage.contextFingerprint !== options.proposal.inputFingerprint
+        ) {
+          throw new ChatServiceError("retry-unavailable");
+        }
+        await insertPendingSynthesisProposal(tx, {
+          ...options.proposal,
+          userId,
+          nodeId: input.nodeId,
+          generatingMessageId: assistantMessage.id,
+        });
+      }
+
+      const completedAt = new Date();
+      const [completed] = await tx
+        .update(chatMessages)
+        .set({
+          status: "completed",
+          completedAt,
+          failureCode: null,
+          updatedAt: completedAt,
+        })
+        .where(eq(chatMessages.id, assistantMessage.id))
+        .returning();
+      return toChatMessage(completed);
+    });
+  } catch (error) {
+    throw sanitizeChatServiceError(error);
+  }
 }
 
 export function cancelChatTurnForUser(userId: string, input: RetryChatTurnInput) {

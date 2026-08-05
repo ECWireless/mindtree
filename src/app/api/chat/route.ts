@@ -5,7 +5,10 @@ import {
   type ChatStreamEvent,
   type RetryChatTurnInput,
 } from "@/lib/chat/contracts";
-import { OPENAI_CHAT_MODEL } from "@/lib/ai/openai-profiles";
+import {
+  OPENAI_CHAT_MODEL,
+  OPENAI_SYNTHESIS_MODEL,
+} from "@/lib/ai/openai-profiles";
 import { getServerEnvironment } from "@/lib/env/server";
 import { requireAuthorizedSession } from "@/lib/server/authorization";
 import { prepareChatContextForUser } from "@/lib/server/chat-context";
@@ -140,6 +143,7 @@ export async function POST(request: Request) {
   }
 
   let preparedContext;
+  const proposalRequested = turn.userMessage.proposalRequested;
   try {
     preparedContext = await prepareChatContextForUser(userId, input);
     await recordChatTurnContextForUser(userId, {
@@ -198,6 +202,7 @@ export async function POST(request: Request) {
       try {
         for await (const providerEvent of streamChatResponse({
           messages: preparedContext.input,
+          proposalRequested,
           safetyIdentifier,
           signal: generationSignal,
         })) {
@@ -215,7 +220,25 @@ export async function POST(request: Request) {
             await flushPersistence();
           } else {
             await flushPersistence(true);
-            const assistantMessage = await completeChatTurnForUser(userId, input);
+            const assistantMessage = await completeChatTurnForUser(
+              userId,
+              input,
+              providerEvent.proposal
+                ? {
+                    proposal: {
+                      baseVersionId:
+                        preparedContext.snapshot.node.publishedSynthesis.state === "published"
+                          ? preparedContext.snapshot.node.publishedSynthesis.versionId
+                          : null,
+                      draft: providerEvent.proposal,
+                      model: OPENAI_SYNTHESIS_MODEL,
+                      reasoningMode: "pro",
+                      reasoningEffort: "high",
+                      inputFingerprint: preparedContext.fingerprint,
+                    },
+                  }
+                : undefined,
+            );
             providerCompleted = true;
             controller.enqueue(event({ type: "completed", assistantMessage }));
           }

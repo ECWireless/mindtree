@@ -59,6 +59,7 @@ function createOptimisticTurn(nodeId: string, clientMessageId: string, content: 
     providerResponseId: null,
     failureCode: null,
     webSearchAuthorized: false,
+    proposalRequested: false,
     createdAt,
     updatedAt: createdAt,
     completedAt: null,

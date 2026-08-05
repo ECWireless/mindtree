@@ -56,6 +56,7 @@ export function createOpenAISafetyIdentifier(userId: string, authSecret: string)
 
 async function* streamDeterministicChatFixture(input: {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
+  proposalRequested: boolean;
   signal: AbortSignal;
 }): AsyncGenerator<NormalizedOpenAIChatEvent> {
   const topic = [...input.messages]
@@ -77,11 +78,18 @@ async function* streamDeterministicChatFixture(input: {
     await new Promise((resolve) => setTimeout(resolve, 80));
     yield { type: "text-delta", content };
   }
-  yield { type: "completed", providerResponseId };
+  yield {
+    type: "completed",
+    providerResponseId,
+    proposal: input.proposalRequested
+      ? { content: `# ${topic}\n\nA concise synthetic synthesis proposal.` }
+      : null,
+  };
 }
 
 export function streamChatResponse(input: {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
+  proposalRequested: boolean;
   safetyIdentifier: string;
   signal: AbortSignal;
 }): AsyncGenerator<NormalizedOpenAIChatEvent> {
@@ -94,6 +102,7 @@ export function streamChatResponse(input: {
     return streamOpenAIChat({
       apiKey: environment.OPENAI_API_KEY,
       messages: input.messages,
+      proposalRequested: input.proposalRequested,
       safetyIdentifier: input.safetyIdentifier,
       signal: input.signal,
     });

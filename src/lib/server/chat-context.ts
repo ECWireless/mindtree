@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { and, desc, eq, lt, sql } from "drizzle-orm";
 
 import { db } from "@/db/client";
-import { chatMessages, nodes } from "@/db/schema";
+import { chatMessages, nodes, synthesisVersions } from "@/db/schema";
 import type { RetryChatTurnInput } from "@/lib/chat/contracts";
 
 export const MAX_CHAT_CONTEXT_MESSAGES = 24;
@@ -21,7 +21,7 @@ export type ChatContextMessage = {
 };
 
 export type ChatContextSnapshot = {
-  version: 1;
+  version: 2;
   node: {
     id: string;
     title: string;
@@ -29,7 +29,9 @@ export type ChatContextSnapshot = {
       items: Array<{ id: string; title: string }>;
       hasOmittedAncestors: boolean;
     };
-    publishedSynthesis: { state: "none" };
+    publishedSynthesis:
+      | { state: "none" }
+      | { state: "published"; versionId: string; content: string };
   };
   messages: ChatContextMessage[];
 };
@@ -75,12 +77,14 @@ export async function prepareChatContextForUser(
         id: string;
         title: string;
         depth: number;
+        published_synthesis_version_id: string | null;
       }>(sql`
         with recursive ancestor_path as (
           select
             ${nodes.id} as id,
             ${nodes.parentId} as parent_id,
             ${nodes.title} as title,
+            ${nodes.publishedSynthesisVersionId} as published_synthesis_version_id,
             0 as depth
           from ${nodes}
           where ${nodes.userId} = ${userId} and ${nodes.id} = ${input.nodeId}
@@ -91,6 +95,7 @@ export async function prepareChatContextForUser(
             parent.id,
             parent.parent_id,
             parent.title,
+            parent.published_synthesis_version_id,
             ancestor_path.depth + 1
           from ancestor_path
           inner join ${nodes} parent
@@ -98,7 +103,11 @@ export async function prepareChatContextForUser(
             and parent.id = ancestor_path.parent_id
           where ancestor_path.depth < ${MAX_CHAT_BREADCRUMB_NODES}
         )
-        select ancestor_path.id, ancestor_path.title, ancestor_path.depth
+        select
+          ancestor_path.id,
+          ancestor_path.title,
+          ancestor_path.published_synthesis_version_id,
+          ancestor_path.depth
         from ancestor_path
         order by ancestor_path.depth asc
         limit ${MAX_CHAT_BREADCRUMB_NODES + 1}
@@ -154,6 +163,34 @@ export async function prepareChatContextForUser(
     }
     const boundedBreadcrumb = boundedBreadcrumbNewestFirst.reverse();
 
+    let publishedSynthesis: ChatContextSnapshot["node"]["publishedSynthesis"] = {
+      state: "none",
+    };
+    if (target.published_synthesis_version_id) {
+      const [published] = await tx
+        .select({
+          id: synthesisVersions.id,
+          content: synthesisVersions.content,
+          status: synthesisVersions.status,
+        })
+        .from(synthesisVersions)
+        .where(
+          and(
+            eq(synthesisVersions.userId, userId),
+            eq(synthesisVersions.nodeId, input.nodeId),
+            eq(synthesisVersions.id, target.published_synthesis_version_id),
+          ),
+        );
+      if (!published || published.status !== "approved") {
+        throw new Error("chat context published synthesis is invalid");
+      }
+      publishedSynthesis = {
+        state: "published",
+        versionId: published.id,
+        content: published.content,
+      };
+    }
+
     const recentRows = await tx
       .select({
         id: chatMessages.id,
@@ -191,7 +228,7 @@ export async function prepareChatContextForUser(
     }
 
     return {
-      version: 1,
+      version: 2,
       node: {
         id: target.id,
         title: target.title,
@@ -200,7 +237,7 @@ export async function prepareChatContextForUser(
           hasOmittedAncestors:
             breadcrumbResult.rows.length > boundedBreadcrumb.length,
         },
-        publishedSynthesis: { state: "none" as const },
+        publishedSynthesis,
       },
       messages: boundedNewestFirst.reverse(),
     } satisfies ChatContextSnapshot;

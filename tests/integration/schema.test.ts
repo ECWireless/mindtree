@@ -33,6 +33,7 @@ describe("initial authentication schema", () => {
       "chat_messages",
       "nodes",
       "session",
+      "synthesis_versions",
       "user",
       "verification",
     ]);
@@ -61,6 +62,7 @@ describe("initial authentication schema", () => {
       "chat_messages_role_state_check",
       "chat_messages_status_check",
       "chat_messages_turn_role_unique",
+      "chat_messages_user_node_id_unique",
     ]);
     expect(
       constraints.rows.find(({ conname }) => conname === "chat_messages_node_owner_fk")
@@ -231,6 +233,7 @@ describe("initial authentication schema", () => {
        where conname in (
          'nodes_parent_owner_fk',
          'nodes_sibling_position_unique',
+         'nodes_published_synthesis_owner_fk',
          'nodes_not_own_parent_check',
          'nodes_position_non_negative_check',
          'nodes_title_trimmed_length_check'
@@ -242,6 +245,7 @@ describe("initial authentication schema", () => {
       "nodes_not_own_parent_check",
       "nodes_parent_owner_fk",
       "nodes_position_non_negative_check",
+      "nodes_published_synthesis_owner_fk",
       "nodes_sibling_position_unique",
       "nodes_title_trimmed_length_check",
     ]);
@@ -254,6 +258,273 @@ describe("initial authentication schema", () => {
     expect(
       constraints.rows.find(({ conname }) => conname === "nodes_parent_owner_fk")?.definition,
     ).toContain("FOREIGN KEY (user_id, parent_id) REFERENCES nodes(user_id, id) ON DELETE CASCADE");
+    expect(
+      constraints.rows.find(
+        ({ conname }) => conname === "nodes_published_synthesis_owner_fk",
+      ),
+    ).toMatchObject({
+      condeferrable: true,
+      definition: expect.stringContaining(
+        "FOREIGN KEY (user_id, id, published_synthesis_version_id) REFERENCES synthesis_versions(user_id, node_id, id) DEFERRABLE INITIALLY DEFERRED",
+      ),
+    });
+  });
+
+  it("defines owner-scoped immutable synthesis proposal constraints", async () => {
+    const constraints = await client.query<{
+      conname: string;
+      definition: string;
+    }>(
+      `select conname, pg_get_constraintdef(oid) as definition
+       from pg_constraint
+       where conname like 'synthesis_versions_%'
+       order by conname`,
+    );
+    expect(constraints.rows.map(({ conname }) => conname)).toEqual([
+      "synthesis_versions_base_owner_fk",
+      "synthesis_versions_content_length_check",
+      "synthesis_versions_decision_state_check",
+      "synthesis_versions_generating_message_unique",
+      "synthesis_versions_input_fingerprint_check",
+      "synthesis_versions_message_owner_fk",
+      "synthesis_versions_node_owner_fk",
+      "synthesis_versions_pkey",
+      "synthesis_versions_profile_check",
+      "synthesis_versions_status_check",
+      "synthesis_versions_user_node_id_unique",
+    ]);
+    expect(
+      constraints.rows.find(({ conname }) => conname === "synthesis_versions_node_owner_fk")
+        ?.definition,
+    ).toContain("FOREIGN KEY (user_id, node_id) REFERENCES nodes(user_id, id) ON DELETE CASCADE");
+
+    const indexes = await client.query<{ indexdef: string; indexname: string }>(
+      `select indexname, indexdef
+       from pg_indexes
+       where tablename = 'synthesis_versions'
+       order by indexname`,
+    );
+    expect(indexes.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        indexname: "synthesis_versions_one_pending_per_node",
+        indexdef: expect.stringContaining("WHERE ((status)::text = 'pending'::text)"),
+      }),
+    ]));
+  });
+
+  it("enforces owner- and node-scoped synthesis provenance links", async () => {
+    const ownerId = `synthesis-provenance-${randomUUID()}`;
+    const otherOwnerId = `synthesis-provenance-${randomUUID()}`;
+    const nodeId = randomUUID();
+    const siblingNodeId = randomUUID();
+    const otherNodeId = randomUUID();
+    await client.query(
+      `insert into "user" (id, name, email, email_verified)
+       values
+         ($1, 'Synthetic Provenance Owner', $2, true),
+         ($3, 'Synthetic Other Provenance Owner', $4, true)`,
+      [
+        ownerId,
+        `${randomUUID()}@example.test`,
+        otherOwnerId,
+        `${randomUUID()}@example.test`,
+      ],
+    );
+    await client.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values
+         ($1, $2, null, 0, 'Provenance node'),
+         ($3, $2, null, 1, 'Sibling provenance node'),
+         ($4, $5, null, 0, 'Other provenance node')`,
+      [nodeId, ownerId, siblingNodeId, otherNodeId, otherOwnerId],
+    );
+
+    const baseMessageId = randomUUID();
+    const revisionMessageId = randomUUID();
+    const siblingMessageId = randomUUID();
+    const otherMessageId = randomUUID();
+    for (const [messageId, messageUserId, messageNodeId, sequence] of [
+      [baseMessageId, ownerId, nodeId, 0],
+      [revisionMessageId, ownerId, nodeId, 1],
+      [siblingMessageId, ownerId, siblingNodeId, 0],
+      [otherMessageId, otherOwnerId, otherNodeId, 0],
+    ] as const) {
+      await client.query(
+        `insert into chat_messages
+           (id, user_id, node_id, client_message_id, sequence, role, status, content,
+            model, context_fingerprint, completed_at)
+         values ($1, $2, $3, $4, $5, 'assistant', 'completed', 'Synthetic response',
+           'gpt-5.6-sol', $6, now())`,
+        [
+          messageId,
+          messageUserId,
+          messageNodeId,
+          randomUUID(),
+          sequence,
+          "a".repeat(64),
+        ],
+      );
+    }
+
+    const baseVersionId = randomUUID();
+    await client.query(
+      `insert into synthesis_versions
+         (id, user_id, node_id, status, content, model, reasoning_mode,
+          reasoning_effort, input_fingerprint, generating_message_id, decided_at)
+       values ($1, $2, $3, 'approved', 'Approved base', 'gpt-5.6-sol',
+         'pro', 'high', $4, $5, now())`,
+      [baseVersionId, ownerId, nodeId, "a".repeat(64), baseMessageId],
+    );
+    await client.query(
+      `insert into synthesis_versions
+         (user_id, node_id, base_version_id, status, content, model, reasoning_mode,
+          reasoning_effort, input_fingerprint, generating_message_id)
+       values ($1, $2, $3, 'pending', 'Valid same-node revision', 'gpt-5.6-sol',
+         'pro', 'high', $4, $5)`,
+      [ownerId, nodeId, baseVersionId, "b".repeat(64), revisionMessageId],
+    );
+
+    await expectConstraintViolation(
+      () => client.query(
+        `insert into synthesis_versions
+           (user_id, node_id, base_version_id, status, content, model, reasoning_mode,
+            reasoning_effort, input_fingerprint, generating_message_id, decided_at)
+         values ($1, $2, $3, 'rejected', 'Cross-node base', 'gpt-5.6-sol',
+           'pro', 'high', $4, $5, now())`,
+        [ownerId, siblingNodeId, baseVersionId, "c".repeat(64), siblingMessageId],
+      ),
+      "synthesis_versions_base_owner_fk",
+    );
+    await expectConstraintViolation(
+      () => client.query(
+        `insert into synthesis_versions
+           (user_id, node_id, status, content, model, reasoning_mode,
+            reasoning_effort, input_fingerprint, generating_message_id, decided_at)
+         values ($1, $2, 'rejected', 'Cross-owner message', 'gpt-5.6-sol',
+           'pro', 'high', $3, $4, now())`,
+        [ownerId, nodeId, "d".repeat(64), otherMessageId],
+      ),
+      "synthesis_versions_message_owner_fk",
+    );
+  });
+
+  it("enforces synthesis ownership, pending uniqueness, decision state, and pointer integrity", async () => {
+    const ownerId = `synthesis-owner-${randomUUID()}`;
+    const otherOwnerId = `synthesis-owner-${randomUUID()}`;
+    const nodeId = randomUUID();
+    const otherNodeId = randomUUID();
+    await client.query(
+      `insert into "user" (id, name, email, email_verified)
+       values
+         ($1, 'Synthetic Synthesis Owner', $2, true),
+         ($3, 'Synthetic Other Synthesis Owner', $4, true)`,
+      [
+        ownerId,
+        `${randomUUID()}@example.test`,
+        otherOwnerId,
+        `${randomUUID()}@example.test`,
+      ],
+    );
+    await client.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values
+         ($1, $2, null, 0, 'Synthesis node'),
+         ($3, $4, null, 0, 'Other synthesis node')`,
+      [nodeId, ownerId, otherNodeId, otherOwnerId],
+    );
+
+    const messageId = randomUUID();
+    await client.query(
+      `insert into chat_messages
+         (id, user_id, node_id, client_message_id, sequence, role, status, content,
+          model, context_fingerprint, completed_at)
+       values ($1, $2, $3, $4, 0, 'assistant', 'completed', 'Synthetic response',
+         'gpt-5.6-sol', $5, now())`,
+      [messageId, ownerId, nodeId, randomUUID(), "a".repeat(64)],
+    );
+    const proposalId = randomUUID();
+    await client.query(
+      `insert into synthesis_versions
+         (id, user_id, node_id, status, content, model, reasoning_mode,
+          reasoning_effort, input_fingerprint, generating_message_id)
+       values ($1, $2, $3, 'pending', 'Synthetic proposal', 'gpt-5.6-sol',
+         'pro', 'high', $4, $5)`,
+      [proposalId, ownerId, nodeId, "a".repeat(64), messageId],
+    );
+
+    await expectConstraintViolation(
+      () => client.query(
+        `insert into synthesis_versions
+           (user_id, node_id, status, content, model, reasoning_mode,
+            reasoning_effort, input_fingerprint, generating_message_id)
+         values ($1, $2, 'pending', 'Second pending proposal', 'gpt-5.6-sol',
+           'pro', 'high', $3, $4)`,
+        [ownerId, nodeId, "b".repeat(64), randomUUID()],
+      ),
+      "synthesis_versions_one_pending_per_node",
+    );
+    await expectConstraintViolation(
+      () => client.query(
+        `insert into synthesis_versions
+           (user_id, node_id, status, content, model, reasoning_mode,
+            reasoning_effort, input_fingerprint, generating_message_id, decided_at)
+         values ($1, $2, 'rejected', 'Missing decision', 'gpt-5.6-sol',
+           'pro', 'high', $3, $4, null)`,
+        [ownerId, nodeId, "b".repeat(64), randomUUID()],
+      ),
+      "synthesis_versions_decision_state_check",
+    );
+    await expectConstraintViolation(
+      () => client.query(
+        `insert into synthesis_versions
+           (user_id, node_id, status, content, model, reasoning_mode,
+            reasoning_effort, input_fingerprint, generating_message_id, decided_at)
+         values ($1, $2, 'rejected', 'Wrong profile', 'gpt-5.6-sol',
+           'standard', 'high', $3, $4, now())`,
+        [ownerId, nodeId, "b".repeat(64), randomUUID()],
+      ),
+      "synthesis_versions_profile_check",
+    );
+    await expectConstraintViolation(
+      () => client.query(
+        `insert into synthesis_versions
+           (user_id, node_id, status, content, model, reasoning_mode,
+            reasoning_effort, input_fingerprint, generating_message_id, decided_at)
+         values ($1, $2, 'rejected', '', 'gpt-5.6-sol',
+           'pro', 'high', $3, $4, now())`,
+        [ownerId, nodeId, "b".repeat(64), randomUUID()],
+      ),
+      "synthesis_versions_content_length_check",
+    );
+
+    await expectConstraintViolation(
+      async () => {
+        await client.query(
+          `update nodes set published_synthesis_version_id = $1 where id = $2`,
+          [proposalId, otherNodeId],
+        );
+        await client.query("set constraints nodes_published_synthesis_owner_fk immediate");
+      },
+      "nodes_published_synthesis_owner_fk",
+    );
+
+    await client.query(
+      `update synthesis_versions set status = 'approved', decided_at = now() where id = $1`,
+      [proposalId],
+    );
+    await client.query(
+      `update nodes set published_synthesis_version_id = $1 where id = $2`,
+      [proposalId, nodeId],
+    );
+    await client.query(`delete from nodes where id = $1`, [nodeId]);
+    await client.query("set constraints nodes_published_synthesis_owner_fk immediate");
+    const remaining = await client.query<{ messages: number; proposals: number }>(
+      `select
+         (select count(*)::int from chat_messages where node_id = $1) as messages,
+         (select count(*)::int from synthesis_versions where node_id = $1) as proposals`,
+      [nodeId],
+    );
+    expect(remaining.rows[0]).toEqual({ messages: 0, proposals: 0 });
   });
 
   it("enforces node ownership, title, position, sibling, and subtree constraints", async () => {
