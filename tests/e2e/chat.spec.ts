@@ -15,6 +15,83 @@ async function expectTouchTarget(locator: import("@playwright/test").Locator) {
   expect(box?.width ?? 0).toBeGreaterThanOrEqual(44);
 }
 
+async function expectHistoryScrollChaining(
+  page: import("@playwright/test").Page,
+  outerSelector: string | null,
+) {
+  const history = page.locator(".chat-history");
+  await expect(history.evaluate((element) => getComputedStyle(element).overscrollBehaviorY))
+    .resolves.toBe("auto");
+  if (!outerSelector) return;
+
+  async function positionAtTopBoundary() {
+    return page.evaluate((outerSelector) => {
+      const historyElement = document.querySelector<HTMLElement>(".chat-history");
+      const outer: HTMLElement | null = outerSelector
+        ? document.querySelector<HTMLElement>(outerSelector)
+        : document.scrollingElement as HTMLElement | null;
+      if (!historyElement || !outer) throw new Error("Scroll containers are unavailable.");
+      const maxOuterScroll = outer.scrollHeight - outer.clientHeight;
+      const scrollBehavior = outer.style.scrollBehavior;
+      outer.style.scrollBehavior = "auto";
+      outer.scrollTop = Math.min(maxOuterScroll, 200);
+      outer.style.scrollBehavior = scrollBehavior;
+      historyElement.scrollTop = 0;
+      return outer.scrollTop;
+    }, outerSelector);
+  }
+
+  async function positionAtBottomBoundary() {
+    return page.evaluate((outerSelector) => {
+      const historyElement = document.querySelector<HTMLElement>(".chat-history");
+      const outer: HTMLElement | null = outerSelector
+        ? document.querySelector<HTMLElement>(outerSelector)
+        : document.scrollingElement as HTMLElement | null;
+      if (!historyElement || !outer) throw new Error("Scroll containers are unavailable.");
+      const maxOuterScroll = outer.scrollHeight - outer.clientHeight;
+      const scrollBehavior = outer.style.scrollBehavior;
+      outer.style.scrollBehavior = "auto";
+      outer.scrollTop = Math.max(0, maxOuterScroll - 200);
+      outer.style.scrollBehavior = scrollBehavior;
+      historyElement.scrollTop = historyElement.scrollHeight;
+      return { maxOuterScroll, outerScrollTop: outer.scrollTop };
+    }, outerSelector);
+  }
+
+  async function hoverVisibleHistory() {
+    const box = await history.boundingBox();
+    const viewport = page.viewportSize();
+    expect(box).not.toBeNull();
+    expect(viewport).not.toBeNull();
+    const visibleTop = Math.max(0, box!.y);
+    const visibleBottom = Math.min(viewport!.height, box!.y + box!.height);
+    expect(visibleBottom - visibleTop).toBeGreaterThan(10);
+    await page.mouse.move(box!.x + box!.width / 2, (visibleTop + visibleBottom) / 2);
+  }
+
+  const topOuterScroll = await positionAtTopBoundary();
+  expect(topOuterScroll).toBeGreaterThan(0);
+  await hoverVisibleHistory();
+  await page.mouse.wheel(0, -500);
+  await expect.poll(() => page.evaluate((selector) => {
+    const outer = selector
+      ? document.querySelector<HTMLElement>(selector)
+      : document.scrollingElement;
+    return outer?.scrollTop ?? 0;
+  }, outerSelector)).toBeLessThan(1);
+
+  const bottom = await positionAtBottomBoundary();
+  expect(bottom.maxOuterScroll - bottom.outerScrollTop).toBeGreaterThan(0);
+  await hoverVisibleHistory();
+  await page.mouse.wheel(0, 500);
+  await expect.poll(() => page.evaluate((selector) => {
+    const outer = selector
+      ? document.querySelector<HTMLElement>(selector)
+      : document.scrollingElement;
+    return outer?.scrollTop ?? 0;
+  }, outerSelector)).toBeGreaterThan(bottom.outerScrollTop);
+}
+
 test.afterAll(async () => pool.end());
 
 test("requires authentication before chat request validation", async ({ request }) => {
@@ -78,6 +155,11 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
     await expect(page.getByText("Question 0", { exact: true })).toBeVisible();
     await expect.poll(() => history.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
     await history.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await expectHistoryScrollChaining(
+      page,
+      testInfo.project.name === "desktop" ? ".detail-pane" : null,
+    );
+    await history.evaluate((element) => { element.scrollTop = element.scrollHeight; });
 
     let truncated = false;
     await page.route("**/api/chat", async (route) => {
@@ -107,6 +189,24 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
     await expect(page.locator(".chat-message--assistant").filter({ hasText: "Retry question" })).toBeVisible();
 
     const composer = page.getByRole("textbox", { name: "Message" });
+    await composer.fill("Keyboard line one");
+    await composer.press("Shift+Enter");
+    await composer.type("Keyboard line two");
+    await expect(composer).toHaveValue("Keyboard line one\nKeyboard line two");
+    await composer.evaluate((element) => element.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+      isComposing: true,
+    })));
+    await expect(composer).toHaveValue("Keyboard line one\nKeyboard line two");
+    await expect(page.locator(".chat-message--user").filter({ hasText: "Keyboard line one" })).toHaveCount(0);
+    await composer.press("Enter");
+    const liveStatus = conversation.getByRole("status");
+    await expect(liveStatus).toHaveText("Assistant response started.");
+    await expect(page.locator(".chat-message--user").filter({ hasText: "Keyboard line one" })).toBeVisible();
+    await expect(liveStatus).toHaveText("Assistant response completed.");
+
     await composer.fill("Stop early");
     await composer.focus();
     await page.keyboard.press("Tab");
@@ -133,6 +233,20 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
     await page.reload();
     await expect(page.locator(".chat-message--user").getByText("A fresh angle", { exact: true })).toBeVisible();
     await expect(page.getByText(/What evidence would change your view/).last()).toBeVisible();
+    await expect(history.locator(".chat-composer")).toHaveCount(1);
+    const historyBox = await history.boundingBox();
+    const composerBox = await history.locator(".chat-composer").boundingBox();
+    expect(historyBox).not.toBeNull();
+    expect(composerBox).not.toBeNull();
+    expect(composerBox!.y).toBeGreaterThanOrEqual(historyBox!.y - 1);
+    expect(composerBox!.y + composerBox!.height).toBeLessThanOrEqual(
+      historyBox!.y + historyBox!.height + 1,
+    );
+    const historyDimensions = await history.evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+    }));
+    expect(historyDimensions.scrollWidth).toBeLessThanOrEqual(historyDimensions.clientWidth);
     const generated = await pool.query<{
       context_fingerprint: string;
       model: string;

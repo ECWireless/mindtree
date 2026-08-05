@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+} from "react";
 
 import { loadChatMessages, loadChatTurn } from "@/app/actions/chat";
 import { ChatMessageContent } from "@/components/chat-message-content";
@@ -63,6 +70,7 @@ function createOptimisticTurn(nodeId: string, clientMessageId: string, content: 
 }
 
 export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }: ChatPanelProps) {
+  const composerHelpId = `chat-composer-help-${nodeId}`;
   const [messages, setMessages] = useState(initialPage.messages);
   const [cursor, setCursor] = useState(initialPage.nextCursor);
   const [draft, setDraft] = useState("");
@@ -71,6 +79,7 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
   const [activeClientMessageId, setActiveClientMessageId] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const abortController = useRef<AbortController | null>(null);
+  const draftRef = useRef<HTMLTextAreaElement>(null);
   const historyRef = useRef<HTMLDivElement>(null);
   const followNewest = useRef(true);
   const paginationHeight = useRef<number | null>(null);
@@ -87,6 +96,12 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
       history.scrollTop = history.scrollHeight;
     }
   }, [messages]);
+  useLayoutEffect(() => {
+    const textarea = draftRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`;
+  }, [draft]);
 
   async function loadOlder() {
     if (!cursor || loadingOlder) return;
@@ -218,6 +233,19 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
     void streamTurn({ nodeId, clientMessageId, content, webSearchAuthorized: false });
   }
 
+  function keyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (
+      event.key !== "Enter" ||
+      event.shiftKey ||
+      event.nativeEvent.isComposing
+    ) {
+      return;
+    }
+    event.preventDefault();
+    if (!draft.trim() || activeClientMessageId || !generationEnabled) return;
+    event.currentTarget.form?.requestSubmit();
+  }
+
   function retry(message: ChatMessage) {
     if (activeClientMessageId || !generationEnabled) return;
     const content = unacknowledgedContent.current.get(message.clientMessageId);
@@ -292,27 +320,50 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
             </div>
           </article>
         ))}
+        <form className="chat-composer" onSubmit={submit}>
+          <label className="sr-only" htmlFor={`chat-draft-${nodeId}`}>Message</label>
+          <p className="sr-only" id={composerHelpId}>
+            {generationEnabled
+              ? `Enter to send. Shift+Enter for a new line. Maximum ${MAX_USER_MESSAGE_LENGTH.toLocaleString()} characters.`
+              : "History remains available; configure OPENAI_API_KEY to generate replies."}
+          </p>
+          <textarea
+            ref={draftRef}
+            id={`chat-draft-${nodeId}`}
+            value={draft}
+            maxLength={MAX_USER_MESSAGE_LENGTH}
+            rows={1}
+            disabled={!generationEnabled}
+            aria-describedby={composerHelpId}
+            placeholder={generationEnabled ? "Message this thought…" : "Assistant replies require OpenAI configuration."}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={keyDown}
+          />
+          <div className="chat-composer__actions">
+            <small aria-hidden="true">
+              {generationEnabled ? (
+                <>
+                  <span className="chat-composer__hint">Enter to send · Shift+Enter for a new line</span>
+                  <span>{draft.length.toLocaleString()} / {MAX_USER_MESSAGE_LENGTH.toLocaleString()}</span>
+                </>
+              ) : (
+                <span>History remains available; configure OPENAI_API_KEY to generate replies.</span>
+              )}
+            </small>
+            {activeClientMessageId ? (
+              <button type="button" className="secondary-button" onClick={() => void stop()}>Stop</button>
+            ) : (
+              <button
+                className="chat-composer__send"
+                type="submit"
+                disabled={!generationEnabled || draft.trim().length === 0}
+              >
+                Send
+              </button>
+            )}
+          </div>
+        </form>
       </div>
-      <form className="chat-composer" onSubmit={submit}>
-        <label htmlFor={`chat-draft-${nodeId}`}>Message</label>
-        <textarea
-          id={`chat-draft-${nodeId}`}
-          value={draft}
-          maxLength={MAX_USER_MESSAGE_LENGTH}
-          rows={3}
-          disabled={!generationEnabled}
-          placeholder={generationEnabled ? "Develop this thought…" : "Assistant replies require OpenAI configuration."}
-          onChange={(event) => setDraft(event.target.value)}
-        />
-        <div className="chat-composer__actions">
-          <small>{generationEnabled ? `${draft.length.toLocaleString()} / ${MAX_USER_MESSAGE_LENGTH.toLocaleString()}` : "History remains available; configure OPENAI_API_KEY to generate replies."}</small>
-          {activeClientMessageId ? (
-            <button type="button" className="secondary-button" onClick={() => void stop()}>Stop</button>
-          ) : (
-            <button type="submit" disabled={!generationEnabled || draft.trim().length === 0}>Send</button>
-          )}
-        </div>
-      </form>
       <p className="sr-only" aria-live="polite" role="status">{announcement}</p>
     </section>
   );

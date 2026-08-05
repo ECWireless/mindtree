@@ -175,6 +175,8 @@ v0.1.0 does not include:
   the user message.
 - The composer streams assistant text when supported and remains usable without
   requiring the owner to understand model configuration.
+- The composer remains anchored inside the conversation viewport. **Enter**
+  submits a non-empty message, while **Shift+Enter** inserts a new line.
 - A clear **Use web sources** control is off by default and applies only to the
   next submitted turn. Natural-language requests may explain that the control
   must be enabled; they do not silently authorize web use.
