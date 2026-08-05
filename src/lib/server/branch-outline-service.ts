@@ -11,18 +11,25 @@ import {
   synthesisVersions,
   user,
 } from "@/db/schema";
-import { OPENAI_SYNTHESIS_MODEL } from "@/lib/ai/openai-profiles";
+import {
+  OPENAI_CHAT_TIMEOUT_MS,
+  OPENAI_SYNTHESIS_MODEL,
+} from "@/lib/ai/openai-profiles";
 import {
   branchOutlineDraftSchema,
   claimBranchOutlineGenerationInputSchema,
   completeBranchOutlineGenerationInputSchema,
   failBranchOutlineGenerationInputSchema,
+  generateBranchOutlineInputSchema,
+  recordBranchOutlineProviderResponseInputSchema,
   type BranchOutlineInputSnapshot,
   type BranchOutlineVersion,
   type BranchOutlineWorkspace,
   type ClaimBranchOutlineGenerationInput,
   type CompleteBranchOutlineGenerationInput,
   type FailBranchOutlineGenerationInput,
+  type GenerateBranchOutlineInput,
+  type RecordBranchOutlineProviderResponseInput,
 } from "@/lib/branch-outlines/contracts";
 import {
   fingerprintBranchOutlineGeneration,
@@ -31,6 +38,16 @@ import {
 
 type BranchOutlineTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type LockedNode = typeof nodes.$inferSelect;
+
+export const BRANCH_OUTLINE_GENERATION_LEASE_MS = OPENAI_CHAT_TIMEOUT_MS + 30_000;
+
+export function isBranchOutlineGenerationExpired(
+  generation: Pick<BranchOutlineVersion, "updatedAt">,
+  now = Date.now(),
+) {
+  return new Date(generation.updatedAt).getTime() <=
+    now - BRANCH_OUTLINE_GENERATION_LEASE_MS;
+}
 
 export class BranchOutlineServiceError extends Error {
   constructor(public readonly reason:
@@ -348,21 +365,37 @@ export async function claimBranchOutlineGenerationForUser(
         return {
           generation: toBranchOutlineVersion(existing),
           inputs: existingInputs,
+          installed: node.currentBranchOutlineVersionId === existing.id,
           replayed: true,
         };
       }
 
       const [active] = await tx
-        .select({ id: branchOutlineVersions.id })
+        .select()
         .from(branchOutlineVersions)
         .where(and(
           eq(branchOutlineVersions.userId, userId),
           eq(branchOutlineVersions.nodeId, parsed.data.nodeId),
           eq(branchOutlineVersions.status, "pending"),
         ))
-        .limit(1);
+        .limit(1)
+        .for("update");
       if (active) {
-        throw new BranchOutlineServiceError("generation-in-progress");
+        if (
+          active.updatedAt.getTime() >
+          Date.now() - BRANCH_OUTLINE_GENERATION_LEASE_MS
+        ) {
+          throw new BranchOutlineServiceError("generation-in-progress");
+        }
+        const failedAt = new Date();
+        await tx
+          .update(branchOutlineVersions)
+          .set({
+            status: "failed",
+            failureCode: "stream-disconnected",
+            updatedAt: failedAt,
+          })
+          .where(eq(branchOutlineVersions.id, active.id));
       }
       if (node.publishedSynthesisVersionId !== parsed.data.baseSynthesisVersionId) {
         throw new BranchOutlineServiceError("inputs-changed");
@@ -376,6 +409,7 @@ export async function claimBranchOutlineGenerationForUser(
       const currentFingerprint = fingerprintBranchOutlineGeneration({
         nodeId: node.id,
         nodeTitle: node.title,
+        nodeArchivedAt: node.archivedAt?.toISOString() ?? null,
         baseSynthesisVersionId: node.publishedSynthesisVersionId,
         inputs: currentInputs,
       });
@@ -412,6 +446,7 @@ export async function claimBranchOutlineGenerationForUser(
       return {
         generation: toBranchOutlineVersion(created),
         inputs: currentInputs,
+        installed: false,
         replayed: false,
       };
     });
@@ -473,6 +508,7 @@ export async function completeBranchOutlineGenerationForUser(
       const currentFingerprint = fingerprintBranchOutlineGeneration({
         nodeId: node.id,
         nodeTitle: node.title,
+        nodeArchivedAt: node.archivedAt?.toISOString() ?? null,
         baseSynthesisVersionId: node.publishedSynthesisVersionId,
         inputs: currentInputs,
       });
@@ -531,6 +567,46 @@ export async function completeBranchOutlineGenerationForUser(
   }
 }
 
+export async function recordBranchOutlineProviderResponseForUser(
+  userId: string,
+  input: RecordBranchOutlineProviderResponseInput,
+) {
+  const parsed = recordBranchOutlineProviderResponseInputSchema.safeParse(input);
+  if (!parsed.success) throw new BranchOutlineServiceError("invalid-generation");
+  try {
+    return await db.transaction(async (tx) => {
+      const { node } = await lockOwnerTree(tx, userId, parsed.data.nodeId);
+      const generation = await lockGeneration(
+        tx,
+        userId,
+        node.id,
+        parsed.data.generationId,
+      );
+      if (generation.status !== "pending") {
+        throw new BranchOutlineServiceError("generation-not-pending");
+      }
+      if (generation.providerResponseId === parsed.data.providerResponseId) {
+        return { generation: toBranchOutlineVersion(generation), replayed: true };
+      }
+      if (generation.providerResponseId !== null) {
+        throw new BranchOutlineServiceError("invalid-generation");
+      }
+      const [updated] = await tx
+        .update(branchOutlineVersions)
+        .set({
+          providerResponseId: parsed.data.providerResponseId,
+          updatedAt: new Date(),
+        })
+        .where(eq(branchOutlineVersions.id, generation.id))
+        .returning();
+      if (!updated) throw new BranchOutlineServiceError("unavailable");
+      return { generation: toBranchOutlineVersion(updated), replayed: false };
+    });
+  } catch (error) {
+    throw sanitizeBranchOutlineServiceError(error);
+  }
+}
+
 export async function failBranchOutlineGenerationForUser(
   userId: string,
   input: FailBranchOutlineGenerationInput,
@@ -573,6 +649,79 @@ export async function failBranchOutlineGenerationForUser(
   }
 }
 
+export async function getBranchOutlineGenerationForRequestForUser(
+  userId: string,
+  input: GenerateBranchOutlineInput,
+) {
+  const parsed = generateBranchOutlineInputSchema.safeParse(input);
+  if (!parsed.success) throw new BranchOutlineServiceError("invalid-generation");
+  return db.transaction(async (tx) => {
+    const [node] = await tx
+      .select({ currentBranchOutlineVersionId: nodes.currentBranchOutlineVersionId })
+      .from(nodes)
+      .where(and(eq(nodes.userId, userId), eq(nodes.id, parsed.data.nodeId)));
+    if (!node) throw new BranchOutlineServiceError("node-not-found");
+    const [generation] = await tx
+      .select()
+      .from(branchOutlineVersions)
+      .where(and(
+        eq(branchOutlineVersions.userId, userId),
+        eq(branchOutlineVersions.nodeId, parsed.data.nodeId),
+        eq(branchOutlineVersions.clientRequestId, parsed.data.clientRequestId),
+      ));
+    return generation
+      ? {
+          generation: toBranchOutlineVersion(generation),
+          installed: node.currentBranchOutlineVersionId === generation.id,
+        }
+      : null;
+  }, {
+    accessMode: "read only",
+    isolationLevel: "repeatable read",
+  });
+}
+
+export async function recoverAbandonedBranchOutlineGenerationForUser(
+  userId: string,
+  nodeId: string,
+) {
+  try {
+    return await db.transaction(async (tx) => {
+      const { node } = await lockOwnerTree(tx, userId, nodeId);
+      const [pending] = await tx
+        .select()
+        .from(branchOutlineVersions)
+        .where(and(
+          eq(branchOutlineVersions.userId, userId),
+          eq(branchOutlineVersions.nodeId, node.id),
+          eq(branchOutlineVersions.status, "pending"),
+        ))
+        .limit(1)
+        .for("update");
+      if (
+        !pending ||
+        pending.updatedAt.getTime() > Date.now() - BRANCH_OUTLINE_GENERATION_LEASE_MS
+      ) {
+        return { recovered: false };
+      }
+      const failedAt = new Date();
+      const [failed] = await tx
+        .update(branchOutlineVersions)
+        .set({
+          status: "failed",
+          failureCode: "stream-disconnected",
+          updatedAt: failedAt,
+        })
+        .where(eq(branchOutlineVersions.id, pending.id))
+        .returning();
+      if (!failed) throw new BranchOutlineServiceError("unavailable");
+      return { recovered: true, generation: toBranchOutlineVersion(failed) };
+    });
+  } catch (error) {
+    throw sanitizeBranchOutlineServiceError(error);
+  }
+}
+
 export async function getBranchOutlineWorkspaceForUser(
   userId: string,
   nodeId: string,
@@ -599,7 +748,10 @@ export async function getBranchOutlineWorkspaceForUser(
           ))
           .limit(1)
       : [];
-    if (node.currentBranchOutlineVersionId && current?.status !== "completed") {
+    if (
+      node.currentBranchOutlineVersionId &&
+      (current?.status !== "completed" || current.completedAt === null)
+    ) {
       throw new BranchOutlineServiceError("unavailable");
     }
 
@@ -629,7 +781,10 @@ export async function getBranchOutlineWorkspaceForUser(
     return {
       current: current ? toBranchOutlineVersion(current) : null,
       pending: pendingRows[0] ? toBranchOutlineVersion(pendingRows[0]) : null,
-      latestFailure: latestFailure ? toBranchOutlineVersion(latestFailure) : null,
+      latestFailure:
+        latestFailure && (!current || latestFailure.updatedAt > current.completedAt!)
+          ? toBranchOutlineVersion(latestFailure)
+          : null,
       staleAt: node.branchOutlineStaleAt?.toISOString() ?? null,
       staleReason: node.branchOutlineStaleReason,
     };

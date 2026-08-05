@@ -932,6 +932,61 @@ button:not(:disabled) {
   font-size: 1.25rem;
 }
 
+.branch-outline {
+  max-width: 44rem;
+  border-top: 1px solid rgb(154 166 178 / 18%);
+  margin-top: 1.75rem;
+  padding-top: 1.5rem;
+}
+
+.branch-outline__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.branch-outline__heading h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.branch-outline__heading .button {
+  padding: 0.4rem 0.75rem;
+}
+
+.branch-outline__state,
+.branch-outline__empty,
+.branch-outline__busy,
+.branch-outline__error {
+  margin: 0.45rem 0 0;
+  color: var(--color-muted);
+  line-height: 1.55;
+}
+
+.branch-outline__state {
+  color: var(--color-yellow);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.branch-outline__preview {
+  border: 1px solid rgb(77 163 220 / 34%);
+  border-radius: 0.75rem;
+  margin-top: 1rem;
+  padding: 0.9rem;
+  background: rgb(20 44 63 / 28%);
+}
+
+.branch-outline__busy {
+  font-size: 0.82rem;
+}
+
+.branch-outline__error {
+  color: #ffb2ad;
+}
+
 .node-dialog {
   position: fixed;
   inset: 0;

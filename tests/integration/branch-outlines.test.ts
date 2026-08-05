@@ -10,10 +10,12 @@ import {
 } from "../../src/lib/server/branch-outline-fingerprint";
 import {
   BranchOutlineServiceError,
+  BRANCH_OUTLINE_GENERATION_LEASE_MS,
   claimBranchOutlineGenerationForUser,
   completeBranchOutlineGenerationForUser,
   failBranchOutlineGenerationForUser,
   getBranchOutlineWorkspaceForUser,
+  recordBranchOutlineProviderResponseForUser,
 } from "../../src/lib/server/branch-outline-service";
 
 const connectionString = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
@@ -131,6 +133,7 @@ async function insertPendingSummaryProposal(
 function claimInput(input: {
   nodeId: string;
   nodeTitle: string;
+  nodeArchivedAt?: string | null;
   clientRequestId?: string;
   baseSynthesisVersionId?: string | null;
   inputs?: BranchOutlineInputSnapshot[];
@@ -145,6 +148,7 @@ function claimInput(input: {
     inputFingerprint: fingerprintBranchOutlineGeneration({
       nodeId: input.nodeId,
       nodeTitle: input.nodeTitle,
+      nodeArchivedAt: input.nodeArchivedAt ?? null,
       baseSynthesisVersionId,
       inputs,
     }),
@@ -232,6 +236,21 @@ describe("Branch Outline persistence", () => {
       nodeTitle: "Completion node",
       baseSynthesisVersionId: summaryId,
     }));
+    await expect(recordBranchOutlineProviderResponseForUser(userId, {
+      nodeId,
+      generationId: claim.generation.id,
+      providerResponseId: "resp_synthetic_outline",
+    })).resolves.toMatchObject({ replayed: false });
+    await expect(recordBranchOutlineProviderResponseForUser(userId, {
+      nodeId,
+      generationId: claim.generation.id,
+      providerResponseId: "resp_synthetic_outline",
+    })).resolves.toMatchObject({ replayed: true });
+    await expect(recordBranchOutlineProviderResponseForUser(userId, {
+      nodeId,
+      generationId: claim.generation.id,
+      providerResponseId: "resp_conflicting_outline",
+    })).rejects.toEqual(new BranchOutlineServiceError("invalid-generation"));
 
     const completed = await completeBranchOutlineGenerationForUser(userId, {
       nodeId,
@@ -243,6 +262,11 @@ describe("Branch Outline persistence", () => {
       replayed: false,
       generation: { status: "completed", content: "# Branch\n\n- Current direction" },
     });
+    await expect(recordBranchOutlineProviderResponseForUser(userId, {
+      nodeId,
+      generationId: claim.generation.id,
+      providerResponseId: "resp_synthetic_outline",
+    })).rejects.toEqual(new BranchOutlineServiceError("generation-not-pending"));
     await expect(completeBranchOutlineGenerationForUser(userId, {
       nodeId,
       generationId: claim.generation.id,
@@ -306,6 +330,47 @@ describe("Branch Outline persistence", () => {
       pending: null,
       latestFailure: { id: second.generation.id, failureCode: "provider-timeout" },
     });
+  });
+
+  it("fails and replaces an expired pending generation without allowing late installation", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId, "Expired generation");
+    const abandoned = await claimBranchOutlineGenerationForUser(userId, claimInput({
+      nodeId,
+      nodeTitle: "Expired generation",
+    }));
+    await pool.query(
+      `update branch_outline_versions set updated_at = $1 where id = $2`,
+      [new Date(Date.now() - BRANCH_OUTLINE_GENERATION_LEASE_MS - 1_000), abandoned.generation.id],
+    );
+
+    const replacement = await claimBranchOutlineGenerationForUser(userId, claimInput({
+      nodeId,
+      nodeTitle: "Expired generation",
+    }));
+    expect(replacement).toMatchObject({
+      replayed: false,
+      generation: { status: "pending" },
+    });
+    const expired = await pool.query<{ status: string; failure_code: string }>(
+      `select status, failure_code from branch_outline_versions where id = $1`,
+      [abandoned.generation.id],
+    );
+    expect(expired.rows).toEqual([{
+      status: "failed",
+      failure_code: "stream-disconnected",
+    }]);
+    await expect(completeBranchOutlineGenerationForUser(userId, {
+      nodeId,
+      generationId: abandoned.generation.id,
+      draft: { content: "Late abandoned output" },
+    })).resolves.toMatchObject({
+      installed: false,
+      replayed: true,
+      generation: { status: "failed", failureCode: "stream-disconnected" },
+    });
+    expect((await getBranchOutlineWorkspaceForUser(userId, nodeId)).pending)
+      .toMatchObject({ id: replacement.generation.id });
   });
 
   it("seals exact outline and Summary-proposal provenance while preserving cascades", async () => {
@@ -492,6 +557,25 @@ describe("Branch Outline persistence", () => {
       nodeId,
       generationId: claim.generation.id,
       draft: { content: "Generated from the first Summary" },
+    })).resolves.toMatchObject({
+      installed: false,
+      generation: { status: "failed", failureCode: "inputs-changed" },
+    });
+  });
+
+  it("fails installation when the target archive state changes", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId, "Archive race node");
+    const claim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+      nodeId,
+      nodeTitle: "Archive race node",
+    }));
+    await pool.query(`update nodes set archived_at = now() where id = $1`, [nodeId]);
+
+    await expect(completeBranchOutlineGenerationForUser(userId, {
+      nodeId,
+      generationId: claim.generation.id,
+      draft: { content: "Generated before archive" },
     })).resolves.toMatchObject({
       installed: false,
       generation: { status: "failed", failureCode: "inputs-changed" },

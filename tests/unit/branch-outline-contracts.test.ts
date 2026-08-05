@@ -86,6 +86,7 @@ describe("Branch Outline contracts", () => {
     const fingerprint = fingerprintBranchOutlineGeneration({
       nodeId,
       nodeTitle: "Synthetic parent",
+      nodeArchivedAt: null,
       baseSynthesisVersionId: null,
       inputs,
     });
@@ -94,14 +95,23 @@ describe("Branch Outline contracts", () => {
     expect(fingerprintBranchOutlineGeneration({
       nodeId,
       nodeTitle: "Synthetic parent",
+      nodeArchivedAt: null,
       baseSynthesisVersionId: null,
       inputs,
     })).toBe(fingerprint);
     expect(fingerprintBranchOutlineGeneration({
       nodeId,
       nodeTitle: "Synthetic parent",
+      nodeArchivedAt: null,
       baseSynthesisVersionId: null,
       inputs: [{ ...inputs[0]!, position: 1 }],
+    })).not.toBe(fingerprint);
+    expect(fingerprintBranchOutlineGeneration({
+      nodeId,
+      nodeTitle: "Synthetic parent",
+      nodeArchivedAt: "2026-01-01T00:00:00.000Z",
+      baseSynthesisVersionId: null,
+      inputs,
     })).not.toBe(fingerprint);
     expect(claimBranchOutlineGenerationInputSchema.safeParse({
       nodeId,

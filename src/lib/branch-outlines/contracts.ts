@@ -32,6 +32,15 @@ export const branchOutlineStaleReasonSchema = z.enum([
 
 export const branchOutlineDraftSchema = synthesisProposalDraftSchema;
 
+export const generateBranchOutlineInputSchema = z.object({
+  nodeId: z.uuid(),
+  clientRequestId: z.uuid(),
+}).strict();
+
+export const loadBranchOutlineWorkspaceInputSchema = z.object({
+  nodeId: z.uuid(),
+}).strict();
+
 export const branchOutlineInputSnapshotSchema = z.object({
   sourceNodeId: z.uuid(),
   sourceSynthesisVersionId: z.uuid().nullable(),
@@ -83,10 +92,19 @@ export const failBranchOutlineGenerationInputSchema = z.object({
   failureCode: branchOutlineFailureCodeSchema,
 }).strict();
 
+export const recordBranchOutlineProviderResponseInputSchema = z.object({
+  nodeId: z.uuid(),
+  generationId: z.uuid(),
+  providerResponseId: z.string().min(1).max(255),
+}).strict();
+
 export type BranchOutlineStatus = z.infer<typeof branchOutlineStatusSchema>;
 export type BranchOutlineFailureCode = z.infer<typeof branchOutlineFailureCodeSchema>;
 export type BranchOutlineStaleReason = z.infer<typeof branchOutlineStaleReasonSchema>;
 export type BranchOutlineDraft = z.infer<typeof branchOutlineDraftSchema>;
+export type GenerateBranchOutlineInput = z.infer<
+  typeof generateBranchOutlineInputSchema
+>;
 export type BranchOutlineInputSnapshot = z.infer<
   typeof branchOutlineInputSnapshotSchema
 >;
@@ -98,6 +116,9 @@ export type CompleteBranchOutlineGenerationInput = z.infer<
 >;
 export type FailBranchOutlineGenerationInput = z.infer<
   typeof failBranchOutlineGenerationInputSchema
+>;
+export type RecordBranchOutlineProviderResponseInput = z.infer<
+  typeof recordBranchOutlineProviderResponseInputSchema
 >;
 
 export type BranchOutlineVersion = {
@@ -125,3 +146,13 @@ export type BranchOutlineWorkspace = {
   staleAt: string | null;
   staleReason: BranchOutlineStaleReason | null;
 };
+
+export type BranchOutlineStreamEvent =
+  | { type: "generation"; generation: BranchOutlineVersion }
+  | { type: "delta"; content: string }
+  | {
+      type: "completed";
+      generation: BranchOutlineVersion;
+      installed: boolean;
+    }
+  | { type: "failed"; generation: BranchOutlineVersion };

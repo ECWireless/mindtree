@@ -27,6 +27,7 @@ export function fingerprintBranchOutlineSourceState(
 export function fingerprintBranchOutlineGeneration(input: {
   nodeId: string;
   nodeTitle: string;
+  nodeArchivedAt: string | null;
   baseSynthesisVersionId: string | null;
   inputs: readonly BranchOutlineInputSnapshot[];
 }) {
@@ -34,6 +35,7 @@ export function fingerprintBranchOutlineGeneration(input: {
     version: 1,
     nodeId: input.nodeId,
     nodeTitle: input.nodeTitle,
+    nodeArchivedAt: input.nodeArchivedAt,
     baseSynthesisVersionId: input.baseSynthesisVersionId,
     inputs: input.inputs.map((source) => ({
       sourceNodeId: source.sourceNodeId,

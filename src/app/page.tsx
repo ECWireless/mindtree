@@ -48,16 +48,22 @@ export default async function Home({ searchParams }: HomeProps) {
       : false;
     let initialChatPage;
     let initialSynthesisWorkspace;
+    let initialBranchOutlineWorkspace;
     let chatGenerationEnabled = false;
+    let branchOutlineGenerationEnabled = false;
     if (selectedNodeId && selectedNodeExists) {
       const [
         { getChatMessagesForUser },
         { isChatGenerationEnabled },
         { getSynthesisWorkspaceForUser },
+        { getBranchOutlineWorkspaceForUser },
+        { isBranchOutlineGenerationEnabled },
       ] = await Promise.all([
         import("@/lib/server/chat-service"),
         import("@/lib/server/chat-runtime"),
         import("@/lib/server/synthesis-service"),
+        import("@/lib/server/branch-outline-service"),
+        import("@/lib/server/branch-outline-runtime"),
       ]);
       initialChatPage = await getChatMessagesForUser(session.user.id, {
         nodeId: selectedNodeId,
@@ -71,7 +77,12 @@ export default async function Home({ searchParams }: HomeProps) {
             .map((message) => message.id),
         },
       );
+      initialBranchOutlineWorkspace = await getBranchOutlineWorkspaceForUser(
+        session.user.id,
+        selectedNodeId,
+      );
       chatGenerationEnabled = isChatGenerationEnabled();
+      branchOutlineGenerationEnabled = isBranchOutlineGenerationEnabled();
     }
 
     return (
@@ -81,7 +92,9 @@ export default async function Home({ searchParams }: HomeProps) {
         selectedNodeId={selectedNodeId}
         initialChatPage={initialChatPage}
         initialSynthesisWorkspace={initialSynthesisWorkspace}
+        initialBranchOutlineWorkspace={initialBranchOutlineWorkspace}
         chatGenerationEnabled={chatGenerationEnabled}
+        branchOutlineGenerationEnabled={branchOutlineGenerationEnabled}
       />
     );
   }
