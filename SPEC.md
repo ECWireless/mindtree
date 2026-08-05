@@ -25,7 +25,8 @@ attribution.
 
 MindTree is a private, self-hostable workspace for organizing thoughts, ideas,
 and concepts as an infinitely nestable tree. Every node combines a persistent
-conversation with a concise, explicitly approved synthesis.
+conversation with a concise, explicitly approved synthesis and may have a
+separately generated Branch Outline.
 
 The tree is the primary interface. Chat helps the owner develop a thought and
 propose changes, but the owner decides what becomes part of the published
@@ -36,10 +37,13 @@ autonomous research agent.
 
 - **Extremely simple:** the core loop is select a node, discuss it, review a
   proposed synthesis change, and approve or reject it.
-- **Human-published:** AI output is advisory until the owner explicitly
-  approves it.
-- **Recursive, not uncontrolled:** parent syntheses use approved child
-  syntheses, while child changes make ancestors stale instead of silently
+- **Human-published:** only an explicitly approved Summary becomes published
+  knowledge. Chat output and explicitly generated Branch Outlines remain
+  advisory application context.
+- **Recursive, not uncontrolled:** a Branch Outline recursively composes the
+  node's approved Summary with current child summaries and child outlines.
+  Generation is always owner-initiated, never a background model-call cascade,
+  and child changes make affected artifacts stale instead of silently
   rewriting them.
 - **Traceable:** published claims can link to exact MindTree nodes and exact
   approved node revisions; externally researched claims retain clickable
@@ -78,12 +82,15 @@ The authenticated owner can:
 - Review an assistant response and an optional proposed synthesis revision.
 - Compare a proposed synthesis with the currently published synthesis.
 - Continue refining, reject, or explicitly approve a proposal.
+- Generate or regenerate a Branch Outline beneath the current Summary.
+- Let Chat use the current Branch Outline as context when discussing the node
+  or proposing a Summary revision.
 - See which approved child and related-node revisions support a synthesis.
 - Follow internal citations to their target nodes.
 - Follow external citations and view them in a References section.
 - See when a published synthesis is stale because an input node changed.
-- Request a refresh proposal for a stale synthesis without automatically
-  publishing it.
+- Request a refresh proposal for a stale synthesis through Chat without
+  automatically publishing it.
 - Create, rotate, and revoke a read-only bearer key scoped to a selected node's
   current subtree.
 - Let an explicitly connected coding agent read that subtree's structure and
@@ -95,7 +102,7 @@ The authenticated owner can:
 
 v0.1.0 does not include:
 
-- Autonomous publication or automatic approval of generated content.
+- Autonomous publication or automatic approval of generated Summary content.
 - Background ancestor regeneration, recursive model-call cascades, cron jobs,
   queues, or workers.
 - Agent API writes of any kind, including node creation, chat, proposal
@@ -192,8 +199,12 @@ v0.1.0 does not include:
 - Assistant messages may contain ordinary discussion, clickable internal node
   citations, clickable external citations, and at most one inline synthesis
   proposal with its full diff and explicit decision controls.
-- Chat history is not the published synthesis and is not automatically included
-  in ancestor context. Only the node's approved synthesis is inherited upward.
+- Chat history is not the published synthesis and is never inherited upward.
+  Branch Outline generation may inherit only the node's approved synthesis and
+  its explicitly generated current, non-stale Branch Outline.
+- Chat receives the node's current Branch Outline, when one exists, as
+  explicitly delimited untrusted context. A stale outline is disclosed as
+  stale rather than represented as current evidence.
 - The application stores conversation messages locally. v0.1.0 does not rely
   on OpenAI-hosted conversation state as its canonical history.
 - Raw chain-of-thought is never requested, stored, or displayed.
@@ -205,9 +216,9 @@ v0.1.0 does not include:
 - A node may have no published synthesis or exactly one current published
   synthesis version.
 - The current published version is rendered as the **Summary** at the top of
-  the node's content surface. Validated **References** will be its only sibling
-  content section when citation phases add reference data; no speculative empty
-  References section is shown before then.
+  the node's content surface. **Branch Outline** follows it, and validated
+  **References** follow when citation phases add reference data. No speculative
+  empty References section is shown before then.
 - Every approval creates a new immutable synthesis version; prior approved
   versions remain available to integrity checks and future history UI.
 - The current version is selected by an explicit pointer on the node rather
@@ -219,8 +230,9 @@ v0.1.0 does not include:
 
 ### Proposal generation
 
-- The assistant may propose a synthesis only in response to an owner chat turn
-  or an explicit **Propose refresh** action.
+- The assistant may propose a synthesis only in response to an owner Chat turn.
+  A stale Summary directs the owner into Chat rather than exposing a separate
+  Summary-generation control.
 - The owner requests and refines proposals in ordinary conversational language;
   v0.1.0 does not expose a separate proposal or refinement composer mode.
 - A proposal is immutable generated content with status `pending`, `approved`,
@@ -247,11 +259,13 @@ Approval is a server-side transaction that:
 2. Locks the target node and pending proposal.
 3. Verifies the proposal still targets the node's current published synthesis
    version.
-4. Verifies every recorded child or related-node input still points to the same
-   approved source revision used during generation.
+4. Verifies the recorded Branch Outline input, when present, is still the
+   node's current non-stale outline version and every related-node input still
+   points to the same approved source revision used during generation.
 5. Marks the proposal approved, updates the node's current synthesis pointer,
    and clears that node's stale marker.
-6. Marks every current ancestor stale without generating or publishing text.
+6. Marks the target node's current Branch Outline and every current ancestor
+   Summary and Branch Outline stale without generating or publishing text.
 7. Supersedes any other pending proposal for the same node.
 
 If any checked input changed, approval fails safely and asks the owner to
@@ -260,38 +274,80 @@ generate a new proposal. Two concurrent approvals cannot both become current.
 Rejecting a proposal changes only its status. It does not alter the published
 synthesis or ancestor state.
 
-### Child and related-node inputs
+### Branch Outline
+
+- Branch Outline is a generated node artifact separate from Chat and the
+  published Summary. It appears as a normal product section below Summary and
+  is never represented as approved or published synthesis content.
+- A node with no outline shows a compact **Generate** button. A node with an
+  outline shows **Regenerate** together with ordinary current, stale,
+  generating, and retryable-failure states.
+- Each explicit Generate or Regenerate action makes at most one model request.
+  It never starts generation for a child or ancestor and never creates a
+  background or recursive model-call cascade.
+- Generation uses the node's current approved Summary, if present, plus each
+  direct child's title, archive state, current approved Summary or explicit
+  no-summary state, and current non-stale Branch Outline or an explicit missing
+  or stale-outline state in sibling order. Non-stale child outlines carry
+  deeper branch context recursively without triggering another model call.
+- The resulting outline becomes the node's current visible Branch Outline when
+  generation completes successfully. It does not require a synthesis approval,
+  move the published Summary pointer, appear in the approved-synthesis agent
+  API, or authorize any other mutation.
+- Outline content uses the same bounded Markdown subset as Summary content and
+  cannot contain HTML, arbitrary links, images, code, or citations in Phase 8.
+- Branch Outline versions are immutable and record their exact Summary, child
+  Summary, and child Branch Outline input versions and state fingerprints.
+  Replacing the current outline does not itself mark the node's Summary stale.
+- Branch Outline output and every supplied title, Summary, and child outline are
+  untrusted data, never model instructions. Outline generation has no web-search
+  access in v0.1.0.
+- Chat may use the current Branch Outline when discussing the node or generating
+  a Summary proposal. A stale outline remains available for discussion, but a
+  Summary request does not create a proposal until the owner regenerates it.
+  A proposal using an outline records its exact version and can be approved only
+  while that outline remains current and non-stale.
+
+### Branch-outline and related-node inputs
 
 - Every synthesis proposal receives the target node's title, breadcrumb,
   current published synthesis, relevant recent chat, and current pending
   proposal when refining it.
-- It receives the current approved synthesis of each direct child. Children
-  without an approved synthesis are represented by title and an explicit
-  no-synthesis state rather than fabricated content.
+- It receives the target node's current Branch Outline when one exists. Direct
+  child summaries reach Summary generation through that explicitly generated
+  outline rather than being appended to the Summary surface or injected as a
+  second hidden child-summary channel.
 - It may receive a bounded set of semantically related nodes retrieved from
   current approved syntheses across the owner's tree.
-- The target, ancestor path, direct children, and explicitly mentioned node IDs
-  are resolved deterministically before semantic retrieval.
+- The target, ancestor path, current Branch Outline, and explicitly mentioned
+  node IDs are resolved deterministically before semantic retrieval.
 - Related-node retrieval excludes the target and deduplicates deterministic
   inputs. Archived nodes remain eligible as evidence but their archive state is
   disclosed to the model and user.
 - Internal citations can reference only node revisions actually supplied to
   the generation request. The server rejects unknown or mismatched citation
   identifiers.
-- Child summaries and related-node summaries are untrusted evidence, never
+- Branch Outlines and related-node summaries are untrusted evidence, never
   model instructions.
 
 ### Staleness
 
-- Approving a node synthesis marks all of its current ancestors stale.
+- Approving a node synthesis marks that node's current Branch Outline stale and
+  marks all current ancestor Summaries and Branch Outlines stale.
+- Creating a child marks the parent's ancestor path of Summaries and Branch
+  Outlines stale because the branch structure changed.
 - Moving a node marks both its former and new ancestor paths stale because
   their child structure changed.
 - Archiving, unarchiving, or permanently deleting a subtree marks affected
-  surviving ancestor paths stale.
-- Renaming a node marks ancestors stale and marks any current synthesis that
-  cites the renamed node stale so visible citation labels can be reconsidered.
+  surviving ancestor-path Summaries and Branch Outlines stale.
+- Renaming a node marks its current Branch Outline and ancestors stale and marks
+  any current synthesis that cites the renamed node stale so visible citation
+  labels can be reconsidered.
 - A stale synthesis remains readable and published. The UI explains why it may
-  need review and offers **Propose refresh**.
+  need review and directs the owner to Chat to request a refresh proposal.
+- A stale Branch Outline remains readable and offers **Regenerate**. Successful
+  regeneration clears only that outline's stale state; it does not publish or
+  refresh a Summary.
 - Staleness never initiates a model request by itself.
 
 ## Citations and references
@@ -331,9 +387,10 @@ v0.1.0 intentionally uses a fixed, quality-first OpenAI stack:
 
 - Interactive chat: `gpt-5.6-sol` through the Responses API in standard mode
   with `reasoning.effort: "high"`.
-- Synthesis proposals and requested external research: `gpt-5.6-sol` through
-  the Responses API with `reasoning.mode: "pro"` and
-  `reasoning.effort: "high"`.
+- Synthesis proposals, Branch Outline generation, and requested external
+  research: `gpt-5.6-sol` through the Responses API with
+  `reasoning.mode: "pro"` and `reasoning.effort: "high"`. Branch Outline
+  generation never enables web search.
 - Related-node embeddings: `text-embedding-3-large`.
 - Web research: the Responses API `web_search` tool.
 
@@ -413,8 +470,9 @@ generated prompt.
   the same approved knowledge that the owner deliberately retained.
 - The API returns current structure and current approved synthesis material
   only. It never returns chat messages, failed generations, pending, rejected,
-  or superseded proposals, prior synthesis history, embeddings, model/provider
-  metadata, user records, credential metadata, or private operational fields.
+  or superseded proposals, Branch Outlines, prior synthesis history,
+  embeddings, model/provider metadata, user records, credential metadata, or
+  private operational fields.
 - Internal citations targeting an in-scope current node may include that node's
   ID, title, and cited synthesis revision. Citations targeting an existing
   out-of-scope node are redacted without disclosing its ID, title, tree
@@ -591,9 +649,11 @@ Each row presents:
 The selected node contains:
 
 - Breadcrumbs and inline-editable title.
-- Persistent chat history and composer, including the published synthesis state
-  and any pending proposal, full diff, and explicit decision controls as inline
-  conversation artifacts.
+- The published **Summary** followed by **Branch Outline**, whose empty state
+  offers **Generate** and whose current or stale state offers **Regenerate**.
+- A prominent **Chat** action opening persistent history and the composer,
+  including any pending proposal, full diff, and explicit decision controls as
+  inline conversation artifacts.
 - **Use web sources** for the next message.
 - Add-child, archive/unarchive, **Move To…**, and delete actions.
 
@@ -626,8 +686,9 @@ MindTree keeps TimeTree's Coopa-derived visual restraint:
   application in the standard Node.js runtime.
 - Server Components perform authoritative initial reads.
 - Typed Server Actions handle node mutations and proposal decisions.
-- A route handler streams OpenAI-backed chat responses because generation is a
-  long-lived, incremental operation rather than a conventional form mutation.
+- Route handlers stream OpenAI-backed Chat and Branch Outline responses because
+  generation is a long-lived, incremental operation rather than a conventional
+  form mutation.
 - Better Auth exposes `/api/auth/[...all]`.
 - The scoped read-only integration exposes only
   `GET /api/agent/v1/tree` outside the browser-authenticated dashboard.
@@ -655,9 +716,12 @@ conventions while preserving these boundaries.
 - `title`, nullable `archivedAt`, and timestamps.
 - Nullable `publishedSynthesisVersionId`.
 - Nullable `synthesisStaleAt` and bounded stale reason metadata.
+- Nullable `currentBranchOutlineVersionId`, `branchOutlineStaleAt`, and bounded
+  outline stale reason metadata.
 
-Parent/child ownership, title length, self-parenting, positions, and current
-synthesis ownership are protected by constraints and transaction checks.
+Parent/child ownership, title length, self-parenting, positions, current
+synthesis ownership, and current Branch Outline ownership are protected by
+constraints and transaction checks.
 
 ### `chatMessages`
 
@@ -681,14 +745,35 @@ current proposal and one explicitly pointed-to published version.
 
 ### `synthesisInputs`
 
-- Synthesis version ID, source node ID, nullable exact source synthesis version
-  ID, source-state fingerprint, relation (`child` or `related`), and stable
-  ordering. A nullable source version explicitly records a supplied child with
-  no approved synthesis rather than omitting that child from the evidence
-  snapshot.
+- Synthesis version ID, source node ID, nullable exact source synthesis or
+  Branch Outline version, source-state fingerprint, relation (`outline` or
+  `related`), and stable ordering. Exactly one compatible source-version field
+  is present for each relation.
 
 These rows support approval-time source validation, provenance display, and
 staleness diagnosis.
+
+### `branchOutlineVersions`
+
+- UUID `id`, `userId`, `nodeId`, unique client request ID, nullable exact base
+  Summary version ID, lifecycle status, bounded generated outline content,
+  model and reasoning profile, input fingerprint, bounded failure code, and
+  timestamps.
+- At most one generation is active per node. Completed versions are immutable,
+  and a node points explicitly to at most one completed current version;
+  replacing that pointer does not publish a Summary. Failed attempts never
+  replace the prior current outline.
+
+### `branchOutlineInputs`
+
+- Branch Outline version ID, direct-child node ID, nullable exact child Summary
+  version ID, nullable exact child Branch Outline version ID, source-state
+  fingerprint, and stable sibling ordering.
+- Explicit no-summary and no-outline states are stored rather than inferred
+  from missing rows.
+
+These rows support deterministic recursive composition, stale diagnosis, and
+safe retries without initiating child generation.
 
 ### `citations`
 
@@ -732,8 +817,8 @@ operational logs rather than the main interface.
 - Breadcrumbs, descendant lists, visible tree rows, archive-filtered trees,
   ancestor paths, citation labels, stale presentation, diffs, and constellation
   coordinates are derived.
-- Published synthesis content, proposals, input revision provenance,
-  conversations, citations, and embeddings are stored.
+- Published synthesis content, proposals, Branch Outline versions, input
+  revision provenance, conversations, citations, and embeddings are stored.
 - The database does not store recursive path strings, nested-set boundaries,
   graph coordinates, or model chain-of-thought.
 
@@ -747,8 +832,8 @@ against the current configured allowlist.
 
 - Dashboard tree, archive state, synthesis state, and selected-node metadata.
 - Paginated chat history for the selected node.
-- Current published synthesis, current pending proposal, diff inputs,
-  provenance, citations, and References.
+- Current published synthesis, current Branch Outline and stale state, current
+  pending proposal, diff inputs, provenance, citations, and References.
 - Constellation data derived from the same authorized tree.
 - Current credential metadata for the selected node, excluding its secret.
 
@@ -791,6 +876,20 @@ revalidates affected application data.
 - Does not expose the API key, raw provider payloads, hidden reasoning, other
   users' data, or unvalidated tool output.
 
+### Branch Outline route
+
+- Accepts a client-generated request ID and node ID for one explicit Generate
+  or Regenerate action.
+- Authenticates before returning validation detail, claims the request
+  idempotently with a persistent generation placeholder, and loads one bounded
+  deterministic Summary/child snapshot.
+- Calls the fixed synthesis profile once, with web search disabled, validates
+  the bounded outline output, and atomically installs one immutable current
+  version with its exact inputs.
+- Leaves the prior outline readable on retryable failure and never creates a
+  Summary proposal, changes a published Summary pointer, or invokes generation
+  for another node.
+
 ## Security and privacy boundaries
 
 - `.env` and local variants are ignored; `.env.example` contains names and safe
@@ -799,8 +898,9 @@ revalidates affected application data.
   agent credential hashes are deployment server-only. `MINDTREE_API_KEY` is a
   connected-repository secret; it is ignored by Git and is browser-visible
   only during the authenticated, no-store, one-time create/rotate display.
-- External web results, child summaries, related summaries, node titles, and
-  chat history are untrusted model inputs and never instructions.
+- External web results, Branch Outlines, child summaries, related summaries,
+  node titles, and chat history are untrusted model inputs and never
+  instructions.
 - Rendered Markdown is sanitized with an allowlist. Application-owned citation
   components create links.
 - Server-side URL validation permits only HTTP and HTTPS external citations and
@@ -814,7 +914,8 @@ revalidates affected application data.
 - Logs exclude prompts, message bodies, synthesis content, API keys, OAuth
   material, and raw provider responses by default.
 - Agent responses cannot disclose structured out-of-scope citation identities,
-  chat, proposal history, embeddings, credential rows, or owner records.
+  chat, Branch Outlines, proposal history, embeddings, credential rows, or
+  owner records.
 - No analytics or third-party error-reporting service is added in v0.1.0.
 
 ## Quality boundary
@@ -822,28 +923,29 @@ revalidates affected application data.
 ### Automated verification
 
 - Unit tests cover iterative deep-tree assembly, breadcrumbs, archive
-  filtering, search, move destinations, staleness propagation, context
-  selection, input fingerprints, diff presentation, citation normalization,
-  References ordering, and constellation layout.
+  filtering, search, move destinations, Summary and Branch Outline staleness
+  propagation, context selection, input fingerprints, diff presentation,
+  citation normalization, References ordering, and constellation layout.
 - PostgreSQL integration tests cover ownership, sibling-order races, cycle
   prevention, archive behavior, cascade deletion, persistent chat replay,
-  proposal state transitions, approval concurrency, source-version conflicts,
-  stale ancestor marking, citation constraints, embedding ownership, agent-key
-  lifecycle, dynamic subtree reads, revocation/rotation linearization, and
-  citation redaction.
+  proposal state transitions, approval concurrency, Branch Outline generation
+  replay, source-version conflicts, stale ancestor marking, citation
+  constraints, embedding ownership, agent-key lifecycle, dynamic subtree reads,
+  revocation/rotation linearization, and citation redaction.
 - AI-boundary tests use deterministic synthetic provider fixtures for streamed
-  chat, proposals, refusals, invalid structured output, invalid citations,
-  web-search annotations, retries, and timeouts. Normal automated tests do not
-  call paid external models.
+  chat, Summary proposals, Branch Outlines, refusals, invalid structured
+  output, invalid citations, web-search annotations, retries, and timeouts.
+  Normal automated tests do not call paid external models.
 - A small opt-in evaluation suite calls the configured real models with
-  synthetic knowledge trees to measure instruction following, proposal
-  quality, child-summary use, citation precision, unsupported-claim rate, and
-  approval-boundary compliance.
+  synthetic knowledge trees to measure instruction following, Summary proposal
+  quality, Branch Outline composition, citation precision, unsupported-claim
+  rate, and approval-boundary compliance.
 - Playwright covers sign-in, responsive tree navigation, chat persistence,
-  proposal refinement/approval/rejection, stale parent refresh, external
-  citations, archive/delete behavior, drag-and-drop with Move To parity, and
-  agent-key create/rotate/revoke/setup, plus Node Constellation at desktop and
-  mobile widths.
+  proposal refinement/approval/rejection, Branch Outline generation and
+  regeneration, stale parent refresh through Chat, external citations,
+  archive/delete behavior, drag-and-drop with Move To parity, and agent-key
+  create/rotate/revoke/setup, plus Node Constellation at desktop and mobile
+  widths.
 - CI runs lint, typecheck, unit tests, integration tests, production build, and
   deterministic browser tests. Live-model evaluations are deliberate release
   evidence, not an uncontrolled per-commit requirement.
@@ -851,8 +953,8 @@ revalidates affected application data.
 ### Accessibility baseline
 
 - Interactive controls have accessible names and visible keyboard focus.
-- Tree, chat, proposal, approval, archive, movement, and constellation recovery
-  flows are keyboard-operable.
+- Tree, Chat, Branch Outline, proposal, approval, archive, movement, and
+  constellation recovery flows are keyboard-operable.
 - **Move To…** provides an alternative to drag-and-drop.
 - Dialogs manage and restore focus.
 - Streaming updates use restrained live-region behavior and do not repeatedly
@@ -872,9 +974,10 @@ revalidates affected application data.
 - Preview deployments must not silently mutate production data unless that
   risk is explicitly reviewed and accepted for the deployment.
 - Release readiness verifies authentication, tree organization, persistent
-  chat, proposal approval and rejection, child-driven staleness, web citations,
-  archive/delete recovery, scoped read-only agent access and revocation,
-  responsive layout, and constellation navigation with synthetic data.
+  Chat, Branch Outline generation, proposal approval and rejection,
+  child-driven staleness, web citations, archive/delete recovery, scoped
+  read-only agent access and revocation, responsive layout, and constellation
+  navigation with synthetic data.
 - v0.1.0 is the first tag. No release tags are created during implementation.
 - The final reviewed release-readiness change deletes
   `IMPLEMENTATION_PLAN.md`, confirms `package.json` version `0.1.0`, and leaves
