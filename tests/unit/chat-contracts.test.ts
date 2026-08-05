@@ -21,6 +21,7 @@ describe("chat contracts", () => {
       content: "Develop this thought.",
       webSearchAuthorized: false,
       proposalRequested: false,
+      refinementProposalId: null,
     });
   });
 
@@ -38,6 +39,11 @@ describe("chat contracts", () => {
       retryChatTurnInputSchema.safeParse({ nodeId: "not-a-node", clientMessageId: randomUUID() })
         .success,
     ).toBe(false);
+    expect(createChatTurnInputSchema.safeParse({
+      ...base,
+      content: "Implicit refinement",
+      refinementProposalId: randomUUID(),
+    }).success).toBe(false);
   });
 
   it("accepts only bounded stable failure codes", () => {

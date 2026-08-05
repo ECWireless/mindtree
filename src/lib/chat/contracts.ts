@@ -27,7 +27,11 @@ export const createChatTurnInputSchema = z.object({
   content: z.string().trim().min(1).max(MAX_USER_MESSAGE_LENGTH),
   webSearchAuthorized: z.boolean().default(false),
   proposalRequested: z.boolean().default(false),
-});
+  refinementProposalId: z.uuid().nullable().default(null),
+}).refine(
+  (input) => input.proposalRequested || input.refinementProposalId === null,
+  { path: ["refinementProposalId"], message: "Refinement requires a proposal request." },
+);
 
 export const retryChatTurnInputSchema = z.object({
   nodeId: z.uuid(),
@@ -47,8 +51,12 @@ export type ChatRole = z.infer<typeof chatRoleSchema>;
 export type ChatStatus = z.infer<typeof chatStatusSchema>;
 export type ChatFailureCode = z.infer<typeof chatFailureCodeSchema>;
 type ParsedCreateChatTurnInput = z.infer<typeof createChatTurnInputSchema>;
-export type CreateChatTurnInput = Omit<ParsedCreateChatTurnInput, "proposalRequested"> & {
+export type CreateChatTurnInput = Omit<
+  ParsedCreateChatTurnInput,
+  "proposalRequested" | "refinementProposalId"
+> & {
   proposalRequested?: boolean;
+  refinementProposalId?: string | null;
 };
 export type RetryChatTurnInput = z.infer<typeof retryChatTurnInputSchema>;
 export type FailChatTurnInput = z.infer<typeof failChatTurnInputSchema>;
@@ -73,6 +81,7 @@ export type ChatMessage = {
   failureCode: string | null;
   webSearchAuthorized: boolean;
   proposalRequested: boolean;
+  refinementProposalId: string | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;

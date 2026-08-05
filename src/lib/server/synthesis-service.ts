@@ -1,12 +1,14 @@
 import "server-only";
 
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { DrizzleError, DrizzleQueryError } from "drizzle-orm/errors";
 
 import { db } from "@/db/client";
-import { nodes, synthesisVersions } from "@/db/schema";
+import { nodes, synthesisVersions, user } from "@/db/schema";
 import { OPENAI_SYNTHESIS_MODEL } from "@/lib/ai/openai-profiles";
 import {
   synthesisProposalDraftSchema,
+  type SynthesisDecisionInput,
   type SynthesisProposalDraft,
   type SynthesisVersion,
   type SynthesisWorkspace,
@@ -21,6 +23,7 @@ export type PendingSynthesisProposalInput = {
   reasoningMode: "pro";
   reasoningEffort: "high";
   inputFingerprint: string;
+  refinementProposalId?: string | null;
 };
 
 type InsertPendingSynthesisProposalInput = PendingSynthesisProposalInput & {
@@ -30,10 +33,83 @@ type InsertPendingSynthesisProposalInput = PendingSynthesisProposalInput & {
 };
 
 export class SynthesisServiceError extends Error {
-  constructor(public readonly reason: "invalid-proposal" | "node-not-found" | "unavailable") {
+  constructor(public readonly reason:
+    | "invalid-proposal"
+    | "node-not-found"
+    | "proposal-not-found"
+    | "proposal-not-pending"
+    | "stale-base"
+    | "unavailable") {
     super(reason);
     this.name = "SynthesisServiceError";
   }
+}
+
+type PostgreSqlFailure = { code: string };
+
+function getPostgreSqlFailure(error: unknown): PostgreSqlFailure | null {
+  let current = error;
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (typeof current !== "object" || current === null) return null;
+    if ("code" in current && typeof current.code === "string") {
+      return { code: current.code };
+    }
+    current = "cause" in current ? current.cause : null;
+  }
+  return null;
+}
+
+function sanitizeSynthesisServiceError(error: unknown): Error {
+  if (error instanceof SynthesisServiceError) return error;
+  if (
+    error instanceof DrizzleError ||
+    error instanceof DrizzleQueryError ||
+    getPostgreSqlFailure(error)
+  ) {
+    return new SynthesisServiceError("unavailable");
+  }
+  return error instanceof Error ? error : new SynthesisServiceError("unavailable");
+}
+
+async function lockOwnerTree(
+  tx: SynthesisTransaction,
+  userId: string,
+  nodeId: string,
+) {
+  await tx.execute(sql`select ${user.id} from ${user} where ${user.id} = ${userId} for update`);
+  const lockedNodes = await tx
+    .select({
+      id: nodes.id,
+      parentId: nodes.parentId,
+      publishedSynthesisVersionId: nodes.publishedSynthesisVersionId,
+    })
+    .from(nodes)
+    .where(eq(nodes.userId, userId))
+    .orderBy(asc(nodes.id))
+    .for("update");
+  const node = lockedNodes.find((candidate) => candidate.id === nodeId);
+  if (!node) throw new SynthesisServiceError("node-not-found");
+  return { lockedNodes, node };
+}
+
+async function lockProposal(
+  tx: SynthesisTransaction,
+  userId: string,
+  input: SynthesisDecisionInput,
+) {
+  const [proposal] = await tx
+    .select()
+    .from(synthesisVersions)
+    .where(
+      and(
+        eq(synthesisVersions.userId, userId),
+        eq(synthesisVersions.nodeId, input.nodeId),
+        eq(synthesisVersions.id, input.proposalId),
+      ),
+    )
+    .for("update");
+  if (!proposal) throw new SynthesisServiceError("proposal-not-found");
+  return proposal;
 }
 
 function toSynthesisVersion(
@@ -69,6 +145,33 @@ export async function insertPendingSynthesisProposal(
     throw new SynthesisServiceError("invalid-proposal");
   }
 
+  const refinementProposalId = input.refinementProposalId ?? null;
+  if (refinementProposalId !== null) {
+    const [refinementTarget] = await tx
+      .select()
+      .from(synthesisVersions)
+      .where(
+        and(
+          eq(synthesisVersions.userId, input.userId),
+          eq(synthesisVersions.nodeId, input.nodeId),
+          eq(synthesisVersions.id, refinementProposalId),
+        ),
+      )
+      .for("update");
+    if (
+      !refinementTarget ||
+      refinementTarget.status !== "pending" ||
+      refinementTarget.baseVersionId !== input.baseVersionId
+    ) {
+      throw new SynthesisServiceError("proposal-not-pending");
+    }
+    const decidedAt = new Date();
+    await tx
+      .update(synthesisVersions)
+      .set({ status: "superseded", decidedAt, updatedAt: decidedAt })
+      .where(eq(synthesisVersions.id, refinementTarget.id));
+  }
+
   const [created] = await tx
     .insert(synthesisVersions)
     .values({
@@ -88,6 +191,111 @@ export async function insertPendingSynthesisProposal(
     throw new SynthesisServiceError("unavailable");
   }
   return toSynthesisVersion(created);
+}
+
+export async function approveSynthesisProposalForUser(
+  userId: string,
+  input: SynthesisDecisionInput,
+) {
+  try {
+    return await db.transaction(async (tx) => {
+      const { lockedNodes, node } = await lockOwnerTree(tx, userId, input.nodeId);
+      const proposal = await lockProposal(tx, userId, input);
+      if (
+        proposal.status === "approved" &&
+        node.publishedSynthesisVersionId === proposal.id
+      ) {
+        return toSynthesisVersion(proposal);
+      }
+      if (proposal.status !== "pending") {
+        throw new SynthesisServiceError("proposal-not-pending");
+      }
+      if (proposal.baseVersionId !== node.publishedSynthesisVersionId) {
+        throw new SynthesisServiceError("stale-base");
+      }
+      if (node.publishedSynthesisVersionId !== null) {
+        const [published] = await tx
+          .select({ status: synthesisVersions.status })
+          .from(synthesisVersions)
+          .where(
+            and(
+              eq(synthesisVersions.userId, userId),
+              eq(synthesisVersions.nodeId, input.nodeId),
+              eq(synthesisVersions.id, node.publishedSynthesisVersionId),
+            ),
+          );
+        if (!published || published.status !== "approved") {
+          throw new SynthesisServiceError("unavailable");
+        }
+      }
+
+      const decidedAt = new Date();
+      const [approved] = await tx
+        .update(synthesisVersions)
+        .set({ status: "approved", decidedAt, updatedAt: decidedAt })
+        .where(eq(synthesisVersions.id, proposal.id))
+        .returning();
+      if (!approved) throw new SynthesisServiceError("unavailable");
+      await tx
+        .update(nodes)
+        .set({
+          publishedSynthesisVersionId: proposal.id,
+          synthesisStaleAt: null,
+          updatedAt: decidedAt,
+        })
+        .where(and(eq(nodes.userId, userId), eq(nodes.id, input.nodeId)));
+
+      const nodeById = new Map(lockedNodes.map((candidate) => [candidate.id, candidate]));
+      const ancestorIds: string[] = [];
+      const visited = new Set<string>([node.id]);
+      let parentId = node.parentId;
+      while (parentId !== null) {
+        if (visited.has(parentId)) throw new SynthesisServiceError("unavailable");
+        visited.add(parentId);
+        const parent = nodeById.get(parentId);
+        if (!parent) throw new SynthesisServiceError("unavailable");
+        ancestorIds.push(parent.id);
+        parentId = parent.parentId;
+      }
+      if (ancestorIds.length > 0) {
+        await tx
+          .update(nodes)
+          .set({ synthesisStaleAt: decidedAt, updatedAt: decidedAt })
+          .where(and(eq(nodes.userId, userId), inArray(nodes.id, ancestorIds)));
+      }
+      return toSynthesisVersion(approved);
+    });
+  } catch (error) {
+    throw sanitizeSynthesisServiceError(error);
+  }
+}
+
+export async function rejectSynthesisProposalForUser(
+  userId: string,
+  input: SynthesisDecisionInput,
+) {
+  try {
+    return await db.transaction(async (tx) => {
+      await lockOwnerTree(tx, userId, input.nodeId);
+      const proposal = await lockProposal(tx, userId, input);
+      if (proposal.status === "rejected") {
+        return toSynthesisVersion(proposal);
+      }
+      if (proposal.status !== "pending") {
+        throw new SynthesisServiceError("proposal-not-pending");
+      }
+      const decidedAt = new Date();
+      const [rejected] = await tx
+        .update(synthesisVersions)
+        .set({ status: "rejected", decidedAt, updatedAt: decidedAt })
+        .where(eq(synthesisVersions.id, proposal.id))
+        .returning();
+      if (!rejected) throw new SynthesisServiceError("unavailable");
+      return toSynthesisVersion(rejected);
+    });
+  } catch (error) {
+    throw sanitizeSynthesisServiceError(error);
+  }
 }
 
 export async function getSynthesisWorkspaceForUser(

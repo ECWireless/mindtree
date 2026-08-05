@@ -3,7 +3,7 @@ import "server-only";
 import { and, asc, desc, eq, inArray, lt, max } from "drizzle-orm";
 import { DrizzleError, DrizzleQueryError } from "drizzle-orm/errors";
 
-import { chatMessages, nodes } from "@/db/schema";
+import { chatMessages, nodes, synthesisVersions } from "@/db/schema";
 import { db } from "@/db/client";
 import {
   CHAT_PAGE_SIZE,
@@ -26,6 +26,7 @@ type ChatServiceReason =
   | "invalid-cursor"
   | "invalid-failure-code"
   | "node-not-found"
+  | "proposal-conflict"
   | "retry-unavailable"
   | "turn-conflict"
   | "turn-not-found"
@@ -62,6 +63,7 @@ function toChatMessage(row: typeof chatMessages.$inferSelect): ChatMessage {
     failureCode: row.failureCode,
     webSearchAuthorized: row.webSearchAuthorized,
     proposalRequested: row.proposalRequested,
+    refinementProposalId: row.refinementProposalId,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     completedAt: row.completedAt?.toISOString() ?? null,
@@ -107,12 +109,60 @@ function decodeCursor(value: string): ChatCursor {
 
 async function lockOwnedNode(tx: ChatTransaction, userId: string, nodeId: string) {
   const [node] = await tx
-    .select({ id: nodes.id })
+    .select({
+      id: nodes.id,
+      publishedSynthesisVersionId: nodes.publishedSynthesisVersionId,
+    })
     .from(nodes)
     .where(and(eq(nodes.userId, userId), eq(nodes.id, nodeId)))
     .for("update");
   if (!node) {
     throw new ChatServiceError("node-not-found");
+  }
+  return node;
+}
+
+async function requireProposalIntentAvailable(
+  tx: ChatTransaction,
+  input: {
+    userId: string;
+    nodeId: string;
+    proposalRequested: boolean;
+    refinementProposalId: string | null;
+    publishedSynthesisVersionId: string | null;
+  },
+) {
+  if (!input.proposalRequested) {
+    if (input.refinementProposalId !== null) {
+      throw new ChatServiceError("proposal-conflict");
+    }
+    return;
+  }
+
+  const pending = await tx
+    .select({
+      id: synthesisVersions.id,
+      baseVersionId: synthesisVersions.baseVersionId,
+    })
+    .from(synthesisVersions)
+    .where(
+      and(
+        eq(synthesisVersions.userId, input.userId),
+        eq(synthesisVersions.nodeId, input.nodeId),
+        eq(synthesisVersions.status, "pending"),
+      ),
+    )
+    .limit(2)
+    .for("update");
+  if (
+    pending.length > 1 ||
+    (input.refinementProposalId === null && pending.length !== 0) ||
+    (input.refinementProposalId !== null &&
+      (pending.length !== 1 ||
+        pending[0]?.id !== input.refinementProposalId ||
+        pending[0]?.baseVersionId !== input.publishedSynthesisVersionId))
+  ) {
+    throw new ChatServiceError("proposal-conflict");
   }
 }
 
@@ -274,7 +324,7 @@ export async function createChatTurnForUser(
 ) {
   try {
     return await db.transaction(async (tx) => {
-      await lockOwnedNode(tx, userId, input.nodeId);
+      const lockedNode = await lockOwnedNode(tx, userId, input.nodeId);
       const existing = await tx
         .select()
         .from(chatMessages)
@@ -296,7 +346,8 @@ export async function createChatTurnForUser(
           !assistantMessage ||
           userMessage.content !== input.content ||
           userMessage.webSearchAuthorized !== input.webSearchAuthorized ||
-          userMessage.proposalRequested !== (input.proposalRequested ?? false)
+          userMessage.proposalRequested !== (input.proposalRequested ?? false) ||
+          userMessage.refinementProposalId !== (input.refinementProposalId ?? null)
         ) {
           throw new ChatServiceError("turn-conflict");
         }
@@ -318,6 +369,14 @@ export async function createChatTurnForUser(
           generationClaimed,
         };
       }
+
+      await requireProposalIntentAvailable(tx, {
+        userId,
+        nodeId: input.nodeId,
+        proposalRequested: input.proposalRequested ?? false,
+        refinementProposalId: input.refinementProposalId ?? null,
+        publishedSynthesisVersionId: lockedNode.publishedSynthesisVersionId,
+      });
 
       const userCreatedAt = new Date();
       const [sequenceResult] = await tx
@@ -347,6 +406,7 @@ export async function createChatTurnForUser(
             content: input.content,
             webSearchAuthorized: input.webSearchAuthorized,
             proposalRequested: input.proposalRequested ?? false,
+            refinementProposalId: input.refinementProposalId ?? null,
             createdAt: userCreatedAt,
             updatedAt: userCreatedAt,
             completedAt: userCreatedAt,
@@ -427,7 +487,7 @@ export async function retryChatTurnForUser(
 ) {
   try {
     return await db.transaction(async (tx) => {
-      await lockOwnedNode(tx, userId, input.nodeId);
+      const lockedNode = await lockOwnedNode(tx, userId, input.nodeId);
       const messages = await tx
         .select()
         .from(chatMessages)
@@ -448,6 +508,14 @@ export async function retryChatTurnForUser(
       if (assistantMessage.status !== "failed" && assistantMessage.status !== "cancelled") {
         throw new ChatServiceError("retry-unavailable");
       }
+
+      await requireProposalIntentAvailable(tx, {
+        userId,
+        nodeId: input.nodeId,
+        proposalRequested: userMessage.proposalRequested,
+        refinementProposalId: userMessage.refinementProposalId,
+        publishedSynthesisVersionId: lockedNode.publishedSynthesisVersionId,
+      });
 
       const [retriedAssistant] = await tx
         .update(chatMessages)
@@ -607,7 +675,7 @@ export async function completeChatTurnForUser(
 ) {
   try {
     return await db.transaction(async (tx) => {
-      await lockOwnedNode(tx, userId, input.nodeId);
+      const lockedNode = await lockOwnedNode(tx, userId, input.nodeId);
       const messages = await tx
         .select()
         .from(chatMessages)
@@ -635,6 +703,9 @@ export async function completeChatTurnForUser(
       if (options.proposal) {
         if (
           !userMessage.proposalRequested ||
+          userMessage.refinementProposalId !==
+            (options.proposal.refinementProposalId ?? null) ||
+          lockedNode.publishedSynthesisVersionId !== options.proposal.baseVersionId ||
           assistantMessage.model !== options.proposal.model ||
           assistantMessage.contextFingerprint !== options.proposal.inputFingerprint
         ) {

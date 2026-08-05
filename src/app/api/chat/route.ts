@@ -235,6 +235,7 @@ export async function POST(request: Request) {
                       reasoningMode: "pro",
                       reasoningEffort: "high",
                       inputFingerprint: preparedContext.fingerprint,
+                      refinementProposalId: turn.userMessage.refinementProposalId,
                     },
                   }
                 : undefined,

@@ -140,6 +140,8 @@ export const chatMessages = pgTable(
     failureCode: varchar("failure_code", { length: 64 }),
     webSearchAuthorized: boolean("web_search_authorized").default(false).notNull(),
     proposalRequested: boolean("proposal_requested").default(false).notNull(),
+    // The reviewed migration owns the circular owner-scoped FK to synthesisVersions.
+    refinementProposalId: uuid("refinement_proposal_id"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
@@ -181,10 +183,12 @@ export const chatMessages = pgTable(
         and ${table.providerResponseId} is null
         and ${table.contextFingerprint} is null
         and ${table.failureCode} is null
+        and (${table.proposalRequested} = true or ${table.refinementProposalId} is null)
       ) or (
         ${table.role} = 'assistant'
         and ${table.webSearchAuthorized} = false
         and ${table.proposalRequested} = false
+        and ${table.refinementProposalId} is null
       )`,
     ),
     check(

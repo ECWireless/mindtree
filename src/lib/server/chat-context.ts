@@ -21,7 +21,7 @@ export type ChatContextMessage = {
 };
 
 export type ChatContextSnapshot = {
-  version: 2;
+  version: 3;
   node: {
     id: string;
     title: string;
@@ -32,6 +32,14 @@ export type ChatContextSnapshot = {
     publishedSynthesis:
       | { state: "none" }
       | { state: "published"; versionId: string; content: string };
+    refinementProposal:
+      | { state: "none" }
+      | {
+          state: "pending";
+          versionId: string;
+          baseVersionId: string | null;
+          content: string;
+        };
   };
   messages: ChatContextMessage[];
 };
@@ -56,6 +64,7 @@ function toContextInput(snapshot: ChatContextSnapshot): PreparedChatContext["inp
       },
     },
     publishedSynthesis: snapshot.node.publishedSynthesis,
+    refinementProposal: snapshot.node.refinementProposal,
   };
 
   return [
@@ -72,7 +81,7 @@ export async function prepareChatContextForUser(
   input: RetryChatTurnInput,
 ): Promise<PreparedChatContext> {
   const snapshot = await db.transaction(async (tx) => {
-    const [breadcrumbResult, assistantRows] = await Promise.all([
+    const [breadcrumbResult, turnRows] = await Promise.all([
       tx.execute<{
         id: string;
         title: string;
@@ -113,21 +122,31 @@ export async function prepareChatContextForUser(
         limit ${MAX_CHAT_BREADCRUMB_NODES + 1}
       `),
       tx
-        .select({ sequence: chatMessages.sequence })
+        .select({
+          role: chatMessages.role,
+          status: chatMessages.status,
+          sequence: chatMessages.sequence,
+          proposalRequested: chatMessages.proposalRequested,
+          refinementProposalId: chatMessages.refinementProposalId,
+        })
         .from(chatMessages)
         .where(
           and(
             eq(chatMessages.userId, userId),
             eq(chatMessages.nodeId, input.nodeId),
             eq(chatMessages.clientMessageId, input.clientMessageId),
-            eq(chatMessages.role, "assistant"),
-            eq(chatMessages.status, "streaming"),
           ),
-        )
-        .limit(1),
+        ),
     ]);
-    const assistant = assistantRows[0];
-    if (!assistant) {
+    const userMessage = turnRows.find((message) => message.role === "user");
+    const assistant = turnRows.find((message) => message.role === "assistant");
+    if (
+      turnRows.length !== 2 ||
+      !userMessage ||
+      !assistant ||
+      userMessage.status !== "completed" ||
+      assistant.status !== "streaming"
+    ) {
       throw new Error("chat context turn is unavailable");
     }
     const target = breadcrumbResult.rows[0];
@@ -191,6 +210,47 @@ export async function prepareChatContextForUser(
       };
     }
 
+    let refinementProposal: ChatContextSnapshot["node"]["refinementProposal"] = {
+      state: "none",
+    };
+    if (userMessage.proposalRequested) {
+      const pending = await tx
+        .select({
+          id: synthesisVersions.id,
+          baseVersionId: synthesisVersions.baseVersionId,
+          content: synthesisVersions.content,
+        })
+        .from(synthesisVersions)
+        .where(
+          and(
+            eq(synthesisVersions.userId, userId),
+            eq(synthesisVersions.nodeId, input.nodeId),
+            eq(synthesisVersions.status, "pending"),
+          ),
+        )
+        .limit(2);
+      if (userMessage.refinementProposalId === null) {
+        if (pending.length !== 0) {
+          throw new Error("chat context proposal intent is unavailable");
+        }
+      } else {
+        const refinementTarget = pending.length === 1 ? pending[0] : undefined;
+        if (
+          !refinementTarget ||
+          refinementTarget.id !== userMessage.refinementProposalId ||
+          refinementTarget.baseVersionId !== target.published_synthesis_version_id
+        ) {
+          throw new Error("chat context refinement proposal is unavailable");
+        }
+        refinementProposal = {
+          state: "pending",
+          versionId: refinementTarget.id,
+          baseVersionId: refinementTarget.baseVersionId,
+          content: refinementTarget.content,
+        };
+      }
+    }
+
     const recentRows = await tx
       .select({
         id: chatMessages.id,
@@ -228,7 +288,7 @@ export async function prepareChatContextForUser(
     }
 
     return {
-      version: 2,
+      version: 3,
       node: {
         id: target.id,
         title: target.title,
@@ -238,6 +298,7 @@ export async function prepareChatContextForUser(
             breadcrumbResult.rows.length > boundedBreadcrumb.length,
         },
         publishedSynthesis,
+        refinementProposal,
       },
       messages: boundedNewestFirst.reverse(),
     } satisfies ChatContextSnapshot;

@@ -58,6 +58,7 @@ describe("initial authentication schema", () => {
       "chat_messages_node_owner_fk",
       "chat_messages_node_sequence_unique",
       "chat_messages_pkey",
+      "chat_messages_refinement_proposal_owner_fk",
       "chat_messages_role_check",
       "chat_messages_role_state_check",
       "chat_messages_status_check",
@@ -69,6 +70,13 @@ describe("initial authentication schema", () => {
         ?.definition,
     ).toContain(
       "FOREIGN KEY (user_id, node_id) REFERENCES nodes(user_id, id) ON DELETE CASCADE",
+    );
+    expect(
+      constraints.rows.find(
+        ({ conname }) => conname === "chat_messages_refinement_proposal_owner_fk",
+      )?.definition,
+    ).toContain(
+      "FOREIGN KEY (user_id, node_id, refinement_proposal_id) REFERENCES synthesis_versions(user_id, node_id, id)",
     );
 
     const indexes = await client.query<{ indexdef: string; indexname: string }>(
@@ -310,6 +318,14 @@ describe("initial authentication schema", () => {
         indexdef: expect.stringContaining("WHERE ((status)::text = 'pending'::text)"),
       }),
     ]));
+
+    const triggers = await client.query<{ tgname: string }>(
+      `select tgname from pg_trigger
+       where tgrelid = 'synthesis_versions'::regclass and not tgisinternal`,
+    );
+    expect(triggers.rows).toEqual([{
+      tgname: "synthesis_versions_immutable_transition_trigger",
+    }]);
   });
 
   it("enforces owner- and node-scoped synthesis provenance links", async () => {
@@ -376,6 +392,25 @@ describe("initial authentication schema", () => {
       [baseVersionId, ownerId, nodeId, "a".repeat(64), baseMessageId],
     );
     await client.query(
+      `insert into chat_messages
+         (user_id, node_id, client_message_id, sequence, role, status, content,
+          proposal_requested, refinement_proposal_id, completed_at)
+       values ($1, $2, $3, 2, 'user', 'completed', 'Valid refinement intent',
+         true, $4, now())`,
+      [ownerId, nodeId, randomUUID(), baseVersionId],
+    );
+    await expectConstraintViolation(
+      () => client.query(
+        `insert into chat_messages
+           (user_id, node_id, client_message_id, sequence, role, status, content,
+            proposal_requested, refinement_proposal_id, completed_at)
+         values ($1, $2, $3, 3, 'user', 'completed', 'Implicit refinement intent',
+           false, $4, now())`,
+        [ownerId, nodeId, randomUUID(), baseVersionId],
+      ),
+      "chat_messages_role_state_check",
+    );
+    await client.query(
       `insert into synthesis_versions
          (user_id, node_id, base_version_id, status, content, model, reasoning_mode,
           reasoning_effort, input_fingerprint, generating_message_id)
@@ -394,6 +429,17 @@ describe("initial authentication schema", () => {
         [ownerId, siblingNodeId, baseVersionId, "c".repeat(64), siblingMessageId],
       ),
       "synthesis_versions_base_owner_fk",
+    );
+    await expectConstraintViolation(
+      () => client.query(
+        `insert into chat_messages
+           (user_id, node_id, client_message_id, sequence, role, status, content,
+            proposal_requested, refinement_proposal_id, completed_at)
+         values ($1, $2, $3, 1, 'user', 'completed', 'Cross-node refinement',
+           true, $4, now())`,
+        [ownerId, siblingNodeId, randomUUID(), baseVersionId],
+      ),
+      "chat_messages_refinement_proposal_owner_fk",
     );
     await expectConstraintViolation(
       () => client.query(
@@ -450,6 +496,14 @@ describe("initial authentication schema", () => {
        values ($1, $2, $3, 'pending', 'Synthetic proposal', 'gpt-5.6-sol',
          'pro', 'high', $4, $5)`,
       [proposalId, ownerId, nodeId, "a".repeat(64), messageId],
+    );
+
+    await expectConstraintViolation(
+      () => client.query(
+        `update synthesis_versions set content = 'Mutated pending content' where id = $1`,
+        [proposalId],
+      ),
+      "synthesis_versions_immutable_transition_check",
     );
 
     await expectConstraintViolation(
@@ -511,6 +565,13 @@ describe("initial authentication schema", () => {
     await client.query(
       `update synthesis_versions set status = 'approved', decided_at = now() where id = $1`,
       [proposalId],
+    );
+    await expectConstraintViolation(
+      () => client.query(
+        `update synthesis_versions set status = 'rejected', decided_at = now() where id = $1`,
+        [proposalId],
+      ),
+      "synthesis_versions_immutable_transition_check",
     );
     await client.query(
       `update nodes set published_synthesis_version_id = $1 where id = $2`,

@@ -31,8 +31,23 @@ export const synthesisProposalDraftSchema = z.object({
     ),
 }).strict();
 
+export const synthesisDecisionInputSchema = z.object({
+  nodeId: z.uuid(),
+  proposalId: z.uuid(),
+}).strict();
+
 export type SynthesisStatus = z.infer<typeof synthesisStatusSchema>;
 export type SynthesisProposalDraft = z.infer<typeof synthesisProposalDraftSchema>;
+export type SynthesisDecisionInput = z.infer<typeof synthesisDecisionInputSchema>;
+
+export type SynthesisDecisionResult =
+  | {
+      ok: true;
+      nodeId: string;
+      proposalId: string;
+      status: "approved" | "rejected";
+    }
+  | { ok: false; message: string };
 
 export type SynthesisVersion = {
   id: string;
