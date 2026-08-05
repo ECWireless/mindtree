@@ -316,13 +316,14 @@ describe("transactional synthesis decisions", () => {
     const userId = await insertUser();
     const nodeId = await insertNode(userId, "Decision history node");
     const proposalIds: string[] = [];
+    const decisionAgesInMinutes = [0, 1, 2, 3, 4, 6, 5];
     for (let index = 0; index < 7; index += 1) {
       const proposalId = await insertProposal({
         userId,
         nodeId,
         content: `Rejected proposal ${index}`,
         status: "rejected",
-        decidedAt: new Date(Date.now() - index * 60_000),
+        decidedAt: new Date(Date.now() - decisionAgesInMinutes[index]! * 60_000),
       });
       proposalIds.push(proposalId);
     }
@@ -334,14 +335,19 @@ describe("transactional synthesis decisions", () => {
       status === "rejected" && Number.isFinite(Date.parse(decidedAt))))
       .toBe(true);
 
-    const oldest = await pool.query<{ generating_message_id: string }>(
-      `select generating_message_id from synthesis_versions where id = $1`,
-      [proposalIds[6]],
+    const olderTurns = await pool.query<{ generating_message_id: string }>(
+      `select generating_message_id from synthesis_versions where id = any($1::uuid[])`,
+      [proposalIds.slice(5)],
     );
     const workspaceWithLoadedTurn = await getSynthesisWorkspaceForUser(userId, nodeId, {
-      generatingMessageIds: [oldest.rows[0]!.generating_message_id],
+      generatingMessageIds: olderTurns.rows.map(({ generating_message_id }) => generating_message_id),
     });
-    expect(workspaceWithLoadedTurn.history).toHaveLength(6);
+    expect(workspaceWithLoadedTurn.history).toHaveLength(7);
+    expect(workspaceWithLoadedTurn.history.map(({ id }) => id)).toEqual([
+      ...proposalIds.slice(0, 5),
+      proposalIds[6],
+      proposalIds[5],
+    ]);
     expect(workspaceWithLoadedTurn.history).toContainEqual(expect.objectContaining({
       id: proposalIds[6],
       content: "Rejected proposal 6",

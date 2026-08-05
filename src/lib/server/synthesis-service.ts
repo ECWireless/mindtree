@@ -381,6 +381,7 @@ export async function getSynthesisWorkspaceForUser(
             inArray(synthesisVersions.status, ["approved", "rejected", "superseded"]),
             inArray(synthesisVersions.generatingMessageId, requestedMessageIds),
           ))
+          .orderBy(desc(synthesisVersions.decidedAt), desc(synthesisVersions.id))
       : [];
     const decidedVersions = [...new Map(
       [...recentDecidedVersions, ...pageDecidedVersions]
