@@ -64,6 +64,32 @@ async function insertNode(userId: string, title = "Chat node", parentId: string 
   return nodeId;
 }
 
+async function installBranchOutline(
+  userId: string,
+  nodeId: string,
+  content: string,
+  stale = false,
+) {
+  const outlineId = randomUUID();
+  await pool.query(
+    `insert into branch_outline_versions
+       (id, user_id, node_id, client_request_id, status, content, model,
+        reasoning_mode, reasoning_effort, input_fingerprint, completed_at)
+     values ($1, $2, $3, $4, 'completed', $5, 'gpt-5.6-sol',
+       'pro', 'high', $6, now())`,
+    [outlineId, userId, nodeId, randomUUID(), content, "c".repeat(64)],
+  );
+  await pool.query(
+    `update nodes
+     set current_branch_outline_version_id = $1,
+         branch_outline_stale_at = case when $2 then now() else null end,
+         branch_outline_stale_reason = case when $2 then 'branch-content-changed' else null end
+     where user_id = $3 and id = $4`,
+    [outlineId, stale, userId, nodeId],
+  );
+  return outlineId;
+}
+
 async function prepareProposalTurn(input: {
   userId: string;
   nodeId: string;
@@ -151,6 +177,11 @@ describe("persistent chat ledger", () => {
     const userId = await insertUser();
     const rootId = await insertNode(userId, "Context root");
     const nodeId = await insertNode(userId, "Context leaf", rootId);
+    const outlineId = await installBranchOutline(
+      userId,
+      nodeId,
+      "# Branch Outline\n\nRecursive context",
+    );
     const priorClientMessageId = randomUUID();
     await createChatTurnForUser(userId, {
       nodeId,
@@ -176,7 +207,7 @@ describe("persistent chat ledger", () => {
     const prepared = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
     const repeated = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
     expect(prepared.snapshot).toMatchObject({
-      version: 4,
+      version: 5,
       node: {
         id: nodeId,
         title: "Context leaf",
@@ -189,6 +220,11 @@ describe("persistent chat ledger", () => {
         },
         publishedSynthesis: { state: "none" },
         refinementProposal: { state: "none" },
+        branchOutline: {
+          state: "current",
+          versionId: outlineId,
+          content: "# Branch Outline\n\nRecursive context",
+        },
       },
       messages: [
         { role: "user", content: "Earlier owner message" },
@@ -198,6 +234,8 @@ describe("persistent chat ledger", () => {
     });
     expect(prepared.fingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(repeated.fingerprint).toBe(prepared.fingerprint);
+    expect(prepared.outlineInput).toMatchObject({ versionId: outlineId });
+    expect(prepared.input[0]?.content).toContain("Recursive context");
     expect(prepared.input.at(-1)).toEqual({
       role: "user",
       content: "Current owner request",
@@ -330,6 +368,7 @@ describe("persistent chat ledger", () => {
     })).rejects.toEqual(new ChatServiceError("retry-unavailable"));
     expect(await getSynthesisWorkspaceForUser(userId, nodeId)).toEqual({
       published: null,
+      staleAt: null,
       pending: null,
       history: [],
     });
@@ -686,6 +725,7 @@ describe("persistent chat ledger", () => {
     })).rejects.toEqual(new ChatServiceError("retry-unavailable"));
     expect(await getSynthesisWorkspaceForUser(userId, nodeId)).toEqual({
       published: null,
+      staleAt: null,
       pending: null,
       history: [],
     });
@@ -776,6 +816,39 @@ describe("persistent chat ledger", () => {
       expect.objectContaining({ role: "user", content: "Target request" }),
     ]);
     expect(prepared.input).toHaveLength(2);
+  });
+
+  it("delimits stale outline discussion context while preserving the total provider budget", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId, "Bounded outline node");
+    const outlineContent = "o".repeat(32_000);
+    const outlineId = await installBranchOutline(
+      userId,
+      nodeId,
+      outlineContent,
+      true,
+    );
+    const clientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId,
+      content: "u".repeat(16_000),
+      webSearchAuthorized: false,
+    }, { claimAssistant: true });
+
+    const prepared = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
+
+    expect(prepared.snapshot.node.branchOutline).toEqual({
+      state: "stale",
+      versionId: outlineId,
+      content: outlineContent,
+    });
+    expect(prepared.outlineInput).toBeNull();
+    expect(prepared.input[0]?.content).toContain('"branchOutline":{"state":"stale"');
+    expect(prepared.input[0]?.content).toContain("[Context truncated]");
+    expect(prepared.input.reduce((total, message) => total + message.content.length, 0))
+      .toBeLessThanOrEqual(MAX_CHAT_CONTEXT_CHARACTERS);
+    expect(prepared.input.at(-1)?.content).toHaveLength(16_000);
   });
 
   it("bounds a deep breadcrumb while accounting for omitted ancestors", async () => {

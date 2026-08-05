@@ -1424,6 +1424,26 @@ button:not(:disabled) {
   font-size: 1.25rem;
 }
 
+.synthesis-published__stale {
+  margin: 0 0 1rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent);
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+
+.synthesis-published__stale p {
+  margin: 0;
+  color: var(--color-muted);
+  line-height: 1.5;
+}
+
+.synthesis-published__stale .synthesis-published__stale-label {
+  margin-bottom: 0.2rem;
+  color: var(--color-ink);
+  font-weight: 700;
+}
+
 .synthesis-document__content {
   overflow-wrap: anywhere;
   line-height: 1.65;

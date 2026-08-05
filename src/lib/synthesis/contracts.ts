@@ -76,6 +76,7 @@ export type SynthesisDecisionSummary = {
 
 export type SynthesisWorkspace = {
   published: SynthesisVersion | null;
+  staleAt: string | null;
   pending: SynthesisVersion | null;
   history: SynthesisDecisionSummary[];
 };

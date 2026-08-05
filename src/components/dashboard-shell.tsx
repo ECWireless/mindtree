@@ -568,6 +568,7 @@ function DashboardWorkspace({
   );
   const synthesisWorkspace = initialSynthesisWorkspace ?? {
     published: null,
+    staleAt: null,
     pending: null,
     history: [],
   };
@@ -1274,6 +1275,7 @@ function DashboardWorkspace({
                 {synthesisWorkspace.published ? (
                   <PublishedSynthesisArtifact
                     synthesis={synthesisWorkspace.published}
+                    staleAt={synthesisWorkspace.staleAt}
                     headingRef={summaryHeadingRef}
                   />
                 ) : (

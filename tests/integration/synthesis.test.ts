@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
@@ -102,6 +102,53 @@ async function insertProposal(input: {
   return proposalId;
 }
 
+function outlineInputFingerprint(nodeId: string, outlineId: string) {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      version: 1,
+      nodeId,
+      branchOutlineVersionId: outlineId,
+    }), "utf8")
+    .digest("hex");
+}
+
+async function installBranchOutline(userId: string, nodeId: string, content: string) {
+  const outlineId = randomUUID();
+  await pool.query(
+    `insert into branch_outline_versions
+       (id, user_id, node_id, client_request_id, status, content, model,
+        reasoning_mode, reasoning_effort, input_fingerprint, completed_at)
+     values ($1, $2, $3, $4, 'completed', $5, 'gpt-5.6-sol',
+       'pro', 'high', $6, now())`,
+    [outlineId, userId, nodeId, randomUUID(), content, "c".repeat(64)],
+  );
+  await pool.query(
+    `update nodes
+     set current_branch_outline_version_id = $1,
+         branch_outline_stale_at = null,
+         branch_outline_stale_reason = null
+     where user_id = $2 and id = $3`,
+    [outlineId, userId, nodeId],
+  );
+  return outlineId;
+}
+
+async function recordProposalOutline(
+  userId: string,
+  nodeId: string,
+  proposalId: string,
+  outlineId: string,
+) {
+  await pool.query(
+    `insert into synthesis_inputs
+       (synthesis_version_id, user_id, node_id, relation, source_node_id,
+        source_synthesis_version_id, source_branch_outline_version_id,
+        source_state_fingerprint, position)
+     values ($1, $2, $3, 'outline', $3, null, $4, $5, 0)`,
+    [proposalId, userId, nodeId, outlineId, outlineInputFingerprint(nodeId, outlineId)],
+  );
+}
+
 afterEach(async () => {
   if (userIds.size > 0) {
     await pool.query(`delete from "user" where id = any($1::text[])`, [[...userIds]]);
@@ -118,6 +165,8 @@ describe("transactional synthesis decisions", () => {
     const userId = await insertUser();
     const rootId = await insertNode(userId, "Root");
     const childId = await insertNode(userId, "Child", rootId);
+    const rootOutlineId = await installBranchOutline(userId, rootId, "Root outline");
+    const childOutlineId = await installBranchOutline(userId, childId, "Child outline");
     const rootVersionId = await insertProposal({
       userId,
       nodeId: rootId,
@@ -133,6 +182,7 @@ describe("transactional synthesis decisions", () => {
       nodeId: childId,
       content: "Pending child synthesis",
     });
+    await recordProposalOutline(userId, childId, proposalId, childOutlineId);
     await pool.query(
       `update nodes set synthesis_stale_at = now() - interval '1 day' where id = $1`,
       [childId],
@@ -149,22 +199,72 @@ describe("transactional synthesis decisions", () => {
       id: string;
       published_synthesis_version_id: string | null;
       synthesis_stale_at: Date | null;
+      branch_outline_stale_at: Date | null;
+      branch_outline_stale_reason: string | null;
     }>(
-      `select id, published_synthesis_version_id, synthesis_stale_at
+      `select id, published_synthesis_version_id, synthesis_stale_at,
+              branch_outline_stale_at, branch_outline_stale_reason
        from nodes where id = any($1::uuid[]) order by id`,
       [[rootId, childId]],
     );
     const root = nodes.rows.find(({ id }) => id === rootId);
     const child = nodes.rows.find(({ id }) => id === childId);
     expect(root?.synthesis_stale_at).toBeInstanceOf(Date);
+    expect(root).toMatchObject({
+      branch_outline_stale_at: expect.any(Date),
+      branch_outline_stale_reason: "branch-content-changed",
+    });
     expect(child).toMatchObject({
       published_synthesis_version_id: proposalId,
       synthesis_stale_at: null,
+      branch_outline_stale_at: expect.any(Date),
+      branch_outline_stale_reason: "summary-changed",
     });
+    expect(rootOutlineId).not.toBe(childOutlineId);
     expect(await getSynthesisWorkspaceForUser(userId, childId)).toMatchObject({
       published: { id: proposalId, status: "approved" },
       pending: null,
     });
+  });
+
+  it("rejects approval when exact Branch Outline provenance is stale, replaced, or newly introduced", async () => {
+    const userId = await insertUser();
+    const staleNodeId = await insertNode(userId, "Stale outline node");
+    const outlineId = await installBranchOutline(userId, staleNodeId, "Exact outline");
+    const proposalId = await insertProposal({
+      userId,
+      nodeId: staleNodeId,
+      content: "Proposal from exact outline",
+    });
+    await recordProposalOutline(userId, staleNodeId, proposalId, outlineId);
+    await pool.query(
+      `update nodes
+       set branch_outline_stale_at = now(), branch_outline_stale_reason = 'node-renamed'
+       where id = $1`,
+      [staleNodeId],
+    );
+    await expect(approveSynthesisProposalForUser(userId, {
+      nodeId: staleNodeId,
+      proposalId,
+    })).rejects.toEqual(new SynthesisServiceError("stale-input"));
+
+    await installBranchOutline(userId, staleNodeId, "Replacement outline");
+    await expect(approveSynthesisProposalForUser(userId, {
+      nodeId: staleNodeId,
+      proposalId,
+    })).rejects.toEqual(new SynthesisServiceError("stale-input"));
+
+    const absentNodeId = await insertNode(userId, "Initially absent outline");
+    const absentProposalId = await insertProposal({
+      userId,
+      nodeId: absentNodeId,
+      content: "Proposal without outline",
+    });
+    await installBranchOutline(userId, absentNodeId, "Newly introduced outline");
+    await expect(approveSynthesisProposalForUser(userId, {
+      nodeId: absentNodeId,
+      proposalId: absentProposalId,
+    })).rejects.toEqual(new SynthesisServiceError("stale-input"));
   });
 
   it("rejects a proposal without changing publication or staleness", async () => {
@@ -354,11 +454,29 @@ describe("transactional synthesis decisions", () => {
     }));
   });
 
-  it("shares the tree lock order with node movement while marking the approval-time ancestors", async () => {
+  it("shares the tree lock order with node movement while staling both affected branches", async () => {
     const userId = await insertUser();
     const firstRootId = await insertNode(userId, "First root");
     const secondRootId = await insertNode(userId, "Second root");
     const childId = await insertNode(userId, "Moving child", firstRootId);
+    const firstRootSummaryId = await insertProposal({
+      userId,
+      nodeId: firstRootId,
+      content: "First root summary",
+      status: "approved",
+    });
+    const secondRootSummaryId = await insertProposal({
+      userId,
+      nodeId: secondRootId,
+      content: "Second root summary",
+      status: "approved",
+    });
+    await pool.query(
+      `update nodes
+       set published_synthesis_version_id = case id when $1 then $2::uuid else $3::uuid end
+       where id = any($4::uuid[])`,
+      [firstRootId, firstRootSummaryId, secondRootSummaryId, [firstRootId, secondRootId]],
+    );
     const proposalId = await insertProposal({
       userId,
       nodeId: childId,
@@ -386,8 +504,9 @@ describe("transactional synthesis decisions", () => {
       ({ id, synthesis_stale_at: staleAt }) =>
         id !== childId && staleAt !== null,
     );
-    expect(staleRoots).toHaveLength(1);
-    expect([firstRootId, secondRootId]).toContain(staleRoots[0]?.id);
+    expect(staleRoots.map(({ id }) => id).sort()).toEqual(
+      [firstRootId, secondRootId].sort(),
+    );
   });
 
   it("does not disclose foreign proposals through owner-scoped decisions", async () => {

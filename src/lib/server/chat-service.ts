@@ -281,6 +281,26 @@ export async function getChatMessagesForUser(
   }
 }
 
+export async function synthesisProposalExistsForMessageForUser(
+  userId: string,
+  input: { nodeId: string; messageId: string },
+) {
+  try {
+    const [proposal] = await db
+      .select({ id: synthesisVersions.id })
+      .from(synthesisVersions)
+      .where(and(
+        eq(synthesisVersions.userId, userId),
+        eq(synthesisVersions.nodeId, input.nodeId),
+        eq(synthesisVersions.generatingMessageId, input.messageId),
+      ))
+      .limit(1);
+    return proposal !== undefined;
+  } catch (error) {
+    throw sanitizeChatServiceError(error);
+  }
+}
+
 export async function getChatTurnForUser(userId: string, input: RetryChatTurnInput) {
   try {
     return await db.transaction(async (tx) => {
