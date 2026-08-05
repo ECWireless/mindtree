@@ -65,7 +65,17 @@ export type SynthesisVersion = {
   decidedAt: string | null;
 };
 
+export type SynthesisDecisionSummary = {
+  id: string;
+  generatingMessageId: string;
+  status: Exclude<SynthesisStatus, "pending">;
+  content: string;
+  baseContent: string | null;
+  decidedAt: string;
+};
+
 export type SynthesisWorkspace = {
   published: SynthesisVersion | null;
   pending: SynthesisVersion | null;
+  history: SynthesisDecisionSummary[];
 };

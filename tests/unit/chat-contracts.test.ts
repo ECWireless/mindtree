@@ -20,8 +20,6 @@ describe("chat contracts", () => {
     expect(input).toMatchObject({
       content: "Develop this thought.",
       webSearchAuthorized: false,
-      proposalRequested: false,
-      refinementProposalId: null,
     });
   });
 
@@ -43,6 +41,11 @@ describe("chat contracts", () => {
       ...base,
       content: "Implicit refinement",
       refinementProposalId: randomUUID(),
+    }).success).toBe(false);
+    expect(createChatTurnInputSchema.safeParse({
+      ...base,
+      content: "Client-forced proposal",
+      proposalRequested: true,
     }).success).toBe(false);
   });
 

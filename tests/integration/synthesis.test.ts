@@ -55,6 +55,7 @@ async function insertProposal(input: {
   baseVersionId?: string | null;
   content: string;
   status?: "pending" | "approved" | "rejected" | "superseded";
+  decidedAt?: Date;
 }) {
   const sequence = await pool.query<{ value: string }>(
     `select (coalesce(max(sequence), -1) + 1)::text as value
@@ -85,7 +86,7 @@ async function insertProposal(input: {
         reasoning_mode, reasoning_effort, input_fingerprint,
         generating_message_id, decided_at)
      values ($1, $2, $3, $4, $5::varchar, $6, 'gpt-5.6-sol', 'pro', 'high', $7, $8,
-       case when $5::text = 'pending' then null else now() end)`,
+       case when $5::text = 'pending' then null else coalesce($9::timestamptz, now()) end)`,
     [
       proposalId,
       input.userId,
@@ -95,6 +96,7 @@ async function insertProposal(input: {
       input.content,
       "b".repeat(64),
       messageId,
+      input.decidedAt ?? null,
     ],
   );
   return proposalId;
@@ -308,6 +310,42 @@ describe("transactional synthesis decisions", () => {
       id: rejectedProposalId,
       status: "rejected",
     });
+  });
+
+  it("returns only the five most recent decided-version summaries", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId, "Decision history node");
+    const proposalIds: string[] = [];
+    for (let index = 0; index < 7; index += 1) {
+      const proposalId = await insertProposal({
+        userId,
+        nodeId,
+        content: `Rejected proposal ${index}`,
+        status: "rejected",
+        decidedAt: new Date(Date.now() - index * 60_000),
+      });
+      proposalIds.push(proposalId);
+    }
+
+    const workspace = await getSynthesisWorkspaceForUser(userId, nodeId);
+    expect(workspace.history).toHaveLength(5);
+    expect(workspace.history.map(({ id }) => id)).toEqual(proposalIds.slice(0, 5));
+    expect(workspace.history.every(({ status, decidedAt }) =>
+      status === "rejected" && Number.isFinite(Date.parse(decidedAt))))
+      .toBe(true);
+
+    const oldest = await pool.query<{ generating_message_id: string }>(
+      `select generating_message_id from synthesis_versions where id = $1`,
+      [proposalIds[6]],
+    );
+    const workspaceWithLoadedTurn = await getSynthesisWorkspaceForUser(userId, nodeId, {
+      generatingMessageIds: [oldest.rows[0]!.generating_message_id],
+    });
+    expect(workspaceWithLoadedTurn.history).toHaveLength(6);
+    expect(workspaceWithLoadedTurn.history).toContainEqual(expect.objectContaining({
+      id: proposalIds[6],
+      content: "Rejected proposal 6",
+    }));
   });
 
   it("shares the tree lock order with node movement while marking the approval-time ancestors", async () => {

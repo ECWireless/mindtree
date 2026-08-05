@@ -7,6 +7,7 @@ import {
   OpenAIChatAbortError,
   streamOpenAIChat,
   type NormalizedOpenAIChatEvent,
+  type OpenAIChatPhase,
 } from "@/lib/server/openai-chat";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
@@ -56,7 +57,7 @@ export function createOpenAISafetyIdentifier(userId: string, authSecret: string)
 
 async function* streamDeterministicChatFixture(input: {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
-  proposalRequested: boolean;
+  phase: OpenAIChatPhase;
   signal: AbortSignal;
 }): AsyncGenerator<NormalizedOpenAIChatEvent> {
   const topic = [...input.messages]
@@ -64,24 +65,43 @@ async function* streamDeterministicChatFixture(input: {
     .find(({ role }) => role === "user")
     ?.content.trim().replace(/\s+/g, " ").slice(0, 80) ?? "This thought";
   const providerResponseId = "fixture-response";
+  const hasPendingProposal = input.messages[0]?.content.includes(
+    '"refinementProposal":{"state":"pending"',
+  ) ?? false;
+  const synthesisRequested = /\b(synthesis|synthesize|synthesise)\b/i.test(topic) ||
+    (hasPendingProposal && /\b(shorter|longer|refine|revise|rewrite|emphasi[sz]e|change|update)\b/i.test(topic));
   const chunks = [
     "Here’s one way to develop that thought:\n\n",
     `**${topic}** can become clearer by separating the observation from the question it raises. `,
     "What evidence would change your view?",
   ];
+  const chunkDelayMs = topic === "Keep this fixture response open" ||
+    topic === "Propose a synthesis while Chat is closed"
+    ? 1_000
+    : 80;
 
   yield { type: "started", providerResponseId };
+  if (input.phase === "conversation" && synthesisRequested) {
+    yield {
+      type: "completed",
+      providerResponseId,
+      synthesisRequested: true,
+      proposal: null,
+    };
+    return;
+  }
   for (const content of chunks) {
     if (input.signal.aborted) {
       throw new OpenAIChatAbortError();
     }
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await new Promise((resolve) => setTimeout(resolve, chunkDelayMs));
     yield { type: "text-delta", content };
   }
   yield {
     type: "completed",
     providerResponseId,
-    proposal: input.proposalRequested
+    synthesisRequested: false,
+    proposal: input.phase === "synthesis"
       ? { content: `# ${topic}\n\nA concise synthetic synthesis proposal.` }
       : null,
   };
@@ -89,7 +109,7 @@ async function* streamDeterministicChatFixture(input: {
 
 export function streamChatResponse(input: {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
-  proposalRequested: boolean;
+  phase: OpenAIChatPhase;
   safetyIdentifier: string;
   signal: AbortSignal;
 }): AsyncGenerator<NormalizedOpenAIChatEvent> {
@@ -102,7 +122,7 @@ export function streamChatResponse(input: {
     return streamOpenAIChat({
       apiKey: environment.OPENAI_API_KEY,
       messages: input.messages,
-      proposalRequested: input.proposalRequested,
+      phase: input.phase,
       safetyIdentifier: input.safetyIdentifier,
       signal: input.signal,
     });

@@ -176,7 +176,7 @@ describe("persistent chat ledger", () => {
     const prepared = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
     const repeated = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
     expect(prepared.snapshot).toMatchObject({
-      version: 3,
+      version: 4,
       node: {
         id: nodeId,
         title: "Context leaf",
@@ -331,6 +331,7 @@ describe("persistent chat ledger", () => {
     expect(await getSynthesisWorkspaceForUser(userId, nodeId)).toEqual({
       published: null,
       pending: null,
+      history: [],
     });
   });
 
@@ -686,6 +687,7 @@ describe("persistent chat ledger", () => {
     expect(await getSynthesisWorkspaceForUser(userId, nodeId)).toEqual({
       published: null,
       pending: null,
+      history: [],
     });
   });
 

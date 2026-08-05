@@ -83,13 +83,16 @@ async function expectHistoryScrollChaining(
   const bottom = await positionAtBottomBoundary();
   expect(bottom.maxOuterScroll - bottom.outerScrollTop).toBeGreaterThan(0);
   await hoverVisibleHistory();
-  await page.mouse.wheel(0, 500);
+  await page.mouse.wheel(0, 60);
   await expect.poll(() => page.evaluate((selector) => {
     const outer = selector
       ? document.querySelector<HTMLElement>(selector)
       : document.scrollingElement;
     return outer?.scrollTop ?? 0;
   }, outerSelector)).toBeGreaterThan(bottom.outerScrollTop);
+  const bottomOuterScroll = await page.evaluate((selector) =>
+    document.querySelector<HTMLElement>(selector!)?.scrollTop ?? 0, outerSelector);
+  expect(bottomOuterScroll).toBeLessThanOrEqual(bottom.outerScrollTop + 65);
 }
 
 test.afterAll(async () => pool.end());
@@ -141,7 +144,18 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
     await installBrowserSessionCookie(context, seeded.cookie);
     await page.goto(`/?node=${firstNodeId}`);
 
-    const conversation = page.getByRole("region", { name: "Develop this thought" });
+    const chatButton = page.getByRole("button", { name: "Chat", exact: true });
+    await expectTouchTarget(chatButton);
+    await chatButton.click();
+    const chatDialog = page.getByRole("dialog", { name: "Chat about Chat alpha" });
+    await expect(chatDialog).toBeVisible();
+    await expectTouchTarget(page.getByRole("button", { name: "Close chat" }));
+    await page.keyboard.press("Escape");
+    await expect(chatDialog).not.toBeVisible();
+    await expect(chatButton).toBeFocused();
+    await chatButton.click();
+    await expect(chatDialog).toBeVisible();
+    const conversation = chatDialog.getByRole("region", { name: "Conversation for Chat alpha" });
     await expect(conversation).toBeVisible();
     const history = page.locator(".chat-history");
     await expect.poll(() => history.evaluate((element) =>
@@ -157,7 +171,7 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
     await history.evaluate((element) => { element.scrollTop = element.scrollHeight; });
     await expectHistoryScrollChaining(
       page,
-      testInfo.project.name === "desktop" ? ".detail-pane" : null,
+      null,
     );
     await history.evaluate((element) => { element.scrollTop = element.scrollHeight; });
 
@@ -207,7 +221,7 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
     await expect(page.locator(".chat-message--user").filter({ hasText: "Keyboard line one" })).toBeVisible();
     await expect(liveStatus).toHaveText("Assistant response completed.");
 
-    await composer.fill("Stop early");
+    await composer.fill("Keep this fixture response open");
     await composer.focus();
     await page.keyboard.press("Tab");
     const send = page.getByRole("button", { name: "Send" });
@@ -215,11 +229,17 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
     await expectTouchTarget(send);
     await send.click();
     await expect(page.getByText("Thinking…").last()).toBeVisible();
+    await page.getByRole("button", { name: "Close chat" }).click();
+    await expect(chatDialog).not.toBeVisible();
+    await expect(chatButton).toBeFocused();
+    await chatButton.click();
+    await expect(page.getByText("Thinking…").last()).toBeVisible();
     const stop = page.getByRole("button", { name: "Stop" });
     await expectTouchTarget(stop);
     await stop.click();
     await expect(page.getByText("Response stopped.").last()).toBeVisible();
     await page.reload();
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
     await expect(page.getByText("Response stopped.").last()).toBeVisible();
 
     await page.getByRole("textbox", { name: "Message" }).fill("A fresh angle");
@@ -231,6 +251,7 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
       element.scrollHeight - element.scrollTop - element.clientHeight,
     )).toBeLessThan(4);
     await page.reload();
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
     await expect(page.locator(".chat-message--user").getByText("A fresh angle", { exact: true })).toBeVisible();
     await expect(page.getByText(/What evidence would change your view/).last()).toBeVisible();
     await expect(history.locator(".chat-composer")).toHaveCount(1);
@@ -274,10 +295,14 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
       status: "completed",
     }]);
 
+    await page.getByRole("button", { name: "Close chat" }).click();
     if (testInfo.project.name === "mobile") {
       await page.getByRole("link", { name: "Back to thoughts" }).click();
     }
     await page.getByRole("link", { name: /Chat beta/ }).click();
+    await expect(page.getByRole("heading", { name: "Chat beta", level: 1 })).toBeVisible();
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "Chat about Chat beta" })).toBeVisible();
     await expect(page.getByText("No messages yet.", { exact: false })).toBeVisible();
     await expect(page.locator(".chat-message--user").getByText("A fresh angle", { exact: true })).toHaveCount(0);
 

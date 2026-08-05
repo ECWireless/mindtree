@@ -617,9 +617,12 @@ recursive evidence or citations.
 - Structured model output separating ordinary assistant reply from optional
   synthesis proposal. Validate with Zod before persistence.
 - Synthesis profile using `gpt-5.6-sol`, pro mode, high effort.
-- Pending proposal panel, current synthesis empty state, readable diff,
-  refine/reject/approve controls, focus/status behavior, and decided history
-  metadata.
+- Conversation-native synthesis routing without a separate proposal composer
+  mode, plus a persistent Chat modal containing the transcript, composer, and
+  inline pending proposal artifact with the full readable diff, reject/approve
+  controls, focus/status behavior, and decided history metadata. Keep the
+  published Summary as the first content section on the clean node-detail
+  surface; approval closes Chat and focuses the refreshed Summary.
 - Transactional approval with owner authorization, node/proposal locks, base
   pointer verification, publication pointer update, stale clear, and competing
   proposal supersession.
@@ -637,7 +640,7 @@ recursive evidence or citations.
 
 1. `feat: add synthesis proposal persistence`
 2. `feat: add transactional synthesis decisions`
-3. `feat: add synthesis proposal and diff experience`
+3. `feat: add conversation-native synthesis review`
 
 ### Acceptance
 
@@ -648,6 +651,8 @@ recursive evidence or citations.
 - Refinement creates a new immutable proposal and supersedes, rather than
   edits, the previous pending proposal.
 - Rejection leaves the published synthesis unchanged.
+- Natural-language drafting and refinement can create proposals but cannot
+  approve, reject, or publish them.
 - First-proposal diff and long-content layouts remain clear on mobile.
 
 ### Verification

@@ -63,7 +63,7 @@ async function expectInvalid(events: unknown[]) {
 }
 
 describe("OpenAI Responses chat stream", () => {
-  it("builds the exact non-retained standard chat profile without tools", () => {
+  it("builds the non-retained standard chat profile with only the synthesis router", () => {
     const request = createOpenAIChatRequest({
       messages: [{ role: "user", content: "Synthetic request" }],
       safetyIdentifier: "mt_synthetic",
@@ -77,7 +77,12 @@ describe("OpenAI Responses chat stream", () => {
       safety_identifier: "mt_synthetic",
       store: false,
       stream: true,
-      tools: [],
+      tool_choice: "auto",
+      tools: [{
+        type: "function",
+        name: "request_synthesis",
+        strict: true,
+      }],
       parallel_tool_calls: false,
     });
     expect(request.reasoning).not.toHaveProperty("mode");
@@ -117,7 +122,12 @@ describe("OpenAI Responses chat stream", () => {
     expect(normalized).toEqual([
       { type: "started", providerResponseId: "resp_synthetic" },
       { type: "text-delta", content: "A useful response." },
-      { type: "completed", providerResponseId: "resp_synthetic", proposal: null },
+      {
+        type: "completed",
+        providerResponseId: "resp_synthetic",
+        synthesisRequested: false,
+        proposal: null,
+      },
     ]);
   });
 
@@ -193,14 +203,47 @@ describe("OpenAI Responses chat stream", () => {
     expect(normalized).toEqual([
       { type: "started", providerResponseId: "resp_synthetic" },
       { type: "text-delta", content: "Visible text" },
-      { type: "completed", providerResponseId: "resp_synthetic", proposal: null },
+      {
+        type: "completed",
+        providerResponseId: "resp_synthetic",
+        synthesisRequested: false,
+        proposal: null,
+      },
+    ]);
+  });
+
+  it("accepts a strict tool-only conversational synthesis route", async () => {
+    const normalized = await Array.fromAsync(normalizeOpenAIChatEvents(fixture([
+      createdEvent,
+      {
+        ...completedEvent,
+        response: {
+          ...completedEvent.response,
+          output: [{
+            type: "function_call",
+            name: "request_synthesis",
+            status: "completed",
+            arguments: "{}",
+          }],
+        },
+      },
+    ])));
+
+    expect(normalized).toEqual([
+      { type: "started", providerResponseId: "resp_synthetic" },
+      {
+        type: "completed",
+        providerResponseId: "resp_synthetic",
+        synthesisRequested: true,
+        proposal: null,
+      },
     ]);
   });
 
   it("builds the explicit pro synthesis profile with one strict proposal tool", () => {
     const request = createOpenAIChatRequest({
       messages: [{ role: "user", content: "Propose a synthesis" }],
-      proposalRequested: true,
+      phase: "synthesis",
       safetyIdentifier: "mt_synthetic",
     });
 
@@ -210,7 +253,7 @@ describe("OpenAI Responses chat stream", () => {
       safety_identifier: "mt_synthetic",
       store: false,
       stream: true,
-      tool_choice: "auto",
+      tool_choice: "required",
       parallel_tool_calls: false,
       tools: [{
         type: "function",
@@ -219,9 +262,10 @@ describe("OpenAI Responses chat stream", () => {
       }],
     });
     expect(request.instructions).toContain("advisory generated content");
+    expect(request.instructions).not.toContain("request_synthesis");
   });
 
-  it("validates one optional structured proposal from a requested response", async () => {
+  it("validates one structured proposal from the synthesis profile", async () => {
     const normalized = await Array.fromAsync(normalizeOpenAIChatEvents(fixture([
       createdEvent,
       deltaEvent("Here is a proposal for your review."),
@@ -237,13 +281,43 @@ describe("OpenAI Responses chat stream", () => {
           }],
         },
       },
-    ]), { proposalRequested: true }));
+    ]), { phase: "synthesis" }));
 
     expect(normalized.at(-1)).toEqual({
       type: "completed",
       providerResponseId: "resp_synthetic",
+      synthesisRequested: false,
       proposal: { content: "# Synthetic synthesis\n\nA bounded proposal." },
     });
+  });
+
+  it("adds a safe confirmation when a valid proposal response contains only the tool call", async () => {
+    const normalized = await Array.fromAsync(normalizeOpenAIChatEvents(fixture([
+      createdEvent,
+      {
+        ...completedEvent,
+        response: {
+          ...completedEvent.response,
+          output: [{
+            type: "function_call",
+            name: "propose_synthesis",
+            status: "completed",
+            arguments: JSON.stringify({ content: "# Tool-only synthesis\n\nA bounded proposal." }),
+          }],
+        },
+      },
+    ]), { phase: "synthesis" }));
+
+    expect(normalized).toEqual([
+      { type: "started", providerResponseId: "resp_synthetic" },
+      { type: "text-delta", content: "I drafted a synthesis proposal for your review." },
+      {
+        type: "completed",
+        providerResponseId: "resp_synthetic",
+        synthesisRequested: false,
+        proposal: { content: "# Tool-only synthesis\n\nA bounded proposal." },
+      },
+    ]);
   });
 
   it("rejects unrequested, repeated, invalid, and unsupported proposal calls", async () => {
@@ -274,7 +348,7 @@ describe("OpenAI Responses chat stream", () => {
           createdEvent,
           deltaEvent("Invalid proposal."),
           { ...completedEvent, response: { ...completedEvent.response, output } },
-        ]), { proposalRequested: true })),
+        ]), { phase: "synthesis" })),
       ).rejects.toEqual(new OpenAIChatError("response-invalid"));
     }
   });
@@ -314,6 +388,52 @@ describe("OpenAI Responses chat stream", () => {
     expect(consumed).toEqual([
       { type: "started", providerResponseId: "resp_synthetic" },
       { type: "text-delta", content: "Bounded response." },
+    ]);
+  });
+
+  it("does not expose a tool-only confirmation before clean stream exhaustion", async () => {
+    const toolOnlyCompleted = {
+      ...completedEvent,
+      response: {
+        ...completedEvent.response,
+        output: [{
+          type: "function_call",
+          name: "propose_synthesis",
+          status: "completed",
+          arguments: JSON.stringify({ content: "# Tool-only synthesis\n\nA bounded proposal." }),
+        }],
+      },
+    };
+    const trailingConsumed: NormalizedOpenAIChatEvent[] = [];
+    await expect((async () => {
+      for await (const event of normalizeOpenAIChatEvents(fixture([
+        createdEvent,
+        toolOnlyCompleted,
+        { type: "response.in_progress", sequence_number: 4 },
+      ]), { phase: "synthesis" })) {
+        trailingConsumed.push(event);
+      }
+    })()).rejects.toEqual(new OpenAIChatError("response-invalid"));
+    expect(trailingConsumed).toEqual([
+      { type: "started", providerResponseId: "resp_synthetic" },
+    ]);
+
+    async function* failingToolOnlyFixture() {
+      yield createdEvent as ResponseStreamEvent;
+      yield toolOnlyCompleted as ResponseStreamEvent;
+      throw new Error("synthetic trailing transport failure");
+    }
+    const failingConsumed: NormalizedOpenAIChatEvent[] = [];
+    await expect((async () => {
+      for await (const event of normalizeOpenAIChatEvents(
+        failingToolOnlyFixture(),
+        { phase: "synthesis" },
+      )) {
+        failingConsumed.push(event);
+      }
+    })()).rejects.toThrow("synthetic trailing transport failure");
+    expect(failingConsumed).toEqual([
+      { type: "started", providerResponseId: "resp_synthetic" },
     ]);
   });
 

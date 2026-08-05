@@ -170,6 +170,15 @@ v0.1.0 does not include:
 ## Chat behavior
 
 - Each node has one ordered, persistent conversation.
+- The selected-node detail surface keeps the current **Summary** as its first
+  content section and exposes a prominent **Chat** button near the node header.
+  Chat opens in an accessible modal containing the conversation, composer,
+  proposals, diffs, and proposal history; those working artifacts do not share
+  the main detail surface with the published result.
+- Closing and reopening the Chat modal preserves its in-memory conversation
+  state, and an active response may continue while the modal is closed. Normal
+  closure returns focus to **Chat**. Successful approval closes Chat and moves
+  focus to the newly published **Summary** after the refreshed version renders.
 - User and assistant messages are immutable after successful creation.
 - A failed assistant generation remains visibly retryable without duplicating
   the user message.
@@ -181,7 +190,8 @@ v0.1.0 does not include:
   next submitted turn. Natural-language requests may explain that the control
   must be enabled; they do not silently authorize web use.
 - Assistant messages may contain ordinary discussion, clickable internal node
-  citations, clickable external citations, and at most one synthesis proposal.
+  citations, clickable external citations, and at most one inline synthesis
+  proposal with its full diff and explicit decision controls.
 - Chat history is not the published synthesis and is not automatically included
   in ancestor context. Only the node's approved synthesis is inherited upward.
 - The application stores conversation messages locally. v0.1.0 does not rely
@@ -194,6 +204,10 @@ v0.1.0 does not include:
 
 - A node may have no published synthesis or exactly one current published
   synthesis version.
+- The current published version is rendered as the **Summary** at the top of
+  the node's content surface. Validated **References** will be its only sibling
+  content section when citation phases add reference data; no speculative empty
+  References section is shown before then.
 - Every approval creates a new immutable synthesis version; prior approved
   versions remain available to integrity checks and future history UI.
 - The current version is selected by an explicit pointer on the node rather
@@ -207,6 +221,8 @@ v0.1.0 does not include:
 
 - The assistant may propose a synthesis only in response to an owner chat turn
   or an explicit **Propose refresh** action.
+- The owner requests and refines proposals in ordinary conversational language;
+  v0.1.0 does not expose a separate proposal or refinement composer mode.
 - A proposal is immutable generated content with status `pending`, `approved`,
   `rejected`, or `superseded`.
 - A proposal records the current published version on which it is based, the
@@ -219,6 +235,9 @@ v0.1.0 does not include:
   published version. First synthesis proposals compare against an empty state.
 - The owner can continue chatting before deciding. Refinement produces a new
   proposal rather than mutating the old proposal.
+- Approval and rejection controls are embedded in the proposal's chat artifact.
+  Conversational model interpretation may draft or refine a proposal, but it
+  never approves, rejects, or publishes one.
 
 ### Approval integrity
 
@@ -572,9 +591,9 @@ Each row presents:
 The selected node contains:
 
 - Breadcrumbs and inline-editable title.
-- Published synthesis with state, citations, References, and proposal controls.
-- Pending proposal and diff when one exists.
-- Persistent chat history and composer.
+- Persistent chat history and composer, including the published synthesis state
+  and any pending proposal, full diff, and explicit decision controls as inline
+  conversation artifacts.
 - **Use web sources** for the next message.
 - Add-child, archive/unarchive, **Move To…**, and delete actions.
 

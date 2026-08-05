@@ -39,6 +39,8 @@ import { DeleteNodeDialog } from "@/components/delete-node-dialog";
 import { ChatPanel } from "@/components/chat-panel";
 import { MoveNodeDialog } from "@/components/move-node-dialog";
 import { NodeTreeList } from "@/components/node-tree-list";
+import { PublishedSynthesisArtifact } from "@/components/synthesis-panel";
+import type { ChatMessagePage } from "@/lib/chat/contracts";
 import {
   createNodeDropResolver,
   formatBreadcrumb,
@@ -48,7 +50,7 @@ import {
   type NodeDropZone,
 } from "@/lib/nodes/presentation";
 import { assembleNodeTree, type FlatNode, type TreeNode } from "@/lib/nodes/tree";
-import type { ChatMessagePage } from "@/lib/chat/contracts";
+import type { SynthesisWorkspace } from "@/lib/synthesis/contracts";
 
 import { SignOutButton } from "./auth-buttons";
 import { BrandMark } from "./brand-mark";
@@ -58,6 +60,7 @@ type DashboardShellProps = {
   nodes: readonly FlatNode[];
   selectedNodeId?: string;
   initialChatPage?: ChatMessagePage;
+  initialSynthesisWorkspace?: SynthesisWorkspace;
   chatGenerationEnabled?: boolean;
 };
 
@@ -503,7 +506,14 @@ function TitleEditor({ node, onSaved }: { node: TreeNode; onSaved: () => void })
   );
 }
 
-function DashboardWorkspace({ email, nodes, selectedNodeId, initialChatPage, chatGenerationEnabled = false }: DashboardShellProps) {
+function DashboardWorkspace({
+  email,
+  nodes,
+  selectedNodeId,
+  initialChatPage,
+  initialSynthesisWorkspace,
+  chatGenerationEnabled = false,
+}: DashboardShellProps) {
   const router = useRouter();
   const tree = useMemo(() => assembleNodeTree(nodes), [nodes]);
   const selectedNode = selectedNodeId ? tree.byId.get(selectedNodeId) ?? null : null;
@@ -522,6 +532,7 @@ function DashboardWorkspace({ email, nodes, selectedNodeId, initialChatPage, cha
   const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [chatDialogOpen, setChatDialogOpen] = useState(false);
   const [lifecyclePending, setLifecyclePending] = useState(false);
   const [lifecycleError, setLifecycleError] = useState<string | null>(null);
   const [lifecycleStatus, setLifecycleStatus] = useState("");
@@ -533,6 +544,9 @@ function DashboardWorkspace({ email, nodes, selectedNodeId, initialChatPage, cha
   const createReturnFocus = useRef<HTMLElement | null>(null);
   const moveTriggerRef = useRef<HTMLButtonElement>(null);
   const deleteTriggerRef = useRef<HTMLButtonElement>(null);
+  const chatTriggerRef = useRef<HTMLButtonElement>(null);
+  const summaryHeadingRef = useRef<HTMLHeadingElement>(null);
+  const approvalPreviousPublishedId = useRef<string | null | undefined>(undefined);
   const newRootTriggerRef = useRef<HTMLButtonElement>(null);
   const lifecycleRequestInFlight = useRef(false);
   const pendingTreeFocus = useRef<string | null>(null);
@@ -546,6 +560,20 @@ function DashboardWorkspace({ email, nodes, selectedNodeId, initialChatPage, cha
     () => getVisibleNodeRoots(tree.roots, showArchived),
     [showArchived, tree.roots],
   );
+  const synthesisWorkspace = initialSynthesisWorkspace ?? {
+    published: null,
+    pending: null,
+    history: [],
+  };
+
+  useEffect(() => {
+    const previousPublishedId = approvalPreviousPublishedId.current;
+    const nextPublishedId = synthesisWorkspace.published?.id ?? null;
+    if (previousPublishedId === undefined || previousPublishedId === nextPublishedId) return;
+    approvalPreviousPublishedId.current = undefined;
+    const frame = requestAnimationFrame(() => summaryHeadingRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [synthesisWorkspace.published?.id]);
   const activeDragNode = activeDragId ? tree.byId.get(activeDragId) ?? null : null;
   const activeDropResolver = useMemo(
     () => activeDragNode ? createNodeDropResolver(tree.ordered, activeDragNode) : null,
@@ -1164,6 +1192,14 @@ function DashboardWorkspace({ email, nodes, selectedNodeId, initialChatPage, cha
               <p className="node-status-line">
                 {selectedNode.archivedAt ? "Archived" : "Active"}
               </p>
+              <button
+                ref={chatTriggerRef}
+                className="button button--primary node-chat-button"
+                type="button"
+                onClick={() => setChatDialogOpen(true)}
+              >
+                Chat
+              </button>
               <div className="node-actions" aria-label="Thought actions">
                 {selectedNode.archivedAt === null ? (
                   <button
@@ -1221,6 +1257,27 @@ function DashboardWorkspace({ email, nodes, selectedNodeId, initialChatPage, cha
                 {lifecycleStatus}
               </p>
               {lifecycleError ? <p role="alert">{lifecycleError}</p> : null}
+              <div className="node-summary">
+                {synthesisWorkspace.published ? (
+                  <PublishedSynthesisArtifact
+                    synthesis={synthesisWorkspace.published}
+                    headingRef={summaryHeadingRef}
+                  />
+                ) : (
+                  <section aria-labelledby={`node-summary-${selectedNode.id}`}>
+                    <h2
+                      id={`node-summary-${selectedNode.id}`}
+                      ref={summaryHeadingRef}
+                      tabIndex={-1}
+                    >
+                      Summary
+                    </h2>
+                    <p className="synthesis-conversation-empty">
+                      No synthesis is published yet. Open Chat when this thought is ready to synthesize.
+                    </p>
+                  </section>
+                )}
+              </div>
               {creatingParentId === selectedNode.id && creatingChildSurface === "detail" ? (
                 <NodeCreateForm
                   parentId={selectedNode.id}
@@ -1229,17 +1286,6 @@ function DashboardWorkspace({ email, nodes, selectedNodeId, initialChatPage, cha
                   onCreated={created}
                 />
               ) : null}
-              <section className="synthesis-placeholder" aria-labelledby="fixture-synthesis-title">
-                <p className="pane-eyebrow">Synthesis</p>
-                <h2 id="fixture-synthesis-title">No synthesis yet</h2>
-                <p>Approved synthesis will stay distinct from the conversation that shaped it.</p>
-              </section>
-              <ChatPanel
-                nodeId={selectedNode.id}
-                nodeTitle={selectedNode.title}
-                initialPage={initialChatPage ?? { messages: [], nextCursor: null }}
-                generationEnabled={chatGenerationEnabled}
-              />
             </>
           ) : (
             <div className="empty-state">
@@ -1271,6 +1317,23 @@ function DashboardWorkspace({ email, nodes, selectedNodeId, initialChatPage, cha
           onClose={() => setDeleteDialogOpen(false)}
           onDeleted={deleted}
           returnFocusRef={deleteTriggerRef}
+        />
+      ) : null}
+      {selectedNode ? (
+        <ChatPanel
+          key={selectedNode.id}
+          nodeId={selectedNode.id}
+          nodeTitle={selectedNode.title}
+          initialPage={initialChatPage ?? { messages: [], nextCursor: null }}
+          synthesisWorkspace={synthesisWorkspace}
+          generationEnabled={chatGenerationEnabled}
+          open={chatDialogOpen}
+          returnFocusRef={chatTriggerRef}
+          onClose={() => setChatDialogOpen(false)}
+          onApprovalSettled={() => {
+            approvalPreviousPublishedId.current = synthesisWorkspace.published?.id ?? null;
+            setChatDialogOpen(false);
+          }}
         />
       ) : null}
     </main>

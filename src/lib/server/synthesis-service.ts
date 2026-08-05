@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { DrizzleError, DrizzleQueryError } from "drizzle-orm/errors";
 
 import { db } from "@/db/client";
@@ -301,6 +301,7 @@ export async function rejectSynthesisProposalForUser(
 export async function getSynthesisWorkspaceForUser(
   userId: string,
   nodeId: string,
+  options: { generatingMessageIds?: string[] } = {},
 ): Promise<SynthesisWorkspace> {
   return db.transaction(async (tx) => {
     const [node] = await tx
@@ -343,9 +344,86 @@ export async function getSynthesisWorkspaceForUser(
       throw new SynthesisServiceError("unavailable");
     }
 
+    const recentDecidedVersions = await tx
+      .select({
+        id: synthesisVersions.id,
+        baseVersionId: synthesisVersions.baseVersionId,
+        generatingMessageId: synthesisVersions.generatingMessageId,
+        status: synthesisVersions.status,
+        content: synthesisVersions.content,
+        decidedAt: synthesisVersions.decidedAt,
+      })
+      .from(synthesisVersions)
+      .where(
+        and(
+          eq(synthesisVersions.userId, userId),
+          eq(synthesisVersions.nodeId, nodeId),
+          inArray(synthesisVersions.status, ["approved", "rejected", "superseded"]),
+        ),
+      )
+      .orderBy(desc(synthesisVersions.decidedAt), desc(synthesisVersions.id))
+      .limit(5);
+    const requestedMessageIds = [...new Set(options.generatingMessageIds ?? [])].slice(0, 50);
+    const pageDecidedVersions = requestedMessageIds.length > 0
+      ? await tx
+          .select({
+            id: synthesisVersions.id,
+            baseVersionId: synthesisVersions.baseVersionId,
+            generatingMessageId: synthesisVersions.generatingMessageId,
+            status: synthesisVersions.status,
+            content: synthesisVersions.content,
+            decidedAt: synthesisVersions.decidedAt,
+          })
+          .from(synthesisVersions)
+          .where(and(
+            eq(synthesisVersions.userId, userId),
+            eq(synthesisVersions.nodeId, nodeId),
+            inArray(synthesisVersions.status, ["approved", "rejected", "superseded"]),
+            inArray(synthesisVersions.generatingMessageId, requestedMessageIds),
+          ))
+      : [];
+    const decidedVersions = [...new Map(
+      [...recentDecidedVersions, ...pageDecidedVersions]
+        .map((version) => [version.id, version]),
+    ).values()];
+    const decidedBaseIds = decidedVersions.flatMap((version) =>
+      version.baseVersionId ? [version.baseVersionId] : []
+    );
+    const decidedBases = decidedBaseIds.length > 0
+      ? await tx
+          .select({ id: synthesisVersions.id, content: synthesisVersions.content })
+          .from(synthesisVersions)
+          .where(and(
+            eq(synthesisVersions.userId, userId),
+            eq(synthesisVersions.nodeId, nodeId),
+            inArray(synthesisVersions.id, decidedBaseIds),
+          ))
+      : [];
+    const decidedBaseContent = new Map(
+      decidedBases.map((version) => [version.id, version.content]),
+    );
     return {
       published: published ? toSynthesisVersion(published) : null,
       pending: pendingVersions[0] ? toSynthesisVersion(pendingVersions[0]) : null,
+      history: decidedVersions.map((version) => {
+        if (version.status === "pending" || version.decidedAt === null) {
+          throw new SynthesisServiceError("unavailable");
+        }
+        const baseContent = version.baseVersionId
+          ? decidedBaseContent.get(version.baseVersionId)
+          : null;
+        if (version.baseVersionId && baseContent === undefined) {
+          throw new SynthesisServiceError("unavailable");
+        }
+        return {
+          id: version.id,
+          generatingMessageId: version.generatingMessageId,
+          status: version.status,
+          content: version.content,
+          baseContent: baseContent ?? null,
+          decidedAt: version.decidedAt.toISOString(),
+        };
+      }),
     };
   }, {
     accessMode: "read only",

@@ -11,6 +11,8 @@ const runtime = vi.hoisted(() => ({
     | "generic-failure"
     | "provider-refusal"
     | "proposal-success"
+    | "route-synthesis"
+    | "route-synthesis-at-content-limit"
     | "silent-end"
     | "success"
     | "timeout"
@@ -26,7 +28,7 @@ vi.mock("@/lib/server/chat-runtime", async () => {
   return {
     createOpenAISafetyIdentifier: () => "mt_synthetic_failure_test",
     getChatGenerationMode: () => "deterministic-fixture",
-    streamChatResponse: (input: { proposalRequested?: boolean; signal: AbortSignal }) => {
+    streamChatResponse: (input: { phase: "conversation" | "synthesis"; signal: AbortSignal }) => {
       runtime.invocations += 1;
       const scenario = runtime.scenarios.shift();
       return (async function* () {
@@ -42,6 +44,25 @@ vi.mock("@/lib/server/chat-runtime", async () => {
 
         const providerResponseId = `resp_${scenario}`;
         yield { type: "started" as const, providerResponseId };
+        if (
+          scenario === "route-synthesis" ||
+          scenario === "route-synthesis-at-content-limit"
+        ) {
+          if (input.phase !== "conversation") throw new Error("unexpected routing phase");
+          if (scenario === "route-synthesis-at-content-limit") {
+            yield { type: "text-delta" as const, content: "x".repeat(64_000) };
+          }
+          yield {
+            type: "completed" as const,
+            providerResponseId,
+            synthesisRequested: true,
+            proposal: null,
+          };
+          return;
+        }
+        if (scenario === "proposal-success" && input.phase !== "synthesis") {
+          throw new Error("unexpected proposal phase");
+        }
         if (scenario === "provider-refusal") {
           yield { type: "text-delta" as const, content: "Partial refusal prefix." };
           throw new OpenAIChatError("provider-refusal");
@@ -73,6 +94,7 @@ vi.mock("@/lib/server/chat-runtime", async () => {
         yield {
           type: "completed" as const,
           providerResponseId,
+          synthesisRequested: false,
           proposal: scenario === "proposal-success"
             ? { content: "# Synthetic proposal\n\nA bounded synthesis draft." }
             : null,
@@ -131,14 +153,13 @@ async function storedTurn(clientMessageId: string) {
 }
 
 async function createPendingProposalViaRoute() {
-  runtime.scenarios.push("proposal-success");
+  runtime.scenarios.push("route-synthesis", "proposal-success");
   const clientMessageId = randomUUID();
   const events = await readEvents(await post({
     nodeId,
     clientMessageId,
     content: "Create a pending synthesis for refinement",
     webSearchAuthorized: false,
-    proposalRequested: true,
   }));
   expect(events.at(-1)).toMatchObject({ type: "completed" });
   const proposal = await pool.query<{ id: string }>(
@@ -295,15 +316,15 @@ describe("chat generation failure boundaries", () => {
   });
 
   it("persists a requested synthesis proposal without publishing it", async () => {
-    runtime.scenarios.push("proposal-success");
+    runtime.scenarios.push("route-synthesis", "proposal-success");
     const clientMessageId = randomUUID();
-    const events = await readEvents(await post({
+    const createBody = {
       nodeId,
       clientMessageId,
       content: "Propose a synthesis from the supplied context",
       webSearchAuthorized: false,
-      proposalRequested: true,
-    }));
+    };
+    const events = await readEvents(await post(createBody));
 
     expect(events.at(-1)).toMatchObject({
       type: "completed",
@@ -333,6 +354,8 @@ describe("chat generation failure boundaries", () => {
     );
     const assistantId = (await storedTurn(clientMessageId))
       .find(({ role }) => role === "assistant")?.id;
+    expect((await storedTurn(clientMessageId)).find(({ role }) => role === "assistant"))
+      .toMatchObject({ provider_response_id: "resp_proposal-success" });
 
     expect(proposalResult.rows).toEqual([{
       id: expect.any(String),
@@ -344,18 +367,21 @@ describe("chat generation failure boundaries", () => {
       status: "pending",
     }]);
     expect(pointerResult.rows).toEqual([{ published_synthesis_version_id: null }]);
-    expect(runtime.invocations).toBe(1);
+    expect(runtime.invocations).toBe(2);
+
+    const replayEvents = await readEvents(await post(createBody));
+    expect(replayEvents.map(({ type }) => type)).toEqual(["turn", "completed"]);
+    expect(replayEvents.at(-1)).toMatchObject({ proposalCreated: true });
+    expect(runtime.invocations).toBe(2);
 
     const originalProposalId = proposalResult.rows[0]!.id;
-    runtime.scenarios.push("proposal-success");
+    runtime.scenarios.push("route-synthesis", "proposal-success");
     const refinementClientMessageId = randomUUID();
     const refinementEvents = await readEvents(await post({
       nodeId,
       clientMessageId: refinementClientMessageId,
       content: "Refine the exact pending synthesis",
       webSearchAuthorized: false,
-      proposalRequested: true,
-      refinementProposalId: originalProposalId,
     }));
     expect(refinementEvents.at(-1)).toMatchObject({ type: "completed" });
 
@@ -382,20 +408,48 @@ describe("chat generation failure boundaries", () => {
     expect(refinementIntent.rows).toEqual([{
       refinement_proposal_id: originalProposalId,
     }]);
-    expect(runtime.invocations).toBe(2);
+    expect(runtime.invocations).toBe(4);
+  });
+
+  it("bounds combined conversational routing and synthesis output before a second call", async () => {
+    runtime.scenarios.push("route-synthesis-at-content-limit", "proposal-success");
+    const clientMessageId = randomUUID();
+    const events = await readEvents(await post({
+      nodeId,
+      clientMessageId,
+      content: "Propose a synthesis after a maximal routing response",
+      webSearchAuthorized: false,
+    }));
+
+    expect(events.at(-1)).toMatchObject({
+      type: "failed",
+      assistantMessage: {
+        status: "failed",
+        failureCode: "response-invalid",
+      },
+    });
+    expect(runtime.invocations).toBe(1);
+    const proposals = await pool.query<{ count: number }>(
+      `select count(*)::int as count from synthesis_versions
+       where user_id = $1 and node_id = $2`,
+      [userId, nodeId],
+    );
+    expect(proposals.rows).toEqual([{ count: 0 }]);
   });
 
   it("retries a failed refinement against its immutable pending target", async () => {
     const originalProposalId = await createPendingProposalViaRoute();
-    runtime.scenarios.push("generic-failure", "proposal-success");
+    runtime.scenarios.push(
+      "route-synthesis",
+      "generic-failure",
+      "proposal-success",
+    );
     const clientMessageId = randomUUID();
     const failedEvents = await readEvents(await post({
       nodeId,
       clientMessageId,
       content: "Refine this proposal and retry if needed",
       webSearchAuthorized: false,
-      proposalRequested: true,
-      refinementProposalId: originalProposalId,
     }));
     expect(failedEvents.at(-1)).toMatchObject({
       type: "failed",
@@ -419,22 +473,20 @@ describe("chat generation failure boundaries", () => {
     expect(versions.rows.find(({ id }) => id === originalProposalId)?.status)
       .toBe("superseded");
     expect(versions.rows.filter(({ status }) => status === "pending")).toHaveLength(1);
-    expect(runtime.invocations).toBe(3);
+    expect(runtime.invocations).toBe(5);
   });
 
   it("rejects a failed refinement retry without provider cost after its target is decided", async () => {
     const originalProposalId = await createPendingProposalViaRoute();
-    runtime.scenarios.push("generic-failure");
+    runtime.scenarios.push("route-synthesis", "generic-failure");
     const clientMessageId = randomUUID();
     await readEvents(await post({
       nodeId,
       clientMessageId,
       content: "Refine a proposal that will be decided",
       webSearchAuthorized: false,
-      proposalRequested: true,
-      refinementProposalId: originalProposalId,
     }));
-    expect(runtime.invocations).toBe(2);
+    expect(runtime.invocations).toBe(4);
     await pool.query(
       `update synthesis_versions
        set status = 'rejected', decided_at = now(), updated_at = now()
@@ -447,7 +499,7 @@ describe("chat generation failure boundaries", () => {
     await expect(retryResponse.json()).resolves.toEqual({
       message: "The message could not be started.",
     });
-    expect(runtime.invocations).toBe(2);
+    expect(runtime.invocations).toBe(4);
     expect(await storedTurn(clientMessageId)).toMatchObject([
       { role: "user", status: "completed" },
       { role: "assistant", status: "failed" },

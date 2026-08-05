@@ -21,7 +21,7 @@ export type ChatContextMessage = {
 };
 
 export type ChatContextSnapshot = {
-  version: 3;
+  version: 4;
   node: {
     id: string;
     title: string;
@@ -210,46 +210,34 @@ export async function prepareChatContextForUser(
       };
     }
 
-    let refinementProposal: ChatContextSnapshot["node"]["refinementProposal"] = {
-      state: "none",
-    };
-    if (userMessage.proposalRequested) {
-      const pending = await tx
-        .select({
-          id: synthesisVersions.id,
-          baseVersionId: synthesisVersions.baseVersionId,
-          content: synthesisVersions.content,
-        })
-        .from(synthesisVersions)
-        .where(
-          and(
-            eq(synthesisVersions.userId, userId),
-            eq(synthesisVersions.nodeId, input.nodeId),
-            eq(synthesisVersions.status, "pending"),
-          ),
-        )
-        .limit(2);
-      if (userMessage.refinementProposalId === null) {
-        if (pending.length !== 0) {
-          throw new Error("chat context proposal intent is unavailable");
-        }
-      } else {
-        const refinementTarget = pending.length === 1 ? pending[0] : undefined;
-        if (
-          !refinementTarget ||
-          refinementTarget.id !== userMessage.refinementProposalId ||
-          refinementTarget.baseVersionId !== target.published_synthesis_version_id
-        ) {
-          throw new Error("chat context refinement proposal is unavailable");
-        }
-        refinementProposal = {
-          state: "pending",
-          versionId: refinementTarget.id,
-          baseVersionId: refinementTarget.baseVersionId,
-          content: refinementTarget.content,
-        };
-      }
+    const pending = await tx
+      .select({
+        id: synthesisVersions.id,
+        baseVersionId: synthesisVersions.baseVersionId,
+        content: synthesisVersions.content,
+      })
+      .from(synthesisVersions)
+      .where(
+        and(
+          eq(synthesisVersions.userId, userId),
+          eq(synthesisVersions.nodeId, input.nodeId),
+          eq(synthesisVersions.status, "pending"),
+        ),
+      )
+      .limit(2);
+    if (pending.length > 1) {
+      throw new Error("chat context pending synthesis is invalid");
     }
+    const refinementTarget = pending[0];
+    const refinementProposal: ChatContextSnapshot["node"]["refinementProposal"] =
+      refinementTarget
+        ? {
+            state: "pending",
+            versionId: refinementTarget.id,
+            baseVersionId: refinementTarget.baseVersionId,
+            content: refinementTarget.content,
+          }
+        : { state: "none" };
 
     const recentRows = await tx
       .select({
@@ -288,7 +276,7 @@ export async function prepareChatContextForUser(
     }
 
     return {
-      version: 3,
+      version: 4,
       node: {
         id: target.id,
         title: target.title,

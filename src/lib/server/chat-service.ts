@@ -346,8 +346,10 @@ export async function createChatTurnForUser(
           !assistantMessage ||
           userMessage.content !== input.content ||
           userMessage.webSearchAuthorized !== input.webSearchAuthorized ||
-          userMessage.proposalRequested !== (input.proposalRequested ?? false) ||
-          userMessage.refinementProposalId !== (input.refinementProposalId ?? null)
+          (input.proposalRequested !== undefined &&
+            userMessage.proposalRequested !== input.proposalRequested) ||
+          (input.refinementProposalId !== undefined &&
+            userMessage.refinementProposalId !== input.refinementProposalId)
         ) {
           throw new ChatServiceError("turn-conflict");
         }
@@ -637,9 +639,69 @@ export function recordChatTurnContextForUser(
   });
 }
 
+export async function recordChatTurnSynthesisIntentForUser(
+  userId: string,
+  input: RetryChatTurnInput & { refinementProposalId: string | null },
+) {
+  try {
+    await db.transaction(async (tx) => {
+      const lockedNode = await lockOwnedNode(tx, userId, input.nodeId);
+      const messages = await tx
+        .select()
+        .from(chatMessages)
+        .where(
+          and(
+            eq(chatMessages.userId, userId),
+            eq(chatMessages.nodeId, input.nodeId),
+            eq(chatMessages.clientMessageId, input.clientMessageId),
+          ),
+        )
+        .orderBy(asc(chatMessages.sequence))
+        .for("update");
+      const userMessage = messages.find((message) => message.role === "user");
+      const assistantMessage = messages.find((message) => message.role === "assistant");
+      if (!userMessage || !assistantMessage) {
+        throw new ChatServiceError("turn-not-found");
+      }
+      if (assistantMessage.status !== "streaming") {
+        throw new ChatServiceError("retry-unavailable");
+      }
+      if (userMessage.proposalRequested) {
+        if (userMessage.refinementProposalId !== input.refinementProposalId) {
+          throw new ChatServiceError("retry-unavailable");
+        }
+        return;
+      }
+      if (userMessage.refinementProposalId !== null) {
+        throw new ChatServiceError("retry-unavailable");
+      }
+      await requireProposalIntentAvailable(tx, {
+        userId,
+        nodeId: input.nodeId,
+        proposalRequested: true,
+        refinementProposalId: input.refinementProposalId,
+        publishedSynthesisVersionId: lockedNode.publishedSynthesisVersionId,
+      });
+      await tx
+        .update(chatMessages)
+        .set({
+          proposalRequested: true,
+          refinementProposalId: input.refinementProposalId,
+          updatedAt: new Date(),
+        })
+        .where(eq(chatMessages.id, userMessage.id));
+    });
+  } catch (error) {
+    throw sanitizeChatServiceError(error);
+  }
+}
+
 export function recordChatTurnProviderResponseForUser(
   userId: string,
-  input: RetryChatTurnInput & { providerResponseId: string },
+  input: RetryChatTurnInput & {
+    providerResponseId: string;
+    replaceExistingProviderResponse?: boolean;
+  },
 ) {
   if (input.providerResponseId.length < 1 || input.providerResponseId.length > 255) {
     throw new ChatServiceError("unavailable");
@@ -651,6 +713,7 @@ export function recordChatTurnProviderResponseForUser(
       message.model === null ||
       message.contextFingerprint === null ||
       (message.providerResponseId !== null &&
+        !input.replaceExistingProviderResponse &&
         message.providerResponseId !== input.providerResponseId)
     ) {
       throw new ChatServiceError("retry-unavailable");
