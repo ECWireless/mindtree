@@ -23,6 +23,7 @@
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
     "better-auth": "^1.6.25",
+    "diff": "^9.0.0",
     "drizzle-orm": "^0.45.2",
     "next": "^16.2.11",
     "openai": "^7.3.0",

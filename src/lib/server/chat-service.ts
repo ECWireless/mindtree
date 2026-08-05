@@ -3,7 +3,7 @@ import "server-only";
 import { and, asc, desc, eq, inArray, lt, max } from "drizzle-orm";
 import { DrizzleError, DrizzleQueryError } from "drizzle-orm/errors";
 
-import { chatMessages, nodes } from "@/db/schema";
+import { chatMessages, nodes, synthesisVersions } from "@/db/schema";
 import { db } from "@/db/client";
 import {
   CHAT_PAGE_SIZE,
@@ -15,6 +15,10 @@ import {
   type FailChatTurnInput,
   type RetryChatTurnInput,
 } from "@/lib/chat/contracts";
+import {
+  insertPendingSynthesisProposal,
+  type PendingSynthesisProposalInput,
+} from "@/lib/server/synthesis-service";
 
 type ChatTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -22,6 +26,7 @@ type ChatServiceReason =
   | "invalid-cursor"
   | "invalid-failure-code"
   | "node-not-found"
+  | "proposal-conflict"
   | "retry-unavailable"
   | "turn-conflict"
   | "turn-not-found"
@@ -57,6 +62,8 @@ function toChatMessage(row: typeof chatMessages.$inferSelect): ChatMessage {
     providerResponseId: row.providerResponseId,
     failureCode: row.failureCode,
     webSearchAuthorized: row.webSearchAuthorized,
+    proposalRequested: row.proposalRequested,
+    refinementProposalId: row.refinementProposalId,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     completedAt: row.completedAt?.toISOString() ?? null,
@@ -102,12 +109,60 @@ function decodeCursor(value: string): ChatCursor {
 
 async function lockOwnedNode(tx: ChatTransaction, userId: string, nodeId: string) {
   const [node] = await tx
-    .select({ id: nodes.id })
+    .select({
+      id: nodes.id,
+      publishedSynthesisVersionId: nodes.publishedSynthesisVersionId,
+    })
     .from(nodes)
     .where(and(eq(nodes.userId, userId), eq(nodes.id, nodeId)))
     .for("update");
   if (!node) {
     throw new ChatServiceError("node-not-found");
+  }
+  return node;
+}
+
+async function requireProposalIntentAvailable(
+  tx: ChatTransaction,
+  input: {
+    userId: string;
+    nodeId: string;
+    proposalRequested: boolean;
+    refinementProposalId: string | null;
+    publishedSynthesisVersionId: string | null;
+  },
+) {
+  if (!input.proposalRequested) {
+    if (input.refinementProposalId !== null) {
+      throw new ChatServiceError("proposal-conflict");
+    }
+    return;
+  }
+
+  const pending = await tx
+    .select({
+      id: synthesisVersions.id,
+      baseVersionId: synthesisVersions.baseVersionId,
+    })
+    .from(synthesisVersions)
+    .where(
+      and(
+        eq(synthesisVersions.userId, input.userId),
+        eq(synthesisVersions.nodeId, input.nodeId),
+        eq(synthesisVersions.status, "pending"),
+      ),
+    )
+    .limit(2)
+    .for("update");
+  if (
+    pending.length > 1 ||
+    (input.refinementProposalId === null && pending.length !== 0) ||
+    (input.refinementProposalId !== null &&
+      (pending.length !== 1 ||
+        pending[0]?.id !== input.refinementProposalId ||
+        pending[0]?.baseVersionId !== input.publishedSynthesisVersionId))
+  ) {
+    throw new ChatServiceError("proposal-conflict");
   }
 }
 
@@ -269,7 +324,7 @@ export async function createChatTurnForUser(
 ) {
   try {
     return await db.transaction(async (tx) => {
-      await lockOwnedNode(tx, userId, input.nodeId);
+      const lockedNode = await lockOwnedNode(tx, userId, input.nodeId);
       const existing = await tx
         .select()
         .from(chatMessages)
@@ -290,7 +345,11 @@ export async function createChatTurnForUser(
           !userMessage ||
           !assistantMessage ||
           userMessage.content !== input.content ||
-          userMessage.webSearchAuthorized !== input.webSearchAuthorized
+          userMessage.webSearchAuthorized !== input.webSearchAuthorized ||
+          (input.proposalRequested !== undefined &&
+            userMessage.proposalRequested !== input.proposalRequested) ||
+          (input.refinementProposalId !== undefined &&
+            userMessage.refinementProposalId !== input.refinementProposalId)
         ) {
           throw new ChatServiceError("turn-conflict");
         }
@@ -312,6 +371,14 @@ export async function createChatTurnForUser(
           generationClaimed,
         };
       }
+
+      await requireProposalIntentAvailable(tx, {
+        userId,
+        nodeId: input.nodeId,
+        proposalRequested: input.proposalRequested ?? false,
+        refinementProposalId: input.refinementProposalId ?? null,
+        publishedSynthesisVersionId: lockedNode.publishedSynthesisVersionId,
+      });
 
       const userCreatedAt = new Date();
       const [sequenceResult] = await tx
@@ -340,6 +407,8 @@ export async function createChatTurnForUser(
             status: "completed",
             content: input.content,
             webSearchAuthorized: input.webSearchAuthorized,
+            proposalRequested: input.proposalRequested ?? false,
+            refinementProposalId: input.refinementProposalId ?? null,
             createdAt: userCreatedAt,
             updatedAt: userCreatedAt,
             completedAt: userCreatedAt,
@@ -420,7 +489,7 @@ export async function retryChatTurnForUser(
 ) {
   try {
     return await db.transaction(async (tx) => {
-      await lockOwnedNode(tx, userId, input.nodeId);
+      const lockedNode = await lockOwnedNode(tx, userId, input.nodeId);
       const messages = await tx
         .select()
         .from(chatMessages)
@@ -441,6 +510,14 @@ export async function retryChatTurnForUser(
       if (assistantMessage.status !== "failed" && assistantMessage.status !== "cancelled") {
         throw new ChatServiceError("retry-unavailable");
       }
+
+      await requireProposalIntentAvailable(tx, {
+        userId,
+        nodeId: input.nodeId,
+        proposalRequested: userMessage.proposalRequested,
+        refinementProposalId: userMessage.refinementProposalId,
+        publishedSynthesisVersionId: lockedNode.publishedSynthesisVersionId,
+      });
 
       const [retriedAssistant] = await tx
         .update(chatMessages)
@@ -562,9 +639,69 @@ export function recordChatTurnContextForUser(
   });
 }
 
+export async function recordChatTurnSynthesisIntentForUser(
+  userId: string,
+  input: RetryChatTurnInput & { refinementProposalId: string | null },
+) {
+  try {
+    await db.transaction(async (tx) => {
+      const lockedNode = await lockOwnedNode(tx, userId, input.nodeId);
+      const messages = await tx
+        .select()
+        .from(chatMessages)
+        .where(
+          and(
+            eq(chatMessages.userId, userId),
+            eq(chatMessages.nodeId, input.nodeId),
+            eq(chatMessages.clientMessageId, input.clientMessageId),
+          ),
+        )
+        .orderBy(asc(chatMessages.sequence))
+        .for("update");
+      const userMessage = messages.find((message) => message.role === "user");
+      const assistantMessage = messages.find((message) => message.role === "assistant");
+      if (!userMessage || !assistantMessage) {
+        throw new ChatServiceError("turn-not-found");
+      }
+      if (assistantMessage.status !== "streaming") {
+        throw new ChatServiceError("retry-unavailable");
+      }
+      if (userMessage.proposalRequested) {
+        if (userMessage.refinementProposalId !== input.refinementProposalId) {
+          throw new ChatServiceError("retry-unavailable");
+        }
+        return;
+      }
+      if (userMessage.refinementProposalId !== null) {
+        throw new ChatServiceError("retry-unavailable");
+      }
+      await requireProposalIntentAvailable(tx, {
+        userId,
+        nodeId: input.nodeId,
+        proposalRequested: true,
+        refinementProposalId: input.refinementProposalId,
+        publishedSynthesisVersionId: lockedNode.publishedSynthesisVersionId,
+      });
+      await tx
+        .update(chatMessages)
+        .set({
+          proposalRequested: true,
+          refinementProposalId: input.refinementProposalId,
+          updatedAt: new Date(),
+        })
+        .where(eq(chatMessages.id, userMessage.id));
+    });
+  } catch (error) {
+    throw sanitizeChatServiceError(error);
+  }
+}
+
 export function recordChatTurnProviderResponseForUser(
   userId: string,
-  input: RetryChatTurnInput & { providerResponseId: string },
+  input: RetryChatTurnInput & {
+    providerResponseId: string;
+    replaceExistingProviderResponse?: boolean;
+  },
 ) {
   if (input.providerResponseId.length < 1 || input.providerResponseId.length > 255) {
     throw new ChatServiceError("unavailable");
@@ -576,6 +713,7 @@ export function recordChatTurnProviderResponseForUser(
       message.model === null ||
       message.contextFingerprint === null ||
       (message.providerResponseId !== null &&
+        !input.replaceExistingProviderResponse &&
         message.providerResponseId !== input.providerResponseId)
     ) {
       throw new ChatServiceError("retry-unavailable");
@@ -593,16 +731,73 @@ export function startChatTurnForUser(userId: string, input: RetryChatTurnInput) 
   });
 }
 
-export function completeChatTurnForUser(userId: string, input: RetryChatTurnInput) {
-  return updateAssistantTurnForUser(userId, input, (message) => {
-    if (
-      (message.status !== "pending" && message.status !== "streaming") ||
-      message.content.length === 0
-    ) {
-      throw new ChatServiceError("retry-unavailable");
-    }
-    return { status: "completed", completedAt: new Date(), failureCode: null };
-  });
+export async function completeChatTurnForUser(
+  userId: string,
+  input: RetryChatTurnInput,
+  options: { proposal?: PendingSynthesisProposalInput } = {},
+) {
+  try {
+    return await db.transaction(async (tx) => {
+      const lockedNode = await lockOwnedNode(tx, userId, input.nodeId);
+      const messages = await tx
+        .select()
+        .from(chatMessages)
+        .where(
+          and(
+            eq(chatMessages.userId, userId),
+            eq(chatMessages.nodeId, input.nodeId),
+            eq(chatMessages.clientMessageId, input.clientMessageId),
+          ),
+        )
+        .orderBy(asc(chatMessages.sequence))
+        .for("update");
+      const userMessage = messages.find((message) => message.role === "user");
+      const assistantMessage = messages.find((message) => message.role === "assistant");
+      if (!userMessage || !assistantMessage) {
+        throw new ChatServiceError("turn-not-found");
+      }
+      if (
+        (assistantMessage.status !== "pending" && assistantMessage.status !== "streaming") ||
+        assistantMessage.content.length === 0
+      ) {
+        throw new ChatServiceError("retry-unavailable");
+      }
+
+      if (options.proposal) {
+        if (
+          !userMessage.proposalRequested ||
+          userMessage.refinementProposalId !==
+            (options.proposal.refinementProposalId ?? null) ||
+          lockedNode.publishedSynthesisVersionId !== options.proposal.baseVersionId ||
+          assistantMessage.model !== options.proposal.model ||
+          assistantMessage.contextFingerprint !== options.proposal.inputFingerprint
+        ) {
+          throw new ChatServiceError("retry-unavailable");
+        }
+        await insertPendingSynthesisProposal(tx, {
+          ...options.proposal,
+          userId,
+          nodeId: input.nodeId,
+          generatingMessageId: assistantMessage.id,
+        });
+      }
+
+      const completedAt = new Date();
+      const [completed] = await tx
+        .update(chatMessages)
+        .set({
+          status: "completed",
+          completedAt,
+          failureCode: null,
+          updatedAt: completedAt,
+        })
+        .where(eq(chatMessages.id, assistantMessage.id))
+        .returning();
+      return toChatMessage(completed);
+    });
+  } catch (error) {
+    throw sanitizeChatServiceError(error);
+  }
 }
 
 export function cancelChatTurnForUser(userId: string, input: RetryChatTurnInput) {

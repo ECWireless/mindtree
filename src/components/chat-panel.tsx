@@ -7,23 +7,44 @@ import {
   useState,
   type FormEvent,
   type KeyboardEvent,
+  type RefObject,
 } from "react";
+import { useRouter } from "next/navigation";
 
 import { loadChatMessages, loadChatTurn } from "@/app/actions/chat";
 import { ChatMessageContent } from "@/components/chat-message-content";
+import {
+  SynthesisDecidedArtifact,
+  SynthesisDecisionHistory,
+  SynthesisProposalArtifact,
+} from "@/components/synthesis-panel";
 import {
   MAX_USER_MESSAGE_LENGTH,
   type ChatMessage,
   type ChatMessagePage,
   type ChatStreamEvent,
 } from "@/lib/chat/contracts";
+import type { SynthesisDecisionSummary, SynthesisWorkspace } from "@/lib/synthesis/contracts";
 
 type ChatPanelProps = {
   nodeId: string;
   nodeTitle: string;
   initialPage: ChatMessagePage;
+  synthesisWorkspace: SynthesisWorkspace;
   generationEnabled: boolean;
+  open: boolean;
+  returnFocusRef: RefObject<HTMLButtonElement | null>;
+  onClose: () => void;
+  onApprovalSettled: () => void;
 };
+
+function CloseIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m6 6 12 12M18 6 6 18" />
+    </svg>
+  );
+}
 
 function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]) {
   const orderedIds = [...current, ...incoming].map((message) => message.id);
@@ -50,7 +71,11 @@ function replaceTurn(current: ChatMessage[], clientMessageId: string, next: Chat
   return replaced;
 }
 
-function createOptimisticTurn(nodeId: string, clientMessageId: string, content: string) {
+function createOptimisticTurn(
+  nodeId: string,
+  clientMessageId: string,
+  content: string,
+) {
   const createdAt = new Date().toISOString();
   const base = {
     nodeId,
@@ -64,12 +89,40 @@ function createOptimisticTurn(nodeId: string, clientMessageId: string, content: 
     completedAt: null,
   };
   return [
-    { ...base, id: `local-user-${clientMessageId}`, role: "user", status: "completed", content, completedAt: createdAt },
-    { ...base, id: `local-assistant-${clientMessageId}`, role: "assistant", status: "pending", content: "" },
+    {
+      ...base,
+      id: `local-user-${clientMessageId}`,
+      role: "user",
+      status: "completed",
+      content,
+      proposalRequested: false,
+      refinementProposalId: null,
+      completedAt: createdAt,
+    },
+    {
+      ...base,
+      id: `local-assistant-${clientMessageId}`,
+      role: "assistant",
+      status: "pending",
+      content: "",
+      proposalRequested: false,
+      refinementProposalId: null,
+    },
   ] satisfies ChatMessage[];
 }
 
-export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }: ChatPanelProps) {
+export function ChatPanel({
+  nodeId,
+  nodeTitle,
+  initialPage,
+  synthesisWorkspace,
+  generationEnabled,
+  open,
+  returnFocusRef,
+  onClose,
+  onApprovalSettled,
+}: ChatPanelProps) {
+  const router = useRouter();
   const composerHelpId = `chat-composer-help-${nodeId}`;
   const [messages, setMessages] = useState(initialPage.messages);
   const [cursor, setCursor] = useState(initialPage.nextCursor);
@@ -78,14 +131,41 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
   const [loadError, setLoadError] = useState("");
   const [activeClientMessageId, setActiveClientMessageId] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  const [loadedDecisions, setLoadedDecisions] = useState<SynthesisDecisionSummary[]>([]);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const restoreFocusOnClose = useRef(true);
+  const pendingProposalFocusOnOpen = useRef(false);
   const abortController = useRef<AbortController | null>(null);
   const draftRef = useRef<HTMLTextAreaElement>(null);
+  const proposalHeadingRef = useRef<HTMLHeadingElement>(null);
   const historyRef = useRef<HTMLDivElement>(null);
   const followNewest = useRef(true);
   const paginationHeight = useRef<number | null>(null);
-  const unacknowledgedContent = useRef(new Map<string, string>());
+  const previousPendingProposalId = useRef(synthesisWorkspace.pending?.id ?? null);
+  const decisionFocus = useRef<"approve" | "reject" | null>(null);
+  const unacknowledgedTurns = useRef(new Map<string, { content: string }>());
 
   useEffect(() => () => abortController.current?.abort(), []);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (open && !dialog.open) {
+      restoreFocusOnClose.current = true;
+      dialog.showModal();
+      const frame = requestAnimationFrame(() => {
+        const history = historyRef.current;
+        if (history && followNewest.current) history.scrollTop = history.scrollHeight;
+        if (pendingProposalFocusOnOpen.current) {
+          pendingProposalFocusOnOpen.current = false;
+          proposalHeadingRef.current?.focus();
+        } else {
+          draftRef.current?.focus();
+        }
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+    if (!open && dialog.open) dialog.close();
+  }, [open]);
   useLayoutEffect(() => {
     const history = historyRef.current;
     if (!history) return;
@@ -102,6 +182,27 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
     textarea.style.height = "auto";
     textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`;
   }, [draft]);
+  useEffect(() => {
+    const nextPendingId = synthesisWorkspace.pending?.id ?? null;
+    const previousPendingId = previousPendingProposalId.current;
+    previousPendingProposalId.current = nextPendingId;
+    if (nextPendingId && nextPendingId !== previousPendingId) {
+      if (!open) {
+        pendingProposalFocusOnOpen.current = true;
+        return;
+      }
+      const frame = requestAnimationFrame(() => proposalHeadingRef.current?.focus());
+      return () => cancelAnimationFrame(frame);
+    }
+    if (previousPendingId && !nextPendingId) {
+      const target = decisionFocus.current;
+      decisionFocus.current = null;
+      const frame = requestAnimationFrame(() => {
+        if (target !== "approve") draftRef.current?.focus();
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+  }, [open, synthesisWorkspace.pending?.id, synthesisWorkspace.published?.id]);
 
   async function loadOlder() {
     if (!cursor || loadingOlder) return;
@@ -113,6 +214,9 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
       const result = await loadChatMessages({ nodeId, cursor });
       if (result.ok) {
         setMessages((current) => mergeMessages(result.page.messages, current));
+        setLoadedDecisions((current) => [...new Map(
+          [...current, ...result.decisions].map((decision) => [decision.id, decision]),
+        ).values()]);
         setCursor(result.page.nextCursor);
       } else {
         paginationHeight.current = null;
@@ -133,8 +237,12 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
       const turn = result.messages;
       if (turn.length === 0) return null;
       setMessages((current) => replaceTurn(current, clientMessageId, turn));
-      unacknowledgedContent.current.delete(clientMessageId);
-      return turn.find((message) => message.role === "assistant") ?? null;
+      unacknowledgedTurns.current.delete(clientMessageId);
+      return {
+        assistant: turn.find((message) => message.role === "assistant") ?? null,
+        proposalCreated:
+          turn.find((message) => message.role === "user")?.proposalRequested ?? false,
+      };
     } catch {
       return null;
     }
@@ -171,7 +279,7 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
           const streamEvent = JSON.parse(line) as ChatStreamEvent;
           if (streamEvent.type === "turn") {
             assistantId = streamEvent.assistantMessage.id;
-            unacknowledgedContent.current.delete(clientMessageId);
+            unacknowledgedTurns.current.delete(clientMessageId);
             setMessages((current) => replaceTurn(current, clientMessageId, [streamEvent.userMessage, streamEvent.assistantMessage]));
           } else if (streamEvent.type === "delta") {
             setMessages((current) => current.map((message) =>
@@ -184,11 +292,16 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
             setMessages((current) => replaceMessage(current, streamEvent.assistantMessage));
             setAnnouncement(
               streamEvent.type === "completed"
-                ? "Assistant response completed."
+                ? streamEvent.proposalCreated
+                  ? "Synthesis proposal request completed."
+                  : "Assistant response completed."
                 : streamEvent.type === "cancelled"
                   ? "Assistant response stopped."
                   : "Assistant response failed.",
             );
+            if (streamEvent.type === "completed" && streamEvent.proposalCreated) {
+              router.refresh();
+            }
           }
         }
         if (done) break;
@@ -205,9 +318,14 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
       } else {
         setAnnouncement("Assistant response could not be completed.");
         const reconciled = await reconcileTurn(clientMessageId);
-        if (reconciled?.status === "completed") setAnnouncement("Assistant response completed.");
-        if (reconciled?.status === "failed") setAnnouncement("Assistant response failed.");
-        if (reconciled?.status === "cancelled") setAnnouncement("Assistant response stopped.");
+        if (reconciled?.assistant?.status === "completed") {
+          setAnnouncement(reconciled.proposalCreated
+            ? "Synthesis proposal request completed."
+            : "Assistant response completed.");
+          if (reconciled.proposalCreated) router.refresh();
+        }
+        if (reconciled?.assistant?.status === "failed") setAnnouncement("Assistant response failed.");
+        if (reconciled?.assistant?.status === "cancelled") setAnnouncement("Assistant response stopped.");
         if (!reconciled) {
           setMessages((current) => current.map((message) =>
             message.clientMessageId === clientMessageId && message.role === "assistant"
@@ -227,10 +345,18 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
     const content = draft.trim();
     if (!content || activeClientMessageId || !generationEnabled) return;
     const clientMessageId = crypto.randomUUID();
-    unacknowledgedContent.current.set(clientMessageId, content);
-    setMessages((current) => mergeMessages(current, createOptimisticTurn(nodeId, clientMessageId, content)));
+    unacknowledgedTurns.current.set(clientMessageId, { content });
+    setMessages((current) => mergeMessages(
+      current,
+      createOptimisticTurn(nodeId, clientMessageId, content),
+    ));
     setDraft("");
-    void streamTurn({ nodeId, clientMessageId, content, webSearchAuthorized: false });
+    void streamTurn({
+      nodeId,
+      clientMessageId,
+      content,
+      webSearchAuthorized: false,
+    });
   }
 
   function keyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -248,9 +374,14 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
 
   function retry(message: ChatMessage) {
     if (activeClientMessageId || !generationEnabled) return;
-    const content = unacknowledgedContent.current.get(message.clientMessageId);
-    void streamTurn(content
-      ? { nodeId, clientMessageId: message.clientMessageId, content, webSearchAuthorized: false }
+    const unacknowledged = unacknowledgedTurns.current.get(message.clientMessageId);
+    void streamTurn(unacknowledged
+      ? {
+          nodeId,
+          clientMessageId: message.clientMessageId,
+          content: unacknowledged.content,
+          webSearchAuthorized: false,
+        }
       : { nodeId, clientMessageId: message.clientMessageId, retry: true });
   }
 
@@ -272,29 +403,93 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
     }
   }
 
+  const pendingMessageId = synthesisWorkspace.pending?.generatingMessageId ?? null;
+  const pendingAppearsInHistory = pendingMessageId !== null && messages.some(
+    (message) => message.role === "assistant" && message.id === pendingMessageId,
+  );
+  const allDecisions = [...new Map(
+    [...synthesisWorkspace.history, ...loadedDecisions]
+      .map((decision) => [decision.id, decision]),
+  ).values()];
+  const decisionsByMessageId = new Map(
+    allDecisions.map((decision) => [decision.generatingMessageId, decision]),
+  );
+  const visibleAssistantMessageIds = new Set(
+    messages
+      .filter((message) => message.role === "assistant")
+      .map((message) => message.id),
+  );
+  const decisionsOutsidePage = allDecisions.filter(
+    (decision) => !visibleAssistantMessageIds.has(decision.generatingMessageId),
+  );
+
+  function decisionSettled(decision: "approve" | "reject") {
+    decisionFocus.current = decision;
+    setAnnouncement(
+      decision === "approve"
+        ? "Proposal approved and published."
+        : "Proposal rejected. The published synthesis is unchanged.",
+    );
+    if (decision === "approve") {
+      restoreFocusOnClose.current = false;
+      onApprovalSettled();
+    }
+  }
+
   return (
-    <section className="chat-panel" aria-labelledby="node-chat-title">
-      <div className="chat-panel__heading">
+    <dialog
+      ref={dialogRef}
+      className="node-dialog chat-dialog"
+      aria-labelledby={`chat-dialog-title-${nodeId}`}
+      onCancel={() => {
+        restoreFocusOnClose.current = true;
+      }}
+      onClose={() => {
+        onClose();
+        if (restoreFocusOnClose.current) {
+          requestAnimationFrame(() => returnFocusRef.current?.focus());
+        }
+      }}
+    >
+      <div className="dialog-heading">
         <div>
           <p className="pane-eyebrow">Conversation</p>
-          <h2 id="node-chat-title">Develop this thought</h2>
+          <h2 id={`chat-dialog-title-${nodeId}`}>Chat about {nodeTitle}</h2>
         </div>
-        {cursor ? (
-          <button type="button" className="secondary-button" disabled={loadingOlder} onClick={() => void loadOlder()}>
-            {loadingOlder ? "Loading…" : "Load older"}
-          </button>
-        ) : null}
+        <button
+          className="dialog-close icon-button"
+          type="button"
+          aria-label="Close chat"
+          data-tooltip="Close chat"
+          onClick={() => {
+            restoreFocusOnClose.current = true;
+            dialogRef.current?.close();
+          }}
+        >
+          <CloseIcon />
+        </button>
       </div>
-      {loadError ? <p className="chat-panel__error" role="alert">{loadError}</p> : null}
-      <div
-        className="chat-history"
-        ref={historyRef}
-        aria-label={`Conversation for ${nodeTitle}`}
-        onScroll={(event) => {
-          const history = event.currentTarget;
-          followNewest.current = history.scrollHeight - history.scrollTop - history.clientHeight < 64;
-        }}
-      >
+      <section className="chat-panel" aria-label={`Conversation for ${nodeTitle}`}>
+        <div className="chat-panel__top">
+          <div className="chat-panel__heading">
+            <h3 className="sr-only">Messages</h3>
+            {cursor ? (
+              <button type="button" className="secondary-button" disabled={loadingOlder} onClick={() => void loadOlder()}>
+                {loadingOlder ? "Loading…" : "Load older"}
+              </button>
+            ) : null}
+          </div>
+          {loadError ? <p className="chat-panel__error" role="alert">{loadError}</p> : null}
+        </div>
+        <div
+          className="chat-history"
+          ref={historyRef}
+          aria-label={`Conversation messages for ${nodeTitle}`}
+          onScroll={(event) => {
+            const history = event.currentTarget;
+            followNewest.current = history.scrollHeight - history.scrollTop - history.clientHeight < 64;
+          }}
+        >
         {messages.length === 0 ? (
           <p className="chat-history__empty">No messages yet. Start by naming what you want to understand.</p>
         ) : messages.map((message) => (
@@ -317,9 +512,37 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
                   <button type="button" disabled={Boolean(activeClientMessageId) || !generationEnabled} onClick={() => retry(message)}>Retry</button>
                 </div>
               ) : null}
+              {message.role === "assistant" && synthesisWorkspace.pending?.generatingMessageId === message.id ? (
+                <SynthesisProposalArtifact
+                  key={synthesisWorkspace.pending.id}
+                  nodeId={nodeId}
+                  published={synthesisWorkspace.published}
+                  proposal={synthesisWorkspace.pending}
+                  generationBusy={Boolean(activeClientMessageId)}
+                  headingRef={proposalHeadingRef}
+                  onDecisionSettled={decisionSettled}
+                />
+              ) : null}
+              {message.role === "assistant" &&
+              synthesisWorkspace.pending?.generatingMessageId !== message.id &&
+              decisionsByMessageId.has(message.id) ? (
+                <SynthesisDecidedArtifact decision={decisionsByMessageId.get(message.id)!} />
+              ) : null}
             </div>
           </article>
         ))}
+        {synthesisWorkspace.pending && !pendingAppearsInHistory ? (
+          <SynthesisProposalArtifact
+            key={synthesisWorkspace.pending.id}
+            nodeId={nodeId}
+            published={synthesisWorkspace.published}
+            proposal={synthesisWorkspace.pending}
+            generationBusy={Boolean(activeClientMessageId)}
+            headingRef={proposalHeadingRef}
+            onDecisionSettled={decisionSettled}
+          />
+        ) : null}
+        <SynthesisDecisionHistory history={decisionsOutsidePage} />
         <form className="chat-composer" onSubmit={submit}>
           <label className="sr-only" htmlFor={`chat-draft-${nodeId}`}>Message</label>
           <p className="sr-only" id={composerHelpId}>
@@ -335,7 +558,11 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
             rows={1}
             disabled={!generationEnabled}
             aria-describedby={composerHelpId}
-            placeholder={generationEnabled ? "Message this thought…" : "Assistant replies require OpenAI configuration."}
+            placeholder={generationEnabled
+              ? synthesisWorkspace.pending
+                ? "Message this thought or refine the proposal…"
+                : "Message this thought…"
+              : "Assistant replies require OpenAI configuration."}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={keyDown}
           />
@@ -363,8 +590,9 @@ export function ChatPanel({ nodeId, nodeTitle, initialPage, generationEnabled }:
             )}
           </div>
         </form>
-      </div>
-      <p className="sr-only" aria-live="polite" role="status">{announcement}</p>
-    </section>
+        </div>
+        <p className="sr-only" aria-live="polite" role="status">{announcement}</p>
+      </section>
+    </dialog>
   );
 }

@@ -1,11 +1,15 @@
 import {
   createChatTurnInputSchema,
+  MAX_ASSISTANT_MESSAGE_LENGTH,
   retryChatTurnInputSchema,
   type ChatMessage,
   type ChatStreamEvent,
   type RetryChatTurnInput,
 } from "@/lib/chat/contracts";
-import { OPENAI_CHAT_MODEL } from "@/lib/ai/openai-profiles";
+import {
+  OPENAI_CHAT_MODEL,
+  OPENAI_SYNTHESIS_MODEL,
+} from "@/lib/ai/openai-profiles";
 import { getServerEnvironment } from "@/lib/env/server";
 import { requireAuthorizedSession } from "@/lib/server/authorization";
 import { prepareChatContextForUser } from "@/lib/server/chat-context";
@@ -17,6 +21,7 @@ import {
   failChatTurnForUser,
   recordChatTurnContextForUser,
   recordChatTurnProviderResponseForUser,
+  recordChatTurnSynthesisIntentForUser,
   retryChatTurnForUser,
 } from "@/lib/server/chat-service";
 import {
@@ -24,7 +29,11 @@ import {
   getChatGenerationMode,
   streamChatResponse,
 } from "@/lib/server/chat-runtime";
-import { OpenAIChatAbortError, OpenAIChatError } from "@/lib/server/openai-chat";
+import {
+  OpenAIChatAbortError,
+  OpenAIChatError,
+  type NormalizedOpenAIChatEvent,
+} from "@/lib/server/openai-chat";
 
 export const runtime = "nodejs";
 const MAX_CHAT_REQUEST_BYTES = 128_000;
@@ -76,7 +85,13 @@ function terminalResponse(turn: {
   }
   const events: ChatStreamEvent[] = [
     { type: "turn", userMessage: turn.userMessage, assistantMessage: turn.assistantMessage },
-    { type: status, assistantMessage: turn.assistantMessage },
+    status === "completed"
+      ? {
+          type: "completed",
+          assistantMessage: turn.assistantMessage,
+          proposalCreated: turn.userMessage.proposalRequested,
+        }
+      : { type: status, assistantMessage: turn.assistantMessage },
   ];
   return new Response(events.map((value) => JSON.stringify(value)).join("\n") + "\n", {
     headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" },
@@ -173,7 +188,7 @@ export async function POST(request: Request) {
     async start(controller) {
       controller.enqueue(event({ type: "turn", ...turn }));
       let visibleContent = "";
-      let providerCompleted = false;
+      let providerResponseRecorded = false;
       let persistedCharacterCount = 0;
       let lastPersistenceAt = Date.now();
       const flushPersistence = async (force = false) => {
@@ -194,35 +209,101 @@ export async function POST(request: Request) {
         persistedCharacterCount = contentPrefix.length;
         lastPersistenceAt = Date.now();
       };
-
-      try {
-        for await (const providerEvent of streamChatResponse({
-          messages: preparedContext.input,
-          safetyIdentifier,
-          signal: generationSignal,
-        })) {
-          if (generationSignal.aborted) {
-            throw new OpenAIChatAbortError();
-          }
-          if (providerEvent.type === "started") {
-            await recordChatTurnProviderResponseForUser(userId, {
-              ...input,
-              providerResponseId: providerEvent.providerResponseId,
-            });
-          } else if (providerEvent.type === "text-delta") {
-            visibleContent += providerEvent.content;
-            controller.enqueue(event({ type: "delta", content: providerEvent.content }));
-            await flushPersistence();
-          } else {
-            await flushPersistence(true);
-            const assistantMessage = await completeChatTurnForUser(userId, input);
-            providerCompleted = true;
-            controller.enqueue(event({ type: "completed", assistantMessage }));
-          }
-        }
-        if (!providerCompleted) {
+      const emitVisibleContent = async (content: string) => {
+        if (visibleContent.length + content.length > MAX_ASSISTANT_MESSAGE_LENGTH) {
           throw new OpenAIChatError("response-invalid");
         }
+        visibleContent += content;
+        controller.enqueue(event({ type: "delta", content }));
+        await flushPersistence();
+      };
+
+      try {
+        const consumeProviderPhase = async (phase: "conversation" | "synthesis") => {
+          let completedEvent: Extract<
+            NormalizedOpenAIChatEvent,
+            { type: "completed" }
+          > | null = null;
+          for await (const providerEvent of streamChatResponse({
+            messages: preparedContext.input,
+            phase,
+            safetyIdentifier,
+            signal: generationSignal,
+          })) {
+            if (generationSignal.aborted) {
+              throw new OpenAIChatAbortError();
+            }
+            if (providerEvent.type === "started") {
+              if (!providerResponseRecorded || phase === "synthesis") {
+                await recordChatTurnProviderResponseForUser(userId, {
+                  ...input,
+                  providerResponseId: providerEvent.providerResponseId,
+                  replaceExistingProviderResponse: phase === "synthesis",
+                });
+                providerResponseRecorded = true;
+              }
+            } else if (providerEvent.type === "text-delta") {
+              await emitVisibleContent(providerEvent.content);
+            } else {
+              completedEvent = providerEvent;
+            }
+          }
+          if (!completedEvent) throw new OpenAIChatError("response-invalid");
+          return completedEvent;
+        };
+
+        const refinementProposalId =
+          preparedContext.snapshot.node.refinementProposal.state === "pending"
+            ? preparedContext.snapshot.node.refinementProposal.versionId
+            : null;
+        let synthesisRouted = turn.userMessage.proposalRequested;
+        let finalResult: Extract<NormalizedOpenAIChatEvent, { type: "completed" }>;
+        if (synthesisRouted) {
+          finalResult = await consumeProviderPhase("synthesis");
+        } else {
+          const conversationResult = await consumeProviderPhase("conversation");
+          synthesisRouted = conversationResult.synthesisRequested;
+          finalResult = conversationResult;
+          if (synthesisRouted) {
+            await recordChatTurnSynthesisIntentForUser(userId, {
+              ...input,
+              refinementProposalId,
+            });
+            if (visibleContent.length > 0 && !visibleContent.endsWith("\n\n")) {
+              await emitVisibleContent(visibleContent.endsWith("\n") ? "\n" : "\n\n");
+            }
+            finalResult = await consumeProviderPhase("synthesis");
+          }
+        }
+        if (synthesisRouted && finalResult.proposal === null) {
+          throw new OpenAIChatError("response-invalid");
+        }
+        await flushPersistence(true);
+        const assistantMessage = await completeChatTurnForUser(
+          userId,
+          input,
+          finalResult.proposal
+            ? {
+                proposal: {
+                  baseVersionId:
+                    preparedContext.snapshot.node.publishedSynthesis.state === "published"
+                      ? preparedContext.snapshot.node.publishedSynthesis.versionId
+                      : null,
+                  draft: finalResult.proposal,
+                  model: OPENAI_SYNTHESIS_MODEL,
+                  reasoningMode: "pro",
+                  reasoningEffort: "high",
+                  inputFingerprint: preparedContext.fingerprint,
+                  refinementProposalId,
+                },
+              }
+            : undefined,
+        );
+        controller.enqueue(event({
+          type: "completed",
+          assistantMessage,
+          proposalCreated: finalResult.proposal !== null,
+        }));
       } catch (error) {
         try {
           await flushPersistence(true);

@@ -10,6 +10,9 @@ const runtime = vi.hoisted(() => ({
     | "disconnect-after-delta"
     | "generic-failure"
     | "provider-refusal"
+    | "proposal-success"
+    | "route-synthesis"
+    | "route-synthesis-at-content-limit"
     | "silent-end"
     | "success"
     | "timeout"
@@ -25,7 +28,7 @@ vi.mock("@/lib/server/chat-runtime", async () => {
   return {
     createOpenAISafetyIdentifier: () => "mt_synthetic_failure_test",
     getChatGenerationMode: () => "deterministic-fixture",
-    streamChatResponse: (input: { signal: AbortSignal }) => {
+    streamChatResponse: (input: { phase: "conversation" | "synthesis"; signal: AbortSignal }) => {
       runtime.invocations += 1;
       const scenario = runtime.scenarios.shift();
       return (async function* () {
@@ -41,6 +44,25 @@ vi.mock("@/lib/server/chat-runtime", async () => {
 
         const providerResponseId = `resp_${scenario}`;
         yield { type: "started" as const, providerResponseId };
+        if (
+          scenario === "route-synthesis" ||
+          scenario === "route-synthesis-at-content-limit"
+        ) {
+          if (input.phase !== "conversation") throw new Error("unexpected routing phase");
+          if (scenario === "route-synthesis-at-content-limit") {
+            yield { type: "text-delta" as const, content: "x".repeat(64_000) };
+          }
+          yield {
+            type: "completed" as const,
+            providerResponseId,
+            synthesisRequested: true,
+            proposal: null,
+          };
+          return;
+        }
+        if (scenario === "proposal-success" && input.phase !== "synthesis") {
+          throw new Error("unexpected proposal phase");
+        }
         if (scenario === "provider-refusal") {
           yield { type: "text-delta" as const, content: "Partial refusal prefix." };
           throw new OpenAIChatError("provider-refusal");
@@ -69,7 +91,14 @@ vi.mock("@/lib/server/chat-runtime", async () => {
         }
 
         yield { type: "text-delta" as const, content: "Synthetic completed response." };
-        yield { type: "completed" as const, providerResponseId };
+        yield {
+          type: "completed" as const,
+          providerResponseId,
+          synthesisRequested: false,
+          proposal: scenario === "proposal-success"
+            ? { content: "# Synthetic proposal\n\nA bounded synthesis draft." }
+            : null,
+        };
       })();
     },
   };
@@ -121,6 +150,25 @@ async function storedTurn(clientMessageId: string) {
     [userId, nodeId, clientMessageId],
   );
   return result.rows;
+}
+
+async function createPendingProposalViaRoute() {
+  runtime.scenarios.push("route-synthesis", "proposal-success");
+  const clientMessageId = randomUUID();
+  const events = await readEvents(await post({
+    nodeId,
+    clientMessageId,
+    content: "Create a pending synthesis for refinement",
+    webSearchAuthorized: false,
+  }));
+  expect(events.at(-1)).toMatchObject({ type: "completed" });
+  const proposal = await pool.query<{ id: string }>(
+    `select id from synthesis_versions
+     where user_id = $1 and node_id = $2 and status = 'pending'`,
+    [userId, nodeId],
+  );
+  expect(proposal.rows).toHaveLength(1);
+  return proposal.rows[0]!.id;
 }
 
 describe("chat generation failure boundaries", () => {
@@ -265,6 +313,197 @@ describe("chat generation failure boundaries", () => {
     const replayEvents = await readEvents(await post(createBody));
     expect(replayEvents.map(({ type }) => type)).toEqual(["turn", "completed"]);
     expect(runtime.invocations).toBe(2);
+  });
+
+  it("persists a requested synthesis proposal without publishing it", async () => {
+    runtime.scenarios.push("route-synthesis", "proposal-success");
+    const clientMessageId = randomUUID();
+    const createBody = {
+      nodeId,
+      clientMessageId,
+      content: "Propose a synthesis from the supplied context",
+      webSearchAuthorized: false,
+    };
+    const events = await readEvents(await post(createBody));
+
+    expect(events.at(-1)).toMatchObject({
+      type: "completed",
+      assistantMessage: { status: "completed" },
+    });
+
+    const proposalResult = await pool.query<{
+      id: string;
+      base_version_id: string | null;
+      content: string;
+      generating_message_id: string;
+      reasoning_effort: string;
+      reasoning_mode: string;
+      status: string;
+    }>(
+      `select id, base_version_id, content, generating_message_id, reasoning_effort,
+              reasoning_mode, status
+       from synthesis_versions
+       where user_id = $1 and node_id = $2`,
+      [userId, nodeId],
+    );
+    const pointerResult = await pool.query<{ published_synthesis_version_id: string | null }>(
+      `select published_synthesis_version_id
+       from nodes
+       where user_id = $1 and id = $2`,
+      [userId, nodeId],
+    );
+    const assistantId = (await storedTurn(clientMessageId))
+      .find(({ role }) => role === "assistant")?.id;
+    expect((await storedTurn(clientMessageId)).find(({ role }) => role === "assistant"))
+      .toMatchObject({ provider_response_id: "resp_proposal-success" });
+
+    expect(proposalResult.rows).toEqual([{
+      id: expect.any(String),
+      base_version_id: null,
+      content: "# Synthetic proposal\n\nA bounded synthesis draft.",
+      generating_message_id: assistantId,
+      reasoning_effort: "high",
+      reasoning_mode: "pro",
+      status: "pending",
+    }]);
+    expect(pointerResult.rows).toEqual([{ published_synthesis_version_id: null }]);
+    expect(runtime.invocations).toBe(2);
+
+    const replayEvents = await readEvents(await post(createBody));
+    expect(replayEvents.map(({ type }) => type)).toEqual(["turn", "completed"]);
+    expect(replayEvents.at(-1)).toMatchObject({ proposalCreated: true });
+    expect(runtime.invocations).toBe(2);
+
+    const originalProposalId = proposalResult.rows[0]!.id;
+    runtime.scenarios.push("route-synthesis", "proposal-success");
+    const refinementClientMessageId = randomUUID();
+    const refinementEvents = await readEvents(await post({
+      nodeId,
+      clientMessageId: refinementClientMessageId,
+      content: "Refine the exact pending synthesis",
+      webSearchAuthorized: false,
+    }));
+    expect(refinementEvents.at(-1)).toMatchObject({ type: "completed" });
+
+    const versions = await pool.query<{
+      id: string;
+      status: string;
+      decided_at: Date | null;
+    }>(
+      `select id, status, decided_at
+       from synthesis_versions where user_id = $1 and node_id = $2 order by created_at`,
+      [userId, nodeId],
+    );
+    expect(versions.rows).toHaveLength(2);
+    expect(versions.rows.find(({ id }) => id === originalProposalId)).toMatchObject({
+      status: "superseded",
+      decided_at: expect.any(Date),
+    });
+    expect(versions.rows.find(({ status }) => status === "pending")).toBeDefined();
+    const refinementIntent = await pool.query<{ refinement_proposal_id: string | null }>(
+      `select refinement_proposal_id from chat_messages
+       where user_id = $1 and node_id = $2 and client_message_id = $3 and role = 'user'`,
+      [userId, nodeId, refinementClientMessageId],
+    );
+    expect(refinementIntent.rows).toEqual([{
+      refinement_proposal_id: originalProposalId,
+    }]);
+    expect(runtime.invocations).toBe(4);
+  });
+
+  it("bounds combined conversational routing and synthesis output before a second call", async () => {
+    runtime.scenarios.push("route-synthesis-at-content-limit", "proposal-success");
+    const clientMessageId = randomUUID();
+    const events = await readEvents(await post({
+      nodeId,
+      clientMessageId,
+      content: "Propose a synthesis after a maximal routing response",
+      webSearchAuthorized: false,
+    }));
+
+    expect(events.at(-1)).toMatchObject({
+      type: "failed",
+      assistantMessage: {
+        status: "failed",
+        failureCode: "response-invalid",
+      },
+    });
+    expect(runtime.invocations).toBe(1);
+    const proposals = await pool.query<{ count: number }>(
+      `select count(*)::int as count from synthesis_versions
+       where user_id = $1 and node_id = $2`,
+      [userId, nodeId],
+    );
+    expect(proposals.rows).toEqual([{ count: 0 }]);
+  });
+
+  it("retries a failed refinement against its immutable pending target", async () => {
+    const originalProposalId = await createPendingProposalViaRoute();
+    runtime.scenarios.push(
+      "route-synthesis",
+      "generic-failure",
+      "proposal-success",
+    );
+    const clientMessageId = randomUUID();
+    const failedEvents = await readEvents(await post({
+      nodeId,
+      clientMessageId,
+      content: "Refine this proposal and retry if needed",
+      webSearchAuthorized: false,
+    }));
+    expect(failedEvents.at(-1)).toMatchObject({
+      type: "failed",
+      assistantMessage: { status: "failed" },
+    });
+
+    const retryEvents = await readEvents(await post({
+      nodeId,
+      clientMessageId,
+      retry: true,
+    }));
+    expect(retryEvents.at(-1)).toMatchObject({
+      type: "completed",
+      assistantMessage: { status: "completed" },
+    });
+    const versions = await pool.query<{ id: string; status: string }>(
+      `select id, status from synthesis_versions
+       where user_id = $1 and node_id = $2 order by created_at`,
+      [userId, nodeId],
+    );
+    expect(versions.rows.find(({ id }) => id === originalProposalId)?.status)
+      .toBe("superseded");
+    expect(versions.rows.filter(({ status }) => status === "pending")).toHaveLength(1);
+    expect(runtime.invocations).toBe(5);
+  });
+
+  it("rejects a failed refinement retry without provider cost after its target is decided", async () => {
+    const originalProposalId = await createPendingProposalViaRoute();
+    runtime.scenarios.push("route-synthesis", "generic-failure");
+    const clientMessageId = randomUUID();
+    await readEvents(await post({
+      nodeId,
+      clientMessageId,
+      content: "Refine a proposal that will be decided",
+      webSearchAuthorized: false,
+    }));
+    expect(runtime.invocations).toBe(4);
+    await pool.query(
+      `update synthesis_versions
+       set status = 'rejected', decided_at = now(), updated_at = now()
+       where id = $1`,
+      [originalProposalId],
+    );
+
+    const retryResponse = await post({ nodeId, clientMessageId, retry: true });
+    expect(retryResponse.status).toBe(409);
+    await expect(retryResponse.json()).resolves.toEqual({
+      message: "The message could not be started.",
+    });
+    expect(runtime.invocations).toBe(4);
+    expect(await storedTurn(clientMessageId)).toMatchObject([
+      { role: "user", status: "completed" },
+      { role: "assistant", status: "failed" },
+    ]);
   });
 
   it("persists request abortion as cancellation and never completes the turn", async () => {

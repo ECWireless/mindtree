@@ -6,6 +6,8 @@ import OpenAI, {
   APIError,
   APIUserAbortError,
 } from "openai";
+import { zodResponsesFunction } from "openai/helpers/zod";
+import { z } from "zod";
 import type {
   ResponseInput,
   ResponseCreateParamsStreaming,
@@ -18,16 +20,43 @@ import {
   OPENAI_CHAT_MODEL,
   OPENAI_CHAT_REASONING,
   OPENAI_CHAT_TIMEOUT_MS,
+  OPENAI_SYNTHESIS_INSTRUCTIONS,
+  OPENAI_SYNTHESIS_REASONING,
 } from "@/lib/ai/openai-profiles";
 import {
   MAX_ASSISTANT_MESSAGE_LENGTH,
   type ChatFailureCode,
 } from "@/lib/chat/contracts";
+import {
+  synthesisProposalDraftSchema,
+  type SynthesisProposalDraft,
+} from "@/lib/synthesis/contracts";
+
+const synthesisRequestSchema = z.object({}).strict();
+
+const synthesisRequestTool = zodResponsesFunction({
+  name: "request_synthesis",
+  description: "Route the owner's current conversational request to the approval-required synthesis drafting profile.",
+  parameters: synthesisRequestSchema,
+});
+
+const synthesisProposalTool = zodResponsesFunction({
+  name: "propose_synthesis",
+  description: "Create an approval-required replacement synthesis for the selected MindTree node.",
+  parameters: synthesisProposalDraftSchema,
+});
 
 export type NormalizedOpenAIChatEvent =
   | { type: "started"; providerResponseId: string }
   | { type: "text-delta"; content: string }
-  | { type: "completed"; providerResponseId: string };
+  | {
+      type: "completed";
+      providerResponseId: string;
+      synthesisRequested: boolean;
+      proposal: SynthesisProposalDraft | null;
+    };
+
+export type OpenAIChatPhase = "conversation" | "synthesis";
 
 export class OpenAIChatError extends Error {
   constructor(public readonly failureCode: ChatFailureCode) {
@@ -52,10 +81,14 @@ function requireResponseId(value: unknown) {
 
 export async function* normalizeOpenAIChatEvents(
   events: AsyncIterable<ResponseStreamEvent>,
+  options: { phase?: OpenAIChatPhase } = {},
 ): AsyncGenerator<NormalizedOpenAIChatEvent> {
+  const phase = options.phase ?? "conversation";
   let providerResponseId: string | null = null;
   let completedResponseId: string | null = null;
   let visibleCharacterCount = 0;
+  let synthesisRequested = false;
+  let proposal: SynthesisProposalDraft | null = null;
 
   for await (const event of events) {
     if (completedResponseId !== null) {
@@ -100,9 +133,50 @@ export async function* normalizeOpenAIChatEvents(
           providerResponseId === null ||
           candidateResponseId !== providerResponseId ||
           event.response.status !== "completed" ||
-          visibleCharacterCount === 0
+          !Array.isArray(event.response.output)
         ) {
           throw new OpenAIChatError("response-invalid");
+        }
+        const functionCalls = [];
+        for (const item of event.response.output) {
+          if (item.type === "function_call") {
+            if (item.status !== "completed") {
+              throw new OpenAIChatError("response-invalid");
+            }
+            functionCalls.push(item);
+          } else if (item.type === "message") {
+            if (item.status !== "completed") {
+              throw new OpenAIChatError("response-invalid");
+            }
+            if (item.content.some((content) => content.type === "refusal")) {
+              throw new OpenAIChatError("provider-refusal");
+            }
+          } else if (item.type !== "reasoning") {
+            throw new OpenAIChatError("response-invalid");
+          }
+        }
+        if (functionCalls.length > 1) {
+          throw new OpenAIChatError("response-invalid");
+        }
+        const functionCall = functionCalls[0];
+        if (functionCall) {
+          try {
+            const argumentsValue: unknown = JSON.parse(functionCall.arguments);
+            if (phase === "conversation") {
+              if (functionCall.name !== "request_synthesis") {
+                throw new Error("unexpected tool");
+              }
+              synthesisRequestSchema.parse(argumentsValue);
+              synthesisRequested = true;
+            } else {
+              if (functionCall.name !== "propose_synthesis") {
+                throw new Error("unexpected tool");
+              }
+              proposal = synthesisProposalDraftSchema.parse(argumentsValue);
+            }
+          } catch {
+            throw new OpenAIChatError("response-invalid");
+          }
         }
         completedResponseId = candidateResponseId;
         break;
@@ -115,23 +189,50 @@ export async function* normalizeOpenAIChatEvents(
   if (completedResponseId === null || providerResponseId === null) {
     throw new OpenAIChatError("response-invalid");
   }
-  yield { type: "completed", providerResponseId };
+  if (visibleCharacterCount === 0) {
+    if (phase === "conversation" && synthesisRequested) {
+      // The synthesis profile will provide the visible response after this
+      // routing-only completion.
+    } else if (phase === "synthesis" && proposal !== null) {
+      yield {
+        type: "text-delta",
+        content: "I drafted a synthesis proposal for your review.",
+      };
+    } else {
+      throw new OpenAIChatError("response-invalid");
+    }
+  }
+  if (
+    (phase === "conversation" && proposal !== null) ||
+    (phase === "synthesis" && (synthesisRequested || proposal === null))
+  ) {
+    throw new OpenAIChatError("response-invalid");
+  }
+  yield { type: "completed", providerResponseId, synthesisRequested, proposal };
 }
 
 export function createOpenAIChatRequest(input: {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
+  phase?: OpenAIChatPhase;
   safetyIdentifier: string;
 }): ResponseCreateParamsStreaming {
+  const phase = input.phase ?? "conversation";
+  const synthesis = phase === "synthesis";
   return {
     model: OPENAI_CHAT_MODEL,
-    instructions: OPENAI_CHAT_INSTRUCTIONS,
+    instructions: synthesis
+      ? OPENAI_SYNTHESIS_INSTRUCTIONS
+      : OPENAI_CHAT_INSTRUCTIONS,
     input: input.messages satisfies ResponseInput,
     max_output_tokens: OPENAI_CHAT_MAX_OUTPUT_TOKENS,
-    reasoning: OPENAI_CHAT_REASONING,
+    reasoning: synthesis
+      ? OPENAI_SYNTHESIS_REASONING
+      : OPENAI_CHAT_REASONING,
     safety_identifier: input.safetyIdentifier,
     store: false,
     stream: true,
-    tools: [],
+    tools: synthesis ? [synthesisProposalTool] : [synthesisRequestTool],
+    tool_choice: synthesis ? "required" : "auto",
     parallel_tool_calls: false,
   };
 }
@@ -177,6 +278,7 @@ export function classifyOpenAIChatSDKError(
 export async function* streamOpenAIChat(input: {
   apiKey: string;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
+  phase?: OpenAIChatPhase;
   safetyIdentifier: string;
   signal: AbortSignal;
 }): AsyncGenerator<NormalizedOpenAIChatEvent> {
@@ -202,7 +304,9 @@ export async function* streamOpenAIChat(input: {
       createOpenAIChatRequest(input),
       { signal: providerSignal },
     );
-    for await (const event of normalizeOpenAIChatEvents(stream)) {
+    for await (const event of normalizeOpenAIChatEvents(stream, {
+      phase: input.phase,
+    })) {
       if (input.signal.aborted) {
         throw new OpenAIChatAbortError();
       }

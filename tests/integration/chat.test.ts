@@ -23,6 +23,10 @@ import {
   prepareChatContextForUser,
 } from "../../src/lib/server/chat-context";
 import { deleteNodeForUser } from "../../src/lib/server/node-service";
+import {
+  approveSynthesisProposalForUser,
+  getSynthesisWorkspaceForUser,
+} from "../../src/lib/server/synthesis-service";
 
 const connectionString = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
 
@@ -58,6 +62,39 @@ async function insertNode(userId: string, title = "Chat node", parentId: string 
     [nodeId, userId, parentId, positionResult.rows[0]?.position ?? 0, title],
   );
   return nodeId;
+}
+
+async function prepareProposalTurn(input: {
+  userId: string;
+  nodeId: string;
+  content: string;
+  refinementProposalId?: string | null;
+}) {
+  const clientMessageId = randomUUID();
+  const turn = await createChatTurnForUser(input.userId, {
+    nodeId: input.nodeId,
+    clientMessageId,
+    content: input.content,
+    webSearchAuthorized: false,
+    proposalRequested: true,
+    refinementProposalId: input.refinementProposalId ?? null,
+  }, { claimAssistant: true });
+  const context = await prepareChatContextForUser(input.userId, {
+    nodeId: input.nodeId,
+    clientMessageId,
+  });
+  await recordChatTurnContextForUser(input.userId, {
+    nodeId: input.nodeId,
+    clientMessageId,
+    model: "gpt-5.6-sol",
+    contextFingerprint: context.fingerprint,
+  });
+  await persistChatTurnContentPrefixForUser(input.userId, {
+    nodeId: input.nodeId,
+    clientMessageId,
+    contentPrefix: "Synthetic proposal response.",
+  });
+  return { clientMessageId, context, turn };
 }
 
 afterEach(async () => {
@@ -139,7 +176,7 @@ describe("persistent chat ledger", () => {
     const prepared = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
     const repeated = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
     expect(prepared.snapshot).toMatchObject({
-      version: 1,
+      version: 4,
       node: {
         id: nodeId,
         title: "Context leaf",
@@ -151,6 +188,7 @@ describe("persistent chat ledger", () => {
           hasOmittedAncestors: false,
         },
         publishedSynthesis: { state: "none" },
+        refinementProposal: { state: "none" },
       },
       messages: [
         { role: "user", content: "Earlier owner message" },
@@ -193,6 +231,521 @@ describe("persistent chat ledger", () => {
     }]);
   });
 
+  it("atomically completes a requested turn with an immutable pending synthesis proposal", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId, "Proposal node");
+    const clientMessageId = randomUUID();
+    const turn = await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId,
+      content: "Propose a synthesis",
+      webSearchAuthorized: false,
+      proposalRequested: true,
+    }, { claimAssistant: true });
+    expect(turn.userMessage.proposalRequested).toBe(true);
+
+    const prepared = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
+    await recordChatTurnContextForUser(userId, {
+      nodeId,
+      clientMessageId,
+      model: "gpt-5.6-sol",
+      contextFingerprint: prepared.fingerprint,
+    });
+    await persistChatTurnContentPrefixForUser(userId, {
+      nodeId,
+      clientMessageId,
+      contentPrefix: "Here is a proposal for review.",
+    });
+    const completed = await completeChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId,
+    }, {
+      proposal: {
+        baseVersionId: null,
+        draft: { content: "# Proposal\n\nA concise synthetic synthesis." },
+        model: "gpt-5.6-sol",
+        reasoningMode: "pro",
+        reasoningEffort: "high",
+        inputFingerprint: prepared.fingerprint,
+      },
+    });
+
+    expect(completed).toMatchObject({ status: "completed", proposalRequested: false });
+    const workspace = await getSynthesisWorkspaceForUser(userId, nodeId);
+    expect(workspace).toMatchObject({
+      published: null,
+      pending: {
+        nodeId,
+        baseVersionId: null,
+        status: "pending",
+        content: "# Proposal\n\nA concise synthetic synthesis.",
+        model: "gpt-5.6-sol",
+        reasoningMode: "pro",
+        reasoningEffort: "high",
+        inputFingerprint: prepared.fingerprint,
+        generatingMessageId: completed.id,
+        decidedAt: null,
+      },
+    });
+    const node = await pool.query<{ published_synthesis_version_id: string | null }>(
+      `select published_synthesis_version_id from nodes where id = $1`,
+      [nodeId],
+    );
+    expect(node.rows[0]?.published_synthesis_version_id).toBeNull();
+  });
+
+  it("rejects proposal persistence attributed to any model outside the fixed profile", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId, "Wrong-model proposal node");
+    const clientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId,
+      content: "Propose with the fixed profile",
+      webSearchAuthorized: false,
+      proposalRequested: true,
+    }, { claimAssistant: true });
+    const context = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
+    await recordChatTurnContextForUser(userId, {
+      nodeId,
+      clientMessageId,
+      model: "gpt-5.6-sol",
+      contextFingerprint: context.fingerprint,
+    });
+    await persistChatTurnContentPrefixForUser(userId, {
+      nodeId,
+      clientMessageId,
+      contentPrefix: "Synthetic response.",
+    });
+
+    await expect(completeChatTurnForUser(userId, { nodeId, clientMessageId }, {
+      proposal: {
+        baseVersionId: null,
+        draft: { content: "Wrong-model proposal" },
+        model: "gpt-4.1" as "gpt-5.6-sol",
+        reasoningMode: "pro",
+        reasoningEffort: "high",
+        inputFingerprint: context.fingerprint,
+      },
+    })).rejects.toEqual(new ChatServiceError("retry-unavailable"));
+    expect(await getSynthesisWorkspaceForUser(userId, nodeId)).toEqual({
+      published: null,
+      pending: null,
+      history: [],
+    });
+  });
+
+  it("records the exact published base in later proposal context without publishing generation", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId, "Versioned proposal node");
+
+    const firstClientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: firstClientMessageId,
+      content: "Create the first proposal",
+      webSearchAuthorized: false,
+      proposalRequested: true,
+    }, { claimAssistant: true });
+    const firstContext = await prepareChatContextForUser(userId, {
+      nodeId,
+      clientMessageId: firstClientMessageId,
+    });
+    await recordChatTurnContextForUser(userId, {
+      nodeId,
+      clientMessageId: firstClientMessageId,
+      model: "gpt-5.6-sol",
+      contextFingerprint: firstContext.fingerprint,
+    });
+    await persistChatTurnContentPrefixForUser(userId, {
+      nodeId,
+      clientMessageId: firstClientMessageId,
+      contentPrefix: "First proposal response.",
+    });
+    await completeChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: firstClientMessageId,
+    }, {
+      proposal: {
+        baseVersionId: null,
+        draft: { content: "First approved synthesis" },
+        model: "gpt-5.6-sol",
+        reasoningMode: "pro",
+        reasoningEffort: "high",
+        inputFingerprint: firstContext.fingerprint,
+      },
+    });
+    const firstWorkspace = await getSynthesisWorkspaceForUser(userId, nodeId);
+    const firstProposalId = firstWorkspace.pending!.id;
+    await pool.query(
+      `update synthesis_versions
+       set status = 'approved', decided_at = now(), updated_at = now()
+       where id = $1`,
+      [firstProposalId],
+    );
+    await pool.query(
+      `update nodes set published_synthesis_version_id = $1 where id = $2`,
+      [firstProposalId, nodeId],
+    );
+
+    const secondClientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: secondClientMessageId,
+      content: "Create a revision",
+      webSearchAuthorized: false,
+      proposalRequested: true,
+    }, { claimAssistant: true });
+    const secondContext = await prepareChatContextForUser(userId, {
+      nodeId,
+      clientMessageId: secondClientMessageId,
+    });
+    expect(secondContext.snapshot.node.publishedSynthesis).toEqual({
+      state: "published",
+      versionId: firstProposalId,
+      content: "First approved synthesis",
+    });
+    await recordChatTurnContextForUser(userId, {
+      nodeId,
+      clientMessageId: secondClientMessageId,
+      model: "gpt-5.6-sol",
+      contextFingerprint: secondContext.fingerprint,
+    });
+    await persistChatTurnContentPrefixForUser(userId, {
+      nodeId,
+      clientMessageId: secondClientMessageId,
+      contentPrefix: "Revised proposal response.",
+    });
+    await completeChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: secondClientMessageId,
+    }, {
+      proposal: {
+        baseVersionId: firstProposalId,
+        draft: { content: "Second pending synthesis" },
+        model: "gpt-5.6-sol",
+        reasoningMode: "pro",
+        reasoningEffort: "high",
+        inputFingerprint: secondContext.fingerprint,
+      },
+    });
+
+    const workspace = await getSynthesisWorkspaceForUser(userId, nodeId);
+    expect(workspace.published?.id).toBe(firstProposalId);
+    expect(workspace.pending).toMatchObject({
+      status: "pending",
+      baseVersionId: firstProposalId,
+      content: "Second pending synthesis",
+    });
+  });
+
+  it("requires explicit refinement and atomically supersedes the exact pending proposal", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId, "Refinement node");
+    const firstTurn = await prepareProposalTurn({
+      userId,
+      nodeId,
+      content: "Create the pending synthesis",
+    });
+    await completeChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: firstTurn.clientMessageId,
+    }, {
+      proposal: {
+        baseVersionId: null,
+        draft: { content: "Original pending synthesis" },
+        model: "gpt-5.6-sol",
+        reasoningMode: "pro",
+        reasoningEffort: "high",
+        inputFingerprint: firstTurn.context.fingerprint,
+      },
+    });
+    const originalId = (await getSynthesisWorkspaceForUser(userId, nodeId)).pending!.id;
+
+    await expect(createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: randomUUID(),
+      content: "Implicitly replace the pending proposal",
+      webSearchAuthorized: false,
+      proposalRequested: true,
+    }, { claimAssistant: true })).rejects.toEqual(new ChatServiceError("proposal-conflict"));
+
+    const failedRefinement = await prepareProposalTurn({
+      userId,
+      nodeId,
+      content: "Try a refinement that fails",
+      refinementProposalId: originalId,
+    });
+    expect(failedRefinement.context.snapshot.node.refinementProposal).toEqual({
+      state: "pending",
+      versionId: originalId,
+      baseVersionId: null,
+      content: "Original pending synthesis",
+    });
+    await failChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: failedRefinement.clientMessageId,
+      failureCode: "generation-failed",
+    });
+    expect((await getSynthesisWorkspaceForUser(userId, nodeId)).pending?.id).toBe(originalId);
+
+    const refinement = await prepareProposalTurn({
+      userId,
+      nodeId,
+      content: "Refine the pending synthesis",
+      refinementProposalId: originalId,
+    });
+    await completeChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: refinement.clientMessageId,
+    }, {
+      proposal: {
+        baseVersionId: null,
+        draft: { content: "Replacement pending synthesis" },
+        model: "gpt-5.6-sol",
+        reasoningMode: "pro",
+        reasoningEffort: "high",
+        inputFingerprint: refinement.context.fingerprint,
+        refinementProposalId: originalId,
+      },
+    });
+
+    const versions = await pool.query<{
+      id: string;
+      status: string;
+      content: string;
+      decided_at: Date | null;
+    }>(
+      `select id, status, content, decided_at
+       from synthesis_versions where user_id = $1 and node_id = $2 order by created_at`,
+      [userId, nodeId],
+    );
+    expect(versions.rows).toHaveLength(2);
+    expect(versions.rows.find(({ id }) => id === originalId)).toMatchObject({
+      status: "superseded",
+      content: "Original pending synthesis",
+      decided_at: expect.any(Date),
+    });
+    expect(versions.rows.find(({ status }) => status === "pending")).toMatchObject({
+      content: "Replacement pending synthesis",
+      decided_at: null,
+    });
+    expect((await getSynthesisWorkspaceForUser(userId, nodeId)).published).toBeNull();
+  });
+
+  it("serializes competing refinements so exactly one replacement becomes pending", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId, "Refinement race node");
+    const originalTurn = await prepareProposalTurn({
+      userId,
+      nodeId,
+      content: "Create the original proposal",
+    });
+    await completeChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: originalTurn.clientMessageId,
+    }, {
+      proposal: {
+        baseVersionId: null,
+        draft: { content: "Original race proposal" },
+        model: "gpt-5.6-sol",
+        reasoningMode: "pro",
+        reasoningEffort: "high",
+        inputFingerprint: originalTurn.context.fingerprint,
+      },
+    });
+    const originalId = (await getSynthesisWorkspaceForUser(userId, nodeId)).pending!.id;
+    const refinements = await Promise.all(["First", "Second"].map((label) =>
+      prepareProposalTurn({
+        userId,
+        nodeId,
+        content: `${label} explicit refinement`,
+        refinementProposalId: originalId,
+      })));
+
+    const results = await Promise.allSettled(refinements.map((refinement, index) =>
+      completeChatTurnForUser(userId, {
+        nodeId,
+        clientMessageId: refinement.clientMessageId,
+      }, {
+        proposal: {
+          baseVersionId: null,
+          draft: { content: `${index === 0 ? "First" : "Second"} replacement` },
+          model: "gpt-5.6-sol",
+          reasoningMode: "pro",
+          reasoningEffort: "high",
+          inputFingerprint: refinement.context.fingerprint,
+          refinementProposalId: originalId,
+        },
+      })));
+    expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    expect(results.filter(({ status }) => status === "rejected")).toHaveLength(1);
+    const workspace = await getSynthesisWorkspaceForUser(userId, nodeId);
+    expect(["First replacement", "Second replacement"]).toContain(workspace.pending?.content);
+    const original = await pool.query<{ status: string }>(
+      `select status from synthesis_versions where id = $1`,
+      [originalId],
+    );
+    expect(original.rows[0]?.status).toBe("superseded");
+  });
+
+  it("serializes approval against refinement completion without publishing replacement text", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId, "Approval refinement race node");
+    const originalTurn = await prepareProposalTurn({
+      userId,
+      nodeId,
+      content: "Create an approvable proposal",
+    });
+    await completeChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: originalTurn.clientMessageId,
+    }, {
+      proposal: {
+        baseVersionId: null,
+        draft: { content: "Original decision proposal" },
+        model: "gpt-5.6-sol",
+        reasoningMode: "pro",
+        reasoningEffort: "high",
+        inputFingerprint: originalTurn.context.fingerprint,
+      },
+    });
+    const originalId = (await getSynthesisWorkspaceForUser(userId, nodeId)).pending!.id;
+    const refinement = await prepareProposalTurn({
+      userId,
+      nodeId,
+      content: "Refine while approval races",
+      refinementProposalId: originalId,
+    });
+
+    const results = await Promise.allSettled([
+      approveSynthesisProposalForUser(userId, { nodeId, proposalId: originalId }),
+      completeChatTurnForUser(userId, {
+        nodeId,
+        clientMessageId: refinement.clientMessageId,
+      }, {
+        proposal: {
+          baseVersionId: null,
+          draft: { content: "Unpublished racing replacement" },
+          model: "gpt-5.6-sol",
+          reasoningMode: "pro",
+          reasoningEffort: "high",
+          inputFingerprint: refinement.context.fingerprint,
+          refinementProposalId: originalId,
+        },
+      }),
+    ]);
+    expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    expect(results.filter(({ status }) => status === "rejected")).toHaveLength(1);
+    const workspace = await getSynthesisWorkspaceForUser(userId, nodeId);
+    if (workspace.published) {
+      expect(workspace.published.id).toBe(originalId);
+      expect(workspace.pending).toBeNull();
+    } else {
+      expect(workspace.pending?.content).toBe("Unpublished racing replacement");
+    }
+  });
+
+  it("rejects proposal persistence for ordinary chat turns", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId, "Proposal conflict node");
+    const ordinaryClientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: ordinaryClientMessageId,
+      content: "Ordinary chat",
+      webSearchAuthorized: false,
+    }, { claimAssistant: true });
+    const ordinaryContext = await prepareChatContextForUser(userId, {
+      nodeId,
+      clientMessageId: ordinaryClientMessageId,
+    });
+    await recordChatTurnContextForUser(userId, {
+      nodeId,
+      clientMessageId: ordinaryClientMessageId,
+      model: "gpt-5.6-sol",
+      contextFingerprint: ordinaryContext.fingerprint,
+    });
+    await persistChatTurnContentPrefixForUser(userId, {
+      nodeId,
+      clientMessageId: ordinaryClientMessageId,
+      contentPrefix: "Ordinary response.",
+    });
+    await expect(completeChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: ordinaryClientMessageId,
+    }, {
+      proposal: {
+        baseVersionId: null,
+        draft: { content: "Unauthorized proposal" },
+        model: "gpt-5.6-sol",
+        reasoningMode: "pro",
+        reasoningEffort: "high",
+        inputFingerprint: ordinaryContext.fingerprint,
+      },
+    })).rejects.toEqual(new ChatServiceError("retry-unavailable"));
+    expect(await getSynthesisWorkspaceForUser(userId, nodeId)).toEqual({
+      published: null,
+      pending: null,
+      history: [],
+    });
+  });
+
+  it("allows only one pending proposal when requested turns complete concurrently", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId, "Concurrent proposal node");
+    const turns = await Promise.all(["First", "Second"].map(async (label) => {
+      const clientMessageId = randomUUID();
+      await createChatTurnForUser(userId, {
+        nodeId,
+        clientMessageId,
+        content: `${label} proposal request`,
+        webSearchAuthorized: false,
+        proposalRequested: true,
+      }, { claimAssistant: true });
+      const context = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
+      await recordChatTurnContextForUser(userId, {
+        nodeId,
+        clientMessageId,
+        model: "gpt-5.6-sol",
+        contextFingerprint: context.fingerprint,
+      });
+      await persistChatTurnContentPrefixForUser(userId, {
+        nodeId,
+        clientMessageId,
+        contentPrefix: `${label} proposal response.`,
+      });
+      return { clientMessageId, context, label };
+    }));
+
+    const results = await Promise.allSettled(turns.map(({ clientMessageId, context, label }) =>
+      completeChatTurnForUser(userId, { nodeId, clientMessageId }, {
+        proposal: {
+          baseVersionId: null,
+          draft: { content: `${label} pending synthesis` },
+          model: "gpt-5.6-sol",
+          reasoningMode: "pro",
+          reasoningEffort: "high",
+          inputFingerprint: context.fingerprint,
+        },
+      })));
+
+    expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    expect(results.filter(({ status }) => status === "rejected")).toHaveLength(1);
+    const workspace = await getSynthesisWorkspaceForUser(userId, nodeId);
+    expect(workspace.pending?.content).toMatch(/^(First|Second) pending synthesis$/);
+    expect(workspace.published).toBeNull();
+
+    const statuses = await pool.query<{ status: string }>(
+      `select status
+       from chat_messages
+       where user_id = $1 and node_id = $2 and role = 'assistant'
+       order by status`,
+      [userId, nodeId],
+    );
+    expect(statuses.rows).toEqual([{ status: "completed" }, { status: "streaming" }]);
+  });
+
   it("omits an oversized newest message from the bounded context snapshot", async () => {
     const userId = await insertUser();
     const nodeId = await insertNode(userId);
@@ -203,7 +756,8 @@ describe("persistent chat ledger", () => {
         (user_id, node_id, client_message_id, sequence, role, status, content, completed_at)
        values
         ($1, $2, $3, 0, 'assistant', 'completed', $5, now()),
-        ($1, $2, $4, 1, 'assistant', 'streaming', '', null)`,
+        ($1, $2, $4, 1, 'user', 'completed', 'Target request', now()),
+        ($1, $2, $4, 2, 'assistant', 'streaming', '', null)`,
       [
         userId,
         nodeId,
@@ -218,8 +772,10 @@ describe("persistent chat ledger", () => {
       clientMessageId: targetClientMessageId,
     });
 
-    expect(prepared.snapshot.messages).toEqual([]);
-    expect(prepared.input).toHaveLength(1);
+    expect(prepared.snapshot.messages).toEqual([
+      expect.objectContaining({ role: "user", content: "Target request" }),
+    ]);
+    expect(prepared.input).toHaveLength(2);
   });
 
   it("bounds a deep breadcrumb while accounting for omitted ancestors", async () => {

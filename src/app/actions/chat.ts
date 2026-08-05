@@ -12,9 +12,11 @@ import {
   getChatMessagesForUser,
   getChatTurnForUser,
 } from "@/lib/server/chat-service";
+import { getSynthesisWorkspaceForUser } from "@/lib/server/synthesis-service";
+import type { SynthesisDecisionSummary } from "@/lib/synthesis/contracts";
 
 export type LoadChatMessagesResult =
-  | { ok: true; page: ChatMessagePage }
+  | { ok: true; page: ChatMessagePage; decisions: SynthesisDecisionSummary[] }
   | { ok: false; message: string };
 
 export async function loadChatMessages(input: unknown): Promise<LoadChatMessagesResult> {
@@ -26,7 +28,16 @@ export async function loadChatMessages(input: unknown): Promise<LoadChatMessages
 
   try {
     const page = await getChatMessagesForUser(session.user.id, parsed.data);
-    return { ok: true, page };
+    const workspace = await getSynthesisWorkspaceForUser(
+      session.user.id,
+      parsed.data.nodeId,
+      {
+        generatingMessageIds: page.messages
+          .filter((message) => message.role === "assistant")
+          .map((message) => message.id),
+      },
+    );
+    return { ok: true, page, decisions: workspace.history };
   } catch (error) {
     if (error instanceof ChatServiceError) {
       return { ok: false, message: "Older messages could not be loaded." };

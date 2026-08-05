@@ -19,6 +19,11 @@ vi.mock("@/app/actions/chat", () => ({
   loadChatTurn: vi.fn(),
 }));
 
+vi.mock("@/app/actions/synthesis", () => ({
+  approveSynthesisProposal: vi.fn(),
+  rejectSynthesisProposal: vi.fn(),
+}));
+
 import { DashboardShell } from "@/components/dashboard-shell";
 import {
   syntheticDashboardEmail,
@@ -40,7 +45,9 @@ describe("DashboardShell", () => {
     expect(markup).toContain("Feedback loops");
     expect(markup).toContain("Open questions");
     expect(markup).toContain("No synthesis yet");
-    expect(markup).toContain("Develop this thought");
+    expect(markup).toContain("Open Chat when this thought is ready to synthesize");
+    expect(markup).toContain("Chat about Feedback loops");
+    expect(markup).toContain(">Chat</button>");
     expect(markup).toContain("Assistant replies require OpenAI configuration.");
     expect(markup).toContain('textarea id="chat-draft-feedback"');
     expect(markup).toContain("disabled");
@@ -118,6 +125,66 @@ describe("DashboardShell", () => {
     expect(selectedMarkup).toContain('<path d="M4 7v5h5"></path>');
     expect(selectedMarkup).toContain('role="status" aria-live="polite"');
     expect(selectedMarkup).not.toContain("Add child to Feedback loops");
+  });
+
+  it("renders published and pending synthesis with explicit diff and decision cues", () => {
+    const versionBase = {
+      nodeId: "feedback",
+      model: "gpt-5.6-sol",
+      reasoningMode: "pro",
+      reasoningEffort: "high",
+      inputFingerprint: "a".repeat(64),
+      generatingMessageId: "message-id",
+      createdAt: "2026-08-05T12:00:00.000Z",
+      updatedAt: "2026-08-05T12:00:00.000Z",
+    };
+    const markup = renderToStaticMarkup(
+      <DashboardShell
+        email={syntheticDashboardEmail}
+        nodes={syntheticDashboardNodes}
+        selectedNodeId="feedback"
+        chatGenerationEnabled
+        initialSynthesisWorkspace={{
+          published: {
+            ...versionBase,
+            id: "published-id",
+            baseVersionId: null,
+            status: "approved",
+            content: "# Summary\n\nOld point",
+            decidedAt: "2026-08-05T12:00:00.000Z",
+          },
+          pending: {
+            ...versionBase,
+            id: "pending-id",
+            baseVersionId: "published-id",
+            status: "pending",
+            content: "# Summary\n\nNew point",
+            decidedAt: null,
+          },
+          history: [{
+            id: "published-id",
+            generatingMessageId: "message-id",
+            status: "approved",
+            content: "# Summary\n\nOld point",
+            baseContent: null,
+            decidedAt: "2026-08-05T12:00:00.000Z",
+          }],
+        }}
+      />,
+    );
+
+    expect(markup).toContain(">Summary</h2>");
+    expect(markup).toContain("Pending proposal");
+    expect(markup).toContain("Old point");
+    expect(markup).toContain("New point");
+    expect(markup).toContain("Added:");
+    expect(markup).toContain("Removed:");
+    expect(markup).toContain("Approve and publish");
+    expect(markup).toContain("Reject proposal");
+    expect(markup).toContain("describe the changes in your next message");
+    expect(markup).toContain("Recent synthesis decisions (1)");
+    expect(markup).not.toContain("<h1>Summary</h1>");
+    expect(markup).toContain("<h4>Summary</h4>");
   });
 
   it("renders a useful empty state for a synthetic account with no nodes", () => {

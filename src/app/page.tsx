@@ -47,13 +47,30 @@ export default async function Home({ searchParams }: HomeProps) {
       ? tree.nodes.some((node) => node.id === selectedNodeId)
       : false;
     let initialChatPage;
+    let initialSynthesisWorkspace;
     let chatGenerationEnabled = false;
     if (selectedNodeId && selectedNodeExists) {
-      const [{ getChatMessagesForUser }, { isChatGenerationEnabled }] = await Promise.all([
+      const [
+        { getChatMessagesForUser },
+        { isChatGenerationEnabled },
+        { getSynthesisWorkspaceForUser },
+      ] = await Promise.all([
         import("@/lib/server/chat-service"),
         import("@/lib/server/chat-runtime"),
+        import("@/lib/server/synthesis-service"),
       ]);
-      initialChatPage = await getChatMessagesForUser(session.user.id, { nodeId: selectedNodeId });
+      initialChatPage = await getChatMessagesForUser(session.user.id, {
+        nodeId: selectedNodeId,
+      });
+      initialSynthesisWorkspace = await getSynthesisWorkspaceForUser(
+        session.user.id,
+        selectedNodeId,
+        {
+          generatingMessageIds: initialChatPage.messages
+            .filter((message) => message.role === "assistant")
+            .map((message) => message.id),
+        },
+      );
       chatGenerationEnabled = isChatGenerationEnabled();
     }
 
@@ -63,6 +80,7 @@ export default async function Home({ searchParams }: HomeProps) {
         nodes={tree.nodes}
         selectedNodeId={selectedNodeId}
         initialChatPage={initialChatPage}
+        initialSynthesisWorkspace={initialSynthesisWorkspace}
         chatGenerationEnabled={chatGenerationEnabled}
       />
     );

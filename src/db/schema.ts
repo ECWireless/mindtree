@@ -10,6 +10,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -90,6 +91,10 @@ export const nodes = pgTable(
     position: integer("position").notNull(),
     title: varchar("title", { length: 200 }).notNull(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
+    // The reviewed migration owns the deferred composite FK to synthesisVersions.
+    // Keeping that circular edge out of this initializer preserves exact table types.
+    publishedSynthesisVersionId: uuid("published_synthesis_version_id"),
+    synthesisStaleAt: timestamp("synthesis_stale_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -134,6 +139,9 @@ export const chatMessages = pgTable(
     contextFingerprint: varchar("context_fingerprint", { length: 64 }),
     failureCode: varchar("failure_code", { length: 64 }),
     webSearchAuthorized: boolean("web_search_authorized").default(false).notNull(),
+    proposalRequested: boolean("proposal_requested").default(false).notNull(),
+    // The reviewed migration owns the circular owner-scoped FK to synthesisVersions.
+    refinementProposalId: uuid("refinement_proposal_id"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
@@ -155,6 +163,11 @@ export const chatMessages = pgTable(
       table.nodeId,
       table.sequence,
     ),
+    unique("chat_messages_user_node_id_unique").on(
+      table.userId,
+      table.nodeId,
+      table.id,
+    ),
     check("chat_messages_role_check", sql`${table.role} in ('user', 'assistant')`),
     check(
       "chat_messages_status_check",
@@ -170,9 +183,12 @@ export const chatMessages = pgTable(
         and ${table.providerResponseId} is null
         and ${table.contextFingerprint} is null
         and ${table.failureCode} is null
+        and (${table.proposalRequested} = true or ${table.refinementProposalId} is null)
       ) or (
         ${table.role} = 'assistant'
         and ${table.webSearchAuthorized} = false
+        and ${table.proposalRequested} = false
+        and ${table.refinementProposalId} is null
       )`,
     ),
     check(
@@ -221,6 +237,86 @@ export const chatMessages = pgTable(
   ],
 );
 
+export const synthesisVersions = pgTable(
+  "synthesis_versions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id").notNull(),
+    nodeId: uuid("node_id").notNull(),
+    baseVersionId: uuid("base_version_id"),
+    status: varchar("status", {
+      length: 16,
+      enum: ["pending", "approved", "rejected", "superseded"],
+    }).notNull(),
+    content: text("content").notNull(),
+    model: varchar("model", { length: 100 }).notNull(),
+    reasoningMode: varchar("reasoning_mode", { length: 16 }).notNull(),
+    reasoningEffort: varchar("reasoning_effort", { length: 16 }).notNull(),
+    inputFingerprint: varchar("input_fingerprint", { length: 64 }).notNull(),
+    generatingMessageId: uuid("generating_message_id").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+  },
+  (table) => [
+    unique("synthesis_versions_user_node_id_unique").on(
+      table.userId,
+      table.nodeId,
+      table.id,
+    ),
+    unique("synthesis_versions_generating_message_unique").on(
+      table.generatingMessageId,
+    ),
+    uniqueIndex("synthesis_versions_one_pending_per_node")
+      .on(table.userId, table.nodeId)
+      .where(sql`${table.status} = 'pending'`),
+    foreignKey({
+      name: "synthesis_versions_node_owner_fk",
+      columns: [table.userId, table.nodeId],
+      foreignColumns: [nodes.userId, nodes.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "synthesis_versions_base_owner_fk",
+      columns: [table.userId, table.nodeId, table.baseVersionId],
+      foreignColumns: [table.userId, table.nodeId, table.id],
+    }),
+    foreignKey({
+      name: "synthesis_versions_message_owner_fk",
+      columns: [table.userId, table.nodeId, table.generatingMessageId],
+      foreignColumns: [
+        chatMessages.userId,
+        chatMessages.nodeId,
+        chatMessages.id,
+      ],
+    }),
+    check(
+      "synthesis_versions_status_check",
+      sql`${table.status} in ('pending', 'approved', 'rejected', 'superseded')`,
+    ),
+    check(
+      "synthesis_versions_decision_state_check",
+      sql`(
+        ${table.status} = 'pending' and ${table.decidedAt} is null
+      ) or (
+        ${table.status} in ('approved', 'rejected', 'superseded')
+        and ${table.decidedAt} is not null
+      )`,
+    ),
+    check(
+      "synthesis_versions_content_length_check",
+      sql`char_length(${table.content}) between 1 and 32000 and btrim(${table.content}) <> ''`,
+    ),
+    check(
+      "synthesis_versions_profile_check",
+      sql`${table.reasoningMode} = 'pro' and ${table.reasoningEffort} = 'high'`,
+    ),
+    check(
+      "synthesis_versions_input_fingerprint_check",
+      sql`${table.inputFingerprint} ~ '^[0-9a-f]{64}$'`,
+    ),
+  ],
+);
+
 export const authSchema = {
   user,
   session,
@@ -232,4 +328,5 @@ export const schema = {
   ...authSchema,
   nodes,
   chatMessages,
+  synthesisVersions,
 };
