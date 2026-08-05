@@ -177,7 +177,6 @@ export async function prepareChatContextForUser(
     let characterCount = 0;
     for (const message of recentRows) {
       if (
-        boundedNewestFirst.length > 0 &&
         characterCount + message.content.length > MAX_CHAT_CONTEXT_CHARACTERS
       ) {
         break;

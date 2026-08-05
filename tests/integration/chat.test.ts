@@ -18,7 +18,10 @@ import {
   startChatTurnForUser,
 } from "../../src/lib/server/chat-service";
 import type { FailChatTurnInput } from "../../src/lib/chat/contracts";
-import { prepareChatContextForUser } from "../../src/lib/server/chat-context";
+import {
+  MAX_CHAT_CONTEXT_CHARACTERS,
+  prepareChatContextForUser,
+} from "../../src/lib/server/chat-context";
 import { deleteNodeForUser } from "../../src/lib/server/node-service";
 
 const connectionString = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
@@ -188,6 +191,35 @@ describe("persistent chat ledger", () => {
       model: "gpt-5.6-sol",
       provider_response_id: "resp_synthetic",
     }]);
+  });
+
+  it("omits an oversized newest message from the bounded context snapshot", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId);
+    const oversizedClientMessageId = randomUUID();
+    const targetClientMessageId = randomUUID();
+    await pool.query(
+      `insert into chat_messages
+        (user_id, node_id, client_message_id, sequence, role, status, content, completed_at)
+       values
+        ($1, $2, $3, 0, 'assistant', 'completed', $5, now()),
+        ($1, $2, $4, 1, 'assistant', 'streaming', '', null)`,
+      [
+        userId,
+        nodeId,
+        oversizedClientMessageId,
+        targetClientMessageId,
+        "x".repeat(MAX_CHAT_CONTEXT_CHARACTERS + 1),
+      ],
+    );
+
+    const prepared = await prepareChatContextForUser(userId, {
+      nodeId,
+      clientMessageId: targetClientMessageId,
+    });
+
+    expect(prepared.snapshot.messages).toEqual([]);
+    expect(prepared.input).toHaveLength(1);
   });
 
   it("bounds a deep breadcrumb while accounting for omitted ancestors", async () => {
