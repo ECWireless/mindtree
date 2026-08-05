@@ -449,6 +449,7 @@ export async function retryChatTurnForUser(
           content: "",
           model: null,
           providerResponseId: null,
+          contextFingerprint: null,
           failureCode: null,
           completedAt: null,
           updatedAt: new Date(),
@@ -506,22 +507,80 @@ async function updateAssistantTurnForUser(
   }
 }
 
-export function appendChatTurnContentForUser(
+export function persistChatTurnContentPrefixForUser(
   userId: string,
-  input: RetryChatTurnInput & { content: string },
+  input: RetryChatTurnInput & { contentPrefix: string },
 ) {
-  if (!input.content) {
+  if (
+    !input.contentPrefix ||
+    input.contentPrefix.length > MAX_ASSISTANT_MESSAGE_LENGTH
+  ) {
     throw new ChatServiceError("unavailable");
   }
   return updateAssistantTurnForUser(userId, input, (message) => {
     if (message.status !== "streaming") {
       throw new ChatServiceError("retry-unavailable");
     }
-    const content = `${message.content}${input.content}`;
-    if (content.length > MAX_ASSISTANT_MESSAGE_LENGTH) {
-      throw new ChatServiceError("unavailable");
+    if (message.content === input.contentPrefix) {
+      return { status: "streaming" };
     }
-    return { status: "streaming", content };
+    if (message.content.startsWith(input.contentPrefix)) {
+      return { status: "streaming" };
+    }
+    if (!input.contentPrefix.startsWith(message.content)) {
+      throw new ChatServiceError("retry-unavailable");
+    }
+    return { status: "streaming", content: input.contentPrefix };
+  });
+}
+
+export function recordChatTurnContextForUser(
+  userId: string,
+  input: RetryChatTurnInput & { model: string; contextFingerprint: string },
+) {
+  if (
+    input.model.length < 1 ||
+    input.model.length > 100 ||
+    !/^[0-9a-f]{64}$/.test(input.contextFingerprint)
+  ) {
+    throw new ChatServiceError("unavailable");
+  }
+
+  return updateAssistantTurnForUser(userId, input, (message) => {
+    if (
+      message.status !== "streaming" ||
+      (message.model !== null && message.model !== input.model) ||
+      (message.contextFingerprint !== null &&
+        message.contextFingerprint !== input.contextFingerprint)
+    ) {
+      throw new ChatServiceError("retry-unavailable");
+    }
+    return {
+      model: input.model,
+      contextFingerprint: input.contextFingerprint,
+    };
+  });
+}
+
+export function recordChatTurnProviderResponseForUser(
+  userId: string,
+  input: RetryChatTurnInput & { providerResponseId: string },
+) {
+  if (input.providerResponseId.length < 1 || input.providerResponseId.length > 255) {
+    throw new ChatServiceError("unavailable");
+  }
+
+  return updateAssistantTurnForUser(userId, input, (message) => {
+    if (
+      message.status !== "streaming" ||
+      message.model === null ||
+      message.contextFingerprint === null ||
+      (message.providerResponseId !== null &&
+        message.providerResponseId !== input.providerResponseId)
+    ) {
+      throw new ChatServiceError("retry-unavailable");
+    }
+    return { providerResponseId: input.providerResponseId };
   });
 }
 

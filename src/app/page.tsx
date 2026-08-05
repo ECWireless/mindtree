@@ -49,12 +49,12 @@ export default async function Home({ searchParams }: HomeProps) {
     let initialChatPage;
     let chatGenerationEnabled = false;
     if (selectedNodeId && selectedNodeExists) {
-      const [{ getChatMessagesForUser }, { isDeterministicChatFixtureEnabled }] = await Promise.all([
+      const [{ getChatMessagesForUser }, { isChatGenerationEnabled }] = await Promise.all([
         import("@/lib/server/chat-service"),
         import("@/lib/server/chat-runtime"),
       ]);
       initialChatPage = await getChatMessagesForUser(session.user.id, { nodeId: selectedNodeId });
-      chatGenerationEnabled = isDeterministicChatFixtureEnabled();
+      chatGenerationEnabled = isChatGenerationEnabled();
     }
 
     return (
