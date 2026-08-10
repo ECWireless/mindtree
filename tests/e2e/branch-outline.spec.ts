@@ -112,6 +112,102 @@ test("generates and regenerates a Branch Outline below Summary", async ({ contex
   }
 });
 
+test("keeps the generated outline when a same-session regeneration is interrupted", async ({
+  context,
+  page,
+}) => {
+  const seeded = await seedBrowserSession(pool);
+  const nodeId = randomUUID();
+  const firstGenerationId = randomUUID();
+  const failedGenerationId = randomUUID();
+  const now = new Date().toISOString();
+  let requestCount = 0;
+  const generation = ({
+    id,
+    status,
+    content,
+    failureCode,
+  }: {
+    id: string;
+    status: "pending" | "completed" | "failed";
+    content: string;
+    failureCode: "provider-timeout" | null;
+  }) => ({
+    id,
+    nodeId,
+    clientRequestId: randomUUID(),
+    baseSynthesisVersionId: null,
+    status,
+    content,
+    model: "synthetic-browser-fixture",
+    reasoningMode: "fixture",
+    reasoningEffort: "none",
+    inputFingerprint: "a".repeat(64),
+    providerResponseId: null,
+    failureCode,
+    createdAt: now,
+    updatedAt: now,
+    completedAt: status === "completed" ? now : null,
+  });
+
+  try {
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values ($1, $2, null, 0, 'Outline retry baseline')`,
+      [nodeId, seeded.userId],
+    );
+    await installBrowserSessionCookie(context, seeded.cookie);
+    await page.route("**/api/branch-outline", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      requestCount += 1;
+      if (requestCount === 1) {
+        const completed = generation({
+          id: firstGenerationId,
+          status: "completed",
+          content: "- **Generated child**: Preserved outline content.",
+          failureCode: null,
+        });
+        await route.fulfill({
+          contentType: "application/x-ndjson; charset=utf-8",
+          body: [
+            JSON.stringify({ type: "generation", generation: completed }),
+            JSON.stringify({ type: "completed", generation: completed, installed: true }),
+            "",
+          ].join("\n"),
+        });
+        return;
+      }
+      const failed = generation({
+        id: failedGenerationId,
+        status: "failed",
+        content: "",
+        failureCode: "provider-timeout",
+      });
+      await route.fulfill({
+        contentType: "application/x-ndjson; charset=utf-8",
+        body: [JSON.stringify({ type: "failed", generation: failed }), ""].join("\n"),
+      });
+    });
+
+    await page.goto(`/?node=${nodeId}`);
+    const outline = page.getByRole("region", { name: "Branch Outline" });
+    await outline.getByRole("button", { name: "Generate", exact: true }).click();
+    await expect(outline).toContainText("Preserved outline content.");
+    await outline.getByRole("button", { name: "Regenerate", exact: true }).click();
+
+    await expect(outline).toContainText("Preserved outline content.");
+    await expect(outline.getByRole("alert")).toHaveText(
+      "Generation was interrupted. Your previous Branch Outline is unchanged.",
+    );
+    expect(requestCount).toBe(2);
+  } finally {
+    await pool.query(`delete from "user" where id = $1`, [seeded.userId]);
+  }
+});
+
 test("shows pending, stale, and retryable failure states without losing current content", async ({
   context,
   page,

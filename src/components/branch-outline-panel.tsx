@@ -100,6 +100,7 @@ export function BranchOutlinePanel({
 
   async function generate() {
     if (generating || !generationEnabled) return;
+    const hadCurrentOutline = workspace.current !== null;
     setRequestPending(true);
     setRequestError(null);
     setStreamedContent("");
@@ -149,7 +150,7 @@ export function BranchOutlinePanel({
               pending: null,
               latestFailure: event.generation,
             }));
-            setRequestError(failureMessage(event.generation, workspace.current !== null));
+            setRequestError(failureMessage(event.generation, hadCurrentOutline));
             setStreamedContent("");
           }
         }
