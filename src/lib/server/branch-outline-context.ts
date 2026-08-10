@@ -12,6 +12,10 @@ import {
   fingerprintBranchOutlineGeneration,
   fingerprintBranchOutlineSourceState,
 } from "@/lib/server/branch-outline-fingerprint";
+import {
+  BranchOutlineOutputError,
+  requireBranchOutlineOutputFeasible,
+} from "@/lib/server/branch-outline-output";
 
 export const MAX_BRANCH_OUTLINE_CONTEXT_CHARACTERS = 128_000;
 
@@ -57,23 +61,32 @@ export class BranchOutlineContextError extends Error {
 export function buildBranchOutlineModelInput(
   snapshot: BranchOutlineContextSnapshot,
 ): PreparedBranchOutlineContext["input"] {
+  try {
+    requireBranchOutlineOutputFeasible(snapshot.children.map(({ title }) => title));
+  } catch (error) {
+    if (
+      error instanceof BranchOutlineOutputError &&
+      error.reason === "output-too-large"
+    ) {
+      throw new BranchOutlineContextError("context-too-large");
+    }
+    throw error;
+  }
   const context = {
-    node: {
+    selectedNodeContextOnly: {
       title: snapshot.node.title,
-      archived: snapshot.node.archivedAt !== null,
-      summary: snapshot.node.summary.state === "published"
-        ? { state: "published", content: snapshot.node.summary.content }
-        : { state: "none" },
+      approvedSummary: snapshot.node.summary.state === "published"
+        ? snapshot.node.summary.content
+        : null,
     },
-    children: snapshot.children.map((child) => ({
+    directChildren: snapshot.children.map((child) => ({
       title: child.title,
-      archived: child.archivedAt !== null,
-      summary: child.summary.state === "published"
-        ? { state: "published", content: child.summary.content }
-        : { state: "none" },
-      outline: child.outline.state === "current"
-        ? { state: "current", content: child.outline.content }
-        : { state: child.outline.state },
+      approvedSummary: child.summary.state === "published"
+        ? child.summary.content
+        : null,
+      recursiveRelationshipContext: child.outline.state === "current"
+        ? child.outline.content
+        : null,
     })),
   };
   const serialized = JSON.stringify(context);

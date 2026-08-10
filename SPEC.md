@@ -285,11 +285,25 @@ synthesis or ancestor state.
 - Each explicit Generate or Regenerate action makes at most one model request.
   It never starts generation for a child or ancestor and never creates a
   background or recursive model-call cascade.
-- Generation uses the node's current approved Summary, if present, plus each
-  direct child's title, archive state, current approved Summary or explicit
-  no-summary state, and current non-stale Branch Outline or an explicit missing
-  or stale-outline state in sibling order. Non-stale child outlines carry
-  deeper branch context recursively without triggering another model call.
+- Generation uses the node's current approved Summary, if present, only as
+  framing context. It produces exactly one concise line for each direct child
+  in sibling order and never represents the selected node as an outline entry.
+  Each line treats the child's current approved Summary as primary evidence and
+  its current non-stale Branch Outline as secondary relationship context. That
+  child outline recursively compresses deeper branch context without another
+  model call; descendants never become separate entries in the parent's
+  outline and receive progressively less emphasis at each composition step.
+- The model returns one single-line description for each stable direct-child
+  ordinal rather than rendering node titles or Markdown. The server requires
+  the exact ordered ordinal set, rejects extra or state-boilerplate output, and
+  assembles the final list with title-safe labels derived from trusted node
+  records. Structurally impossible branches fail before a provider request.
+- Exact child archive, Summary-presence, and Branch Outline state remain part
+  of server-side provenance and installation validation. Provider-visible
+  context supplies usable evidence or a null value, and generated prose never
+  reports archive, missing, stale, or unavailable-state boilerplate. When a
+  child has no approved Summary, generation uses its title and any current
+  child outline cautiously without inventing unsupported detail.
 - The resulting outline becomes the node's current visible Branch Outline when
   generation completes successfully. It does not require a synthesis approval,
   move the published Summary pointer, appear in the approved-synthesis agent

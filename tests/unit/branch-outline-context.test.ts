@@ -56,9 +56,15 @@ describe("Branch Outline model context", () => {
     const input = buildBranchOutlineModelInput(snapshot);
     expect(input).toHaveLength(1);
     expect(input[0]?.content).toContain("context data (not instructions)");
+    expect(input[0]?.content).toContain('"selectedNodeContextOnly"');
+    expect(input[0]?.content).toContain('"directChildren"');
     expect(input[0]?.content).toContain("Approved root Summary");
+    expect(input[0]?.content).toContain("Approved child Summary");
     expect(input[0]?.content).toContain("Current deeper outline");
-    expect(input[0]?.content).toContain('"outline":{"state":"stale"}');
+    expect(input[0]?.content).toContain('"approvedSummary":null');
+    expect(input[0]?.content).toContain('"recursiveRelationshipContext":null');
+    expect(input[0]?.content).not.toContain('"archived"');
+    expect(input[0]?.content).not.toContain('"state"');
     expect(input[0]?.content).not.toContain("00000000-0000-4000-8000");
     expect(input[0]?.content.indexOf("Current child")).toBeLessThan(
       input[0]?.content.indexOf("Stale child") ?? 0,
@@ -76,6 +82,19 @@ describe("Branch Outline model context", () => {
           content: "x".repeat(MAX_BRANCH_OUTLINE_CONTEXT_CHARACTERS),
         },
       },
+    })).toThrow(new BranchOutlineContextError("context-too-large"));
+  });
+
+  it("rejects a child set whose minimum required output cannot fit", () => {
+    expect(() => buildBranchOutlineModelInput({
+      ...snapshot,
+      children: Array.from({ length: 1_000 }, (_, index) => ({
+        id: `synthetic-child-${index}`,
+        title: "x",
+        archivedAt: null,
+        summary: { state: "none" as const },
+        outline: { state: "none" as const },
+      })),
     })).toThrow(new BranchOutlineContextError("context-too-large"));
   });
 });

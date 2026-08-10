@@ -35,3 +35,25 @@ export function SynthesisDocumentContent({ content }: { content: string }) {
     </ReactMarkdown>
   );
 }
+
+export function BranchOutlineDocumentContent({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      allowedElements={allowedElements}
+      skipHtml
+      components={{
+        a: ({ children }) => <>{children}</>,
+        h1: ({ children }) => <h4>{children}</h4>,
+        h2: ({ children }) => <h5>{children}</h5>,
+        h3: ({ children }) => <h6>{children}</h6>,
+        h4: ({ children }) => <h6>{children}</h6>,
+        h5: ({ children }) => <h6>{children}</h6>,
+        h6: ({ children }) => <h6>{children}</h6>,
+        ul: ({ children }) => <ul role="list">{children}</ul>,
+        ol: ({ children }) => <ol role="list">{children}</ol>,
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+}

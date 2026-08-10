@@ -62,22 +62,38 @@ describe("OpenAI Branch Outline stream", () => {
     expect(request).not.toHaveProperty("tools");
     expect(request).not.toHaveProperty("tool_choice");
     expect(request).not.toHaveProperty("previous_response_id");
+    expect(request.instructions).toContain(
+      "Produce exactly one description for each supplied direct child",
+    );
+    expect(request.instructions).toContain(
+      "Never include, name, summarize, or describe it as an outline entry",
+    );
+    expect(request.instructions).toContain(
+      "treat its approved Summary as primary evidence",
+    );
+    expect(request.instructions).toContain(
+      "never list a descendant as a separate item",
+    );
+    expect(request.instructions).toContain("Never mention archive status");
+    expect(request.instructions).toContain("server attaches trusted child titles");
+    expect(request.instructions).toContain("consecutive one-based ordinals");
+    expect(request.instructions).toContain("Return only one strict JSON object");
   });
 
   it("normalizes one bounded plain-Markdown response", async () => {
     await expect(Array.fromAsync(normalizeOpenAIBranchOutlineEvents(fixture([
       created,
-      delta("## Direction\n\n"),
-      delta("- First child"),
-      completed("## Direction\n\n- First child"),
+      delta('{"items":[{"ordinal":1,'),
+      delta('"description":"First child direction."}]}'),
+      completed('{"items":[{"ordinal":1,"description":"First child direction."}]}'),
     ])))).resolves.toEqual([
       { type: "started", providerResponseId: "resp_outline" },
-      { type: "text-delta", content: "## Direction\n\n" },
-      { type: "text-delta", content: "- First child" },
+      { type: "text-delta", content: '{"items":[{"ordinal":1,' },
+      { type: "text-delta", content: '"description":"First child direction."}]}' },
       {
         type: "completed",
         providerResponseId: "resp_outline",
-        content: "## Direction\n\n- First child",
+        content: '{"items":[{"ordinal":1,"description":"First child direction."}]}',
       },
     ]);
   });

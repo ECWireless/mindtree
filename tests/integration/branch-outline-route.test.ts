@@ -6,7 +6,7 @@ import { Pool } from "pg";
 
 const runtimeState = vi.hoisted(() => ({
   calls: 0,
-  content: "## Generated branch\n\n- Connect the direct child.",
+  content: null as string | null,
   lastInput: "",
   mode: "deterministic-fixture" as "deterministic-fixture" | "unavailable",
 }));
@@ -20,13 +20,22 @@ vi.mock("@/lib/server/branch-outline-runtime", () => ({
   }) {
     runtimeState.calls += 1;
     runtimeState.lastInput = input.messages[0]?.content ?? "";
+    const serialized = runtimeState.lastInput.slice(runtimeState.lastInput.indexOf("\n") + 1);
+    const context = JSON.parse(serialized) as { directChildren?: unknown[] };
+    const childCount = Array.isArray(context.directChildren) ? context.directChildren.length : 0;
+    const content = runtimeState.content ?? JSON.stringify({
+      items: Array.from({ length: childCount }, (_, index) => ({
+        ordinal: index + 1,
+        description: `Synthetic child description ${index + 1}.`,
+      })),
+    });
     const providerResponseId = `fixture-outline-${runtimeState.calls}`;
     yield { type: "started", providerResponseId };
-    yield { type: "text-delta", content: runtimeState.content };
+    yield { type: "text-delta", content };
     yield {
       type: "completed",
       providerResponseId,
-      content: runtimeState.content,
+      content,
     };
   },
 }));
@@ -178,7 +187,7 @@ describe("Branch Outline generation route", () => {
 
   beforeEach(() => {
     runtimeState.calls = 0;
-    runtimeState.content = "## Generated branch\n\n- Connect the direct child.";
+    runtimeState.content = null;
     runtimeState.lastInput = "";
     runtimeState.mode = "deterministic-fixture";
     serviceState.skipLookupOnce = false;
@@ -268,7 +277,8 @@ describe("Branch Outline generation route", () => {
       installed: true,
       generation: {
         status: "completed",
-        content: runtimeState.content,
+        content: "- Route child — Synthetic child description 1.\n" +
+          "- Stale route child — Synthetic child description 2.",
         providerResponseId: "fixture-outline-1",
       },
     });
@@ -276,7 +286,11 @@ describe("Branch Outline generation route", () => {
     expect(runtimeState.lastInput).toContain("Target Summary");
     expect(runtimeState.lastInput).toContain("Child Summary");
     expect(runtimeState.lastInput).toContain("Deeper child context");
-    expect(runtimeState.lastInput).toContain('"outline":{"state":"stale"}');
+    expect(runtimeState.lastInput).toContain('"selectedNodeContextOnly"');
+    expect(runtimeState.lastInput).toContain('"directChildren"');
+    expect(runtimeState.lastInput).toContain('"recursiveRelationshipContext":null');
+    expect(runtimeState.lastInput).not.toContain('"archived"');
+    expect(runtimeState.lastInput).not.toContain('"state"');
     expect(runtimeState.lastInput).not.toContain("Stale content must not reach the provider");
     expect(runtimeState.lastInput).not.toContain(nodeId);
     expect(runtimeState.lastInput.indexOf("Route child")).toBeLessThan(
@@ -440,7 +454,9 @@ describe("Branch Outline generation route", () => {
     const firstEvents = await events(first);
     const firstId = firstEvents.at(-1)?.generation.id as string;
 
-    runtimeState.content = "<script>unsafe</script>";
+    runtimeState.content = JSON.stringify({
+      items: [{ ordinal: 1, description: "Injected extra outline item." }],
+    });
     const invalid = await postBranchOutline(request(nodeId));
     expect(invalid.status).toBe(200);
     expect((await events(invalid)).at(-1)).toMatchObject({

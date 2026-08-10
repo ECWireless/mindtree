@@ -15,12 +15,14 @@ test("generates and regenerates a Branch Outline below Summary", async ({ contex
   const seeded = await seedBrowserSession(pool);
   const nodeId = randomUUID();
   const childId = randomUUID();
+  const secondChildId = randomUUID();
   try {
     await pool.query(
       `insert into nodes (id, user_id, parent_id, position, title) values
-       ($1, $3, null, 0, 'Outline browser flow'),
-       ($2, $3, $1, 0, 'Outline child')`,
-      [nodeId, childId, seeded.userId],
+       ($1, $4, null, 0, 'Outline browser flow'),
+       ($2, $4, $1, 0, 'Outline child'),
+       ($3, $4, $1, 1, 'Second outline child')`,
+      [nodeId, childId, secondChildId, seeded.userId],
     );
     await installBrowserSessionCookie(context, seeded.cookie);
     await page.goto(`/?node=${nodeId}`);
@@ -35,8 +37,49 @@ test("generates and regenerates a Branch Outline below Summary", async ({ contex
     expect(generateBox?.width ?? 0).toBeGreaterThanOrEqual(44);
     await generate.click();
 
-    await expect(outline).toContainText("Branch direction", { timeout: 10_000 });
-    await expect(outline).toContainText("1 direct child thread");
+    await expect(outline).toContainText("Outline child", { timeout: 10_000 });
+    await expect(outline).toContainText("Second outline child");
+    await expect(outline).toContainText(
+      "Represents this direct child without adding unsupported detail.",
+    );
+    await expect(outline).not.toContainText("Outline browser flow");
+    await expect(outline.locator(".branch-outline__mark svg")).toBeVisible();
+    await expect(outline.getByRole("list")).toBeVisible();
+    await expect(outline.getByRole("list")).toHaveAttribute("role", "list");
+    await expect(outline.getByRole("listitem")).toHaveCount(2);
+    const outlineVisuals = await outline.evaluate((element) => {
+      const panel = getComputedStyle(element);
+      const item = element.querySelector("li");
+      const itemStyle = item ? getComputedStyle(item) : null;
+      return {
+        panelBackground: panel.backgroundImage,
+        panelRadius: panel.borderRadius,
+        itemBackground: itemStyle?.backgroundColor ?? "transparent",
+        itemRadius: itemStyle?.borderRadius ?? "0px",
+      };
+    });
+    expect(outlineVisuals.panelBackground).toContain("gradient");
+    expect(outlineVisuals.panelRadius).not.toBe("0px");
+    expect(outlineVisuals.itemBackground).not.toBe("rgba(0, 0, 0, 0)");
+    expect(outlineVisuals.itemRadius).not.toBe("0px");
+    const branchGeometry = await outline.evaluate((element) => {
+      const list = element.querySelector("ul, ol");
+      const item = list?.querySelector("li");
+      if (!list || !item) return null;
+      const listBox = list.getBoundingClientRect();
+      const itemBox = item.getBoundingClientRect();
+      const rail = getComputedStyle(list, "::before");
+      const marker = getComputedStyle(item, "::before");
+      return {
+        railCenter: Number.parseFloat(rail.left),
+        markerCenter: itemBox.left - listBox.left + Number.parseFloat(marker.left) +
+          Number.parseFloat(marker.width) / 2,
+      };
+    });
+    expect(branchGeometry).not.toBeNull();
+    expect(Math.abs(
+      (branchGeometry?.railCenter ?? 0) - (branchGeometry?.markerCenter ?? 0),
+    )).toBeLessThanOrEqual(1);
     await expect(outline.getByRole("button", { name: "Regenerate", exact: true }))
       .toBeEnabled();
     await expect(summary).toContainText("No synthesis is published yet");

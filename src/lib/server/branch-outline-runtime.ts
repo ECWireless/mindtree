@@ -27,15 +27,29 @@ async function* streamDeterministicBranchOutlineFixture(input: {
   signal: AbortSignal;
 }): AsyncGenerator<NormalizedOpenAIBranchOutlineEvent> {
   const context = input.messages[0]?.content ?? "";
-  const childCount = (context.match(/\"title\":/g)?.length ?? 1) - 1;
+  const serialized = context.slice(context.indexOf("\n") + 1);
+  const parsed = JSON.parse(serialized) as {
+    directChildren?: Array<{
+      approvedSummary?: unknown;
+      recursiveRelationshipContext?: unknown;
+    }>;
+  };
+  const children = Array.isArray(parsed.directChildren) ? parsed.directChildren : [];
   const providerResponseId = "fixture-branch-outline-response";
-  const chunks = [
-    "## Branch direction\n\n",
-    childCount > 0
-      ? `- Connect the ${childCount} direct child ${childCount === 1 ? "thread" : "threads"}.\n`
-      : "- Develop the current thought before adding child threads.\n",
-    "- Preserve open questions and missing evidence.",
-  ];
+  const chunks = [JSON.stringify({
+    items: children.map((child, index) => {
+      const hasSummary = typeof child.approvedSummary === "string";
+      const hasRelationships = typeof child.recursiveRelationshipContext === "string";
+      const description = hasSummary && hasRelationships
+        ? "Synthesizes its core idea and how its deeper branch relates."
+        : hasSummary
+          ? "Condenses the child's core idea into this branch."
+          : hasRelationships
+            ? "Connects this child to its recursively summarized branch."
+            : "Represents this direct child without adding unsupported detail.";
+      return { ordinal: index + 1, description };
+    }),
+  })];
   yield { type: "started", providerResponseId };
   let content = "";
   for (const chunk of chunks) {

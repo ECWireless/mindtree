@@ -687,7 +687,9 @@ manual approval as the only Summary-publication path.
 - A node with no Branch Outline offers a compact **Generate** button beneath
   Summary; a generated or stale outline offers **Regenerate**.
 - Branch Outline generation uses the node's approved Summary plus current child
-  summaries and child outlines without launching recursive model calls.
+  summaries and child outlines without launching recursive model calls. The
+  selected Summary frames one concise line per direct child and never becomes
+  an outline entry itself.
 - Chat can use the current Branch Outline when discussing the node or proposing
   a Summary revision.
 - Approving a child makes affected ancestor Summaries and Branch Outlines
@@ -707,9 +709,11 @@ manual approval as the only Summary-publication path.
   Regenerate action makes at most one model request and never calls another
   node's generator.
 - Deterministic Branch Outline context and fingerprint containing the target's
-  current approved Summary and direct children in sibling order, including
-  title, archive state, current approved Summary, current child Branch Outline,
-  and explicit missing states.
+  current approved Summary and direct children in sibling order. Exact title,
+  archive, Summary, child-outline, and missing-state provenance remains
+  server-side; provider-visible context distinguishes framing context, primary
+  child Summary evidence, and subordinate recursive relationship context
+  without exposing state boilerplate for the model to copy.
 - Chat-context integration that supplies the current Branch Outline as
   delimited untrusted data. Ordinary discussion may see a disclosed stale
   outline, but Summary proposal generation requires it to be non-stale, and
@@ -745,6 +749,15 @@ manual approval as the only Summary-publication path.
 - A Branch Outline uses only the current approved target/child Summaries and
   current non-stale child outlines, never child Chat or pending Summary
   proposals. Missing and stale child-outline states are explicit.
+- A Branch Outline contains exactly one concise line per direct child in sibling
+  order, never an entry for the selected node or separate descendant entries.
+  Each line prioritizes the child's approved Summary, uses its current outline
+  only to compress deeper relationships, and never surfaces archive or missing,
+  stale, or unavailable evidence-state boilerplate.
+- Provider output contains descriptions keyed by stable direct-child ordinal;
+  the server validates the exact count and order, rejects metadata boilerplate,
+  and assembles title-safe Markdown from trusted node records. Requests whose
+  minimum required output cannot fit fail before a provider call.
 - Child approval and Branch Outline generation do not call a model for any
   ancestor or descendant.
 - All affected current ancestors become stale without losing their published

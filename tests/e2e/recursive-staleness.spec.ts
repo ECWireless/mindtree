@@ -145,7 +145,7 @@ test("recovers a stale Summary through Branch Outline regeneration and approval"
 
     await page.getByRole("button", { name: "Close chat" }).click();
     await outline.getByRole("button", { name: "Regenerate", exact: true }).click();
-    await expect(outline).toContainText("Branch direction", { timeout: 10_000 });
+    await expect(outline).toContainText("No direct child nodes.", { timeout: 10_000 });
     await expect(outline).not.toContainText("Stale · the branch has changed");
     await expect(summary.getByRole("status")).toContainText("Update available");
 
@@ -158,7 +158,7 @@ test("recovers a stale Summary through Branch Outline regeneration and approval"
 
     await page.goto(`/?node=${childId}`);
     await expect(summary.getByRole("status")).toContainText("Update available");
-    await expect(outline).toContainText("Branch direction");
+    await expect(outline).toContainText("No direct child nodes.");
     await expect(outline).not.toContainText("Stale · the branch has changed");
 
     await page.getByRole("button", { name: "Chat", exact: true }).click();

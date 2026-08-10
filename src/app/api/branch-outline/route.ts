@@ -1,5 +1,4 @@
 import {
-  branchOutlineDraftSchema,
   generateBranchOutlineInputSchema,
   loadBranchOutlineWorkspaceInputSchema,
   type BranchOutlineStreamEvent,
@@ -11,6 +10,10 @@ import {
   BranchOutlineContextError,
   prepareBranchOutlineContextForUser,
 } from "@/lib/server/branch-outline-context";
+import {
+  BranchOutlineOutputError,
+  compileBranchOutlineModelOutput,
+} from "@/lib/server/branch-outline-output";
 import { getBranchOutlineGenerationMode, streamBranchOutlineResponse } from "@/lib/server/branch-outline-runtime";
 import {
   BranchOutlineServiceError,
@@ -205,24 +208,32 @@ export async function POST(request: Request) {
               generationId: claim.generation.id,
               providerResponseId: providerEvent.providerResponseId,
             });
-          } else if (providerEvent.type === "text-delta") {
-            controller.enqueue(encodeEvent({
-              type: "delta",
-              content: providerEvent.content,
-            }));
-          } else {
-            const draft = branchOutlineDraftSchema.safeParse({
-              content: providerEvent.content,
-            });
-            if (!draft.success) {
-              throw new OpenAIBranchOutlineError("response-invalid");
+          } else if (providerEvent.type === "completed") {
+            let draft;
+            try {
+              draft = compileBranchOutlineModelOutput(
+                providerEvent.content,
+                prepared.snapshot.children.map(({ title }) => title),
+              );
+            } catch (error) {
+              if (error instanceof BranchOutlineOutputError) {
+                throw new OpenAIBranchOutlineError("response-invalid");
+              }
+              throw error;
+            }
+            if (generationSignal.aborted) {
+              throw new OpenAIBranchOutlineAbortError();
             }
             const result = await completeBranchOutlineGenerationForUser(userId, {
               nodeId: parsed.data.nodeId,
               generationId: claim.generation.id,
-              draft: draft.data,
+              draft,
             });
             completed = true;
+            controller.enqueue(encodeEvent({
+              type: "delta",
+              content: draft.content,
+            }));
             controller.enqueue(encodeEvent(
               result.generation.status === "completed"
                 ? {

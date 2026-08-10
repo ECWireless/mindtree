@@ -165,6 +165,51 @@ test("creates and navigates a responsive thought hierarchy", async ({ context, p
   }
 });
 
+test("selecting an open branch preserves its expanded children", async ({
+  context,
+  page,
+}, testInfo) => {
+  const seeded = await seedBrowserSession(pool);
+  const rootId = randomUUID();
+  const childId = randomUUID();
+
+  try {
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title) values
+       ($1, $3, null, 0, 'Persistent open branch'),
+       ($2, $3, $1, 0, 'Visible branch child')`,
+      [rootId, childId, seeded.userId],
+    );
+    await installBrowserSessionCookie(context, seeded.cookie);
+    await page.goto(`/?node=${childId}`);
+
+    const tree = page.getByRole("navigation", { name: "Thought tree" });
+    const rootLink = tree.getByRole("link", { name: /Persistent open branch/ });
+    const childLink = tree.getByRole("link", { name: /Visible branch child/ });
+
+    if (testInfo.project.name === "mobile") {
+      await page.getByRole("link", { name: "Back to thoughts" }).click();
+    }
+    await expect(tree.getByRole("button", { name: "Collapse Persistent open branch" }))
+      .toBeVisible();
+    await expect(rootLink).toBeVisible();
+    await expect(childLink).toBeVisible();
+
+    await rootLink.click();
+    await expect(page.getByRole("heading", { level: 1, name: "Persistent open branch" }))
+      .toBeVisible();
+
+    if (testInfo.project.name === "mobile") {
+      await page.getByRole("link", { name: "Back to thoughts" }).click();
+    }
+    await expect(tree.getByRole("button", { name: "Collapse Persistent open branch" }))
+      .toBeVisible();
+    await expect(childLink).toBeVisible();
+  } finally {
+    await seeded.cleanup();
+  }
+});
+
 test("archives a subtree, reveals it, and unarchives only a reachable path", async ({
   context,
   page,

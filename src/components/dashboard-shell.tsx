@@ -23,9 +23,11 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type Dispatch,
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
+  type SetStateAction,
 } from "react";
 
 import {
@@ -510,6 +512,11 @@ function TitleEditor({ node, onSaved }: { node: TreeNode; onSaved: () => void })
   );
 }
 
+type DashboardWorkspaceProps = DashboardShellProps & {
+  expanded: Set<string>;
+  setExpanded: Dispatch<SetStateAction<Set<string>>>;
+};
+
 function DashboardWorkspace({
   email,
   nodes,
@@ -519,16 +526,12 @@ function DashboardWorkspace({
   initialBranchOutlineWorkspace,
   chatGenerationEnabled = false,
   branchOutlineGenerationEnabled = false,
-}: DashboardShellProps) {
+  expanded,
+  setExpanded,
+}: DashboardWorkspaceProps) {
   const router = useRouter();
   const tree = useMemo(() => assembleNodeTree(nodes), [nodes]);
   const selectedNode = selectedNodeId ? tree.byId.get(selectedNodeId) ?? null : null;
-  const [expanded, setExpanded] = useState<Set<string>>(
-    () =>
-      new Set(
-        selectedNode?.breadcrumb.slice(0, -1).map(({ id }) => id) ?? [],
-      ),
-  );
   const [showArchived, setShowArchived] = useState(selectedNode?.archivedAt != null);
   const [creatingParentId, setCreatingParentId] = useState<
     string | null | undefined
@@ -689,7 +692,7 @@ function DashboardWorkspace({
       setExpanded((current) => new Set(current).add(autoExpandCandidateId));
     }, delay);
     return () => window.clearTimeout(timer);
-  }, [autoExpandCandidateId]);
+  }, [autoExpandCandidateId, setExpanded]);
 
   function created(nodeId: string, parentId: string | null) {
     if (parentId !== null) {
@@ -1368,5 +1371,22 @@ function DashboardWorkspace({
 }
 
 export function DashboardShell(props: DashboardShellProps) {
-  return <DashboardWorkspace key={props.selectedNodeId ?? "tree"} {...props} />;
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    const tree = assembleNodeTree(props.nodes);
+    const selectedNode = props.selectedNodeId
+      ? tree.byId.get(props.selectedNodeId) ?? null
+      : null;
+    return new Set(
+      selectedNode?.breadcrumb.slice(0, -1).map(({ id }) => id) ?? [],
+    );
+  });
+
+  return (
+    <DashboardWorkspace
+      key={props.selectedNodeId ?? "tree"}
+      {...props}
+      expanded={expanded}
+      setExpanded={setExpanded}
+    />
+  );
 }

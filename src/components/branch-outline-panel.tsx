@@ -3,12 +3,31 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { SynthesisDocumentContent } from "@/components/chat-message-content";
+import { BranchOutlineDocumentContent } from "@/components/chat-message-content";
 import type {
   BranchOutlineStreamEvent,
   BranchOutlineVersion,
   BranchOutlineWorkspace,
 } from "@/lib/branch-outlines/contracts";
+
+function BranchMapIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M6 4v16M6 8h7M6 16h7" />
+      <circle cx="16" cy="8" r="2.5" />
+      <circle cx="16" cy="16" r="2.5" />
+      <circle cx="6" cy="4" r="2" />
+    </svg>
+  );
+}
 
 function failureMessage(
   generation: BranchOutlineVersion | null,
@@ -151,16 +170,24 @@ export function BranchOutlinePanel({
   }
 
   return (
-    <section className="branch-outline" aria-labelledby={`branch-outline-${nodeId}`}>
+    <section
+      className={`branch-outline${workspace.staleAt ? " branch-outline--stale" : ""}`}
+      aria-labelledby={`branch-outline-${nodeId}`}
+    >
       <div className="branch-outline__heading">
-        <div>
-          <h2 id={`branch-outline-${nodeId}`}>Branch Outline</h2>
-          {workspace.staleAt ? (
-            <p className="branch-outline__state">Stale · the branch has changed</p>
-          ) : null}
+        <div className="branch-outline__identity">
+          <span className="branch-outline__mark">
+            <BranchMapIcon />
+          </span>
+          <div>
+            <h2 id={`branch-outline-${nodeId}`}>Branch Outline</h2>
+            {workspace.staleAt ? (
+              <p className="branch-outline__state">Stale · the branch has changed</p>
+            ) : null}
+          </div>
         </div>
         <button
-          className="button button--quiet"
+          className="button button--quiet branch-outline__action"
           type="button"
           disabled={generating || !generationEnabled}
           onClick={() => void generate()}
@@ -169,30 +196,40 @@ export function BranchOutlinePanel({
         </button>
       </div>
 
-      {workspace.current ? (
-        <div className="synthesis-document__content">
-          <SynthesisDocumentContent content={workspace.current.content} />
-        </div>
-      ) : (
-        <p className="branch-outline__empty">
-          No Branch Outline yet. Generate one from this Summary and its direct children.
-        </p>
-      )}
+      <div className="branch-outline__canvas">
+        {workspace.current ? (
+          <div className="branch-outline__content synthesis-document__content">
+            <BranchOutlineDocumentContent content={workspace.current.content} />
+          </div>
+        ) : (
+          <div className="branch-outline__empty-state">
+            <span className="branch-outline__empty-node" aria-hidden="true" />
+            <p className="branch-outline__empty">
+              No Branch Outline yet. Generate one from this Summary and its direct children.
+            </p>
+          </div>
+        )}
 
-      {streamedContent ? (
-        <div className="branch-outline__preview" aria-label="Generating Branch Outline preview">
-          <SynthesisDocumentContent content={streamedContent} />
-        </div>
-      ) : null}
-      {generating ? (
-        <p className="branch-outline__busy" role="status">Generating Branch Outline…</p>
-      ) : null}
-      {visibleFailure ? <p className="branch-outline__error" role="alert">{visibleFailure}</p> : null}
-      {!generationEnabled ? (
-        <p className="branch-outline__empty">
-          Branch Outline generation is unavailable right now.
-        </p>
-      ) : null}
+        {streamedContent ? (
+          <div
+            className="branch-outline__preview branch-outline__content synthesis-document__content"
+            aria-label="Generating Branch Outline preview"
+          >
+            <BranchOutlineDocumentContent content={streamedContent} />
+          </div>
+        ) : null}
+        {generating ? (
+          <p className="branch-outline__busy" role="status">Generating Branch Outline…</p>
+        ) : null}
+        {visibleFailure ? (
+          <p className="branch-outline__error" role="alert">{visibleFailure}</p>
+        ) : null}
+        {!generationEnabled ? (
+          <p className="branch-outline__empty">
+            Branch Outline generation is unavailable right now.
+          </p>
+        ) : null}
+      </div>
     </section>
   );
 }
