@@ -23,9 +23,11 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type Dispatch,
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
+  type SetStateAction,
 } from "react";
 
 import {
@@ -36,11 +38,13 @@ import {
   unarchiveNode,
 } from "@/app/actions/nodes";
 import { DeleteNodeDialog } from "@/components/delete-node-dialog";
+import { BranchOutlinePanel } from "@/components/branch-outline-panel";
 import { ChatPanel } from "@/components/chat-panel";
 import { MoveNodeDialog } from "@/components/move-node-dialog";
 import { NodeTreeList } from "@/components/node-tree-list";
 import { PublishedSynthesisArtifact } from "@/components/synthesis-panel";
 import type { ChatMessagePage } from "@/lib/chat/contracts";
+import type { BranchOutlineWorkspace } from "@/lib/branch-outlines/contracts";
 import {
   createNodeDropResolver,
   formatBreadcrumb,
@@ -61,7 +65,9 @@ type DashboardShellProps = {
   selectedNodeId?: string;
   initialChatPage?: ChatMessagePage;
   initialSynthesisWorkspace?: SynthesisWorkspace;
+  initialBranchOutlineWorkspace?: BranchOutlineWorkspace;
   chatGenerationEnabled?: boolean;
+  branchOutlineGenerationEnabled?: boolean;
 };
 
 const pendingTreeFocusKey = "mindtree:pending-tree-focus";
@@ -506,23 +512,26 @@ function TitleEditor({ node, onSaved }: { node: TreeNode; onSaved: () => void })
   );
 }
 
+type DashboardWorkspaceProps = DashboardShellProps & {
+  expanded: Set<string>;
+  setExpanded: Dispatch<SetStateAction<Set<string>>>;
+};
+
 function DashboardWorkspace({
   email,
   nodes,
   selectedNodeId,
   initialChatPage,
   initialSynthesisWorkspace,
+  initialBranchOutlineWorkspace,
   chatGenerationEnabled = false,
-}: DashboardShellProps) {
+  branchOutlineGenerationEnabled = false,
+  expanded,
+  setExpanded,
+}: DashboardWorkspaceProps) {
   const router = useRouter();
   const tree = useMemo(() => assembleNodeTree(nodes), [nodes]);
   const selectedNode = selectedNodeId ? tree.byId.get(selectedNodeId) ?? null : null;
-  const [expanded, setExpanded] = useState<Set<string>>(
-    () =>
-      new Set(
-        selectedNode?.breadcrumb.slice(0, -1).map(({ id }) => id) ?? [],
-      ),
-  );
   const [showArchived, setShowArchived] = useState(selectedNode?.archivedAt != null);
   const [creatingParentId, setCreatingParentId] = useState<
     string | null | undefined
@@ -562,8 +571,16 @@ function DashboardWorkspace({
   );
   const synthesisWorkspace = initialSynthesisWorkspace ?? {
     published: null,
+    staleAt: null,
     pending: null,
     history: [],
+  };
+  const branchOutlineWorkspace = initialBranchOutlineWorkspace ?? {
+    current: null,
+    pending: null,
+    latestFailure: null,
+    staleAt: null,
+    staleReason: null,
   };
 
   useEffect(() => {
@@ -675,7 +692,7 @@ function DashboardWorkspace({
       setExpanded((current) => new Set(current).add(autoExpandCandidateId));
     }, delay);
     return () => window.clearTimeout(timer);
-  }, [autoExpandCandidateId]);
+  }, [autoExpandCandidateId, setExpanded]);
 
   function created(nodeId: string, parentId: string | null) {
     if (parentId !== null) {
@@ -1261,6 +1278,7 @@ function DashboardWorkspace({
                 {synthesisWorkspace.published ? (
                   <PublishedSynthesisArtifact
                     synthesis={synthesisWorkspace.published}
+                    staleAt={synthesisWorkspace.staleAt}
                     headingRef={summaryHeadingRef}
                   />
                 ) : (
@@ -1278,6 +1296,18 @@ function DashboardWorkspace({
                   </section>
                 )}
               </div>
+              <BranchOutlinePanel
+                key={[
+                  selectedNode.id,
+                  branchOutlineWorkspace.current?.id ?? "none",
+                  branchOutlineWorkspace.pending?.id ?? "none",
+                  branchOutlineWorkspace.latestFailure?.id ?? "none",
+                  branchOutlineWorkspace.staleAt ?? "current",
+                ].join(":")}
+                nodeId={selectedNode.id}
+                initialWorkspace={branchOutlineWorkspace}
+                generationEnabled={branchOutlineGenerationEnabled}
+              />
               {creatingParentId === selectedNode.id && creatingChildSurface === "detail" ? (
                 <NodeCreateForm
                   parentId={selectedNode.id}
@@ -1341,5 +1371,22 @@ function DashboardWorkspace({
 }
 
 export function DashboardShell(props: DashboardShellProps) {
-  return <DashboardWorkspace key={props.selectedNodeId ?? "tree"} {...props} />;
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    const tree = assembleNodeTree(props.nodes);
+    const selectedNode = props.selectedNodeId
+      ? tree.byId.get(props.selectedNodeId) ?? null
+      : null;
+    return new Set(
+      selectedNode?.breadcrumb.slice(0, -1).map(({ id }) => id) ?? [],
+    );
+  });
+
+  return (
+    <DashboardWorkspace
+      key={props.selectedNodeId ?? "tree"}
+      {...props}
+      expanded={expanded}
+      setExpanded={setExpanded}
+    />
+  );
 }

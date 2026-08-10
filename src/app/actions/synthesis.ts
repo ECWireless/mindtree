@@ -26,6 +26,11 @@ function decisionFailure(error: unknown): SynthesisDecisionResult {
           ok: false,
           message: "The published synthesis changed. Request a fresh proposal before approving.",
         };
+      case "stale-input":
+        return {
+          ok: false,
+          message: "The Branch Outline changed or became stale. Regenerate it, then request a fresh Summary proposal.",
+        };
       case "invalid-proposal":
       case "unavailable":
         return {

@@ -30,10 +30,11 @@ gates are complete. It is not a substitute for the durable specification.
 
 v0.1.0 is complete only when an authorized owner can organize an infinitely
 nested tree, hold a persistent node conversation, generate and explicitly
-approve a cited synthesis proposal, see recursive child-summary staleness,
-request external research with clickable References, archive and delete
-subtrees, grant a coding agent read-only access to an approved synthesis
-subtree, and navigate the same tree through a responsive Node Constellation.
+approve a cited synthesis proposal, explicitly generate a recursive Branch
+Outline, see child-driven Summary and outline staleness, request external
+research with clickable References, archive and delete subtrees, grant a coding
+agent read-only access to an approved synthesis subtree, and navigate the same
+tree through a responsive Node Constellation.
 
 The release must preserve the invariant that no generated text becomes the
 published synthesis without an explicit, current, transactional owner
@@ -82,6 +83,7 @@ approval.
   `reasoning.effort: "high"`.
 - Synthesis and web-backed proposals: `gpt-5.6-sol`,
   `reasoning.mode: "pro"`, `reasoning.effort: "high"`.
+- Branch Outline generation uses the same synthesis profile without web search.
 - Related-node retrieval: `text-embedding-3-large`.
 - External research: Responses API `web_search`.
 - No automatic fallback model and no provider abstraction in v0.1.0.
@@ -116,12 +118,16 @@ flowchart LR
     P -->|"Reject"| R["Published synthesis unchanged"]
     P -->|"Approve with current inputs"| S["New published synthesis revision"]
     S --> E["Refresh node embedding"]
-    S --> A["Mark current ancestors stale"]
-    A --> Q["Owner may request refresh proposals"]
+    S --> A["Mark the local outline and current ancestors stale"]
+    A --> Q["Owner may request Summary refresh in Chat"]
+    G["Owner selects Generate or Regenerate"] --> O["Current Branch Outline"]
+    O --> C
 ```
 
 Approval never follows directly from generation. Embedding refresh may retry
-after publication and does not weaken the approval transaction.
+after publication and does not weaken the approval transaction. Branch Outline
+generation is explicit but does not publish a Summary or start another model
+call.
 
 ## Cross-phase invariants
 
@@ -134,21 +140,23 @@ Every phase that touches the relevant area preserves these rules:
 3. Sibling positions remain unique and contiguous under concurrent mutation.
 4. Chat messages, proposals, and published syntheses are distinct persisted
    concepts.
-5. Generated content cannot move the node's published synthesis pointer.
-6. Approval checks its base version and exact source revisions inside the
+5. Branch Outlines are versioned generated context, not published syntheses;
+   they never appear in the approved-synthesis agent API.
+6. Generated content cannot move the node's published synthesis pointer.
+7. Approval checks its base version and exact source revisions inside the
    transaction.
-7. Internal citations are limited to supplied approved evidence; external
+8. Internal citations are limited to supplied approved evidence; external
    citations are limited to validated web-search annotations.
-8. Web search is authorized for one turn at a time and is off by default.
-9. Child summaries, related summaries, chats, model output, and web content are
-   untrusted data.
-10. Failures remain retryable without silent fallback, duplicate messages, or
+9. Web search is authorized for one turn at a time and is off by default.
+10. Branch Outlines, child summaries, related summaries, chats, model output,
+    and web content are untrusted data.
+11. Failures remain retryable without silent fallback, duplicate messages, or
     publication.
-11. Logs and tracked artifacts exclude secrets, private content, prompts, raw
+12. Logs and tracked artifacts exclude secrets, private content, prompts, raw
     provider payloads, and hidden reasoning.
-12. Node Constellation stays read-only and reflects the same tree and archive
+13. Node Constellation stays read-only and reflects the same tree and archive
     visibility as the primary workspace.
-13. An agent bearer key can read only its current subtree's approved material;
+14. An agent bearer key can read only its current subtree's approved material;
     credential management remains owner-session-only and the agent API has no
     mutation method.
 
@@ -666,61 +674,119 @@ recursive evidence or citations.
 
 ---
 
-## Phase 8 — Recursive child synthesis and staleness
+## Phase 8 — Branch Outline generation and recursive staleness
 
 ### Goal
 
-Make approved child summaries first-class proposal evidence while preserving
-manual publication at every level.
+Add an explicitly generated, recursively composed Branch Outline beneath each
+node's Summary while preserving Chat as the only Summary-generation surface and
+manual approval as the only Summary-publication path.
 
 ### User-visible outcome
 
-- A parent proposal incorporates current approved direct-child syntheses.
-- Approving a child makes ancestors visibly stale.
-- A stale node offers **Propose refresh**, whose result still requires approval.
+- A node with no Branch Outline offers a compact **Generate** button beneath
+  Summary; a generated or stale outline offers **Regenerate**.
+- Branch Outline generation uses the node's approved Summary plus current child
+  summaries and child outlines without launching recursive model calls. The
+  selected Summary frames one concise line per direct child and never becomes
+  an outline entry itself.
+- Chat can use the current Branch Outline when discussing the node or proposing
+  a Summary revision.
+- Approving a child makes affected ancestor Summaries and Branch Outlines
+  visibly stale. Summary refresh remains a Chat proposal requiring approval.
 
 ### Deliverables
 
-- `synthesisInputs` table recording each child source node, nullable exact
-  source synthesis version, and source-state fingerprint for every proposal.
-  Children with no approved synthesis are recorded explicitly.
-- Deterministic context snapshot and hash containing direct children in sibling
-  order, including explicit no-synthesis states.
-- Approval-time validation that every recorded input revision or explicit
-  no-synthesis state is still current and the direct-child set still matches the
-  proposal fingerprint.
-- Iterative ancestor-path stale marking on synthesis approval.
-- Stale propagation for node rename, move, archive, unarchive, and deletion
-  across former/new surviving ancestor paths as specified.
-- Stale badges, reason copy, and **Propose refresh** action.
-- Prompt contract distinguishing published evidence from untrusted
-  instructions and prohibiting unsupported child claims.
+- `branchOutlineVersions` and `branchOutlineInputs` persistence with an explicit
+  node current-version pointer, replay-safe client request ID, bounded
+  pending/completed/failed lifecycle, one active generation per node, immutable
+  completed content, exact base Summary, ordered child Summary/outline input
+  versions, and explicit no-summary, no-outline, and stale-outline states.
+- Nullable exact Branch Outline provenance for Summary proposals through the
+  generalized `synthesisInputs` boundary.
+- One owner-authenticated, idempotent, bounded streaming generation route using
+  the fixed synthesis profile with web search disabled. Each Generate or
+  Regenerate action makes at most one model request and never calls another
+  node's generator.
+- Deterministic Branch Outline context and fingerprint containing the target's
+  current approved Summary and direct children in sibling order. Exact title,
+  archive, Summary, child-outline, and missing-state provenance remains
+  server-side; provider-visible context distinguishes framing context, primary
+  child Summary evidence, and subordinate recursive relationship context
+  without exposing state boilerplate for the model to copy.
+- Chat-context integration that supplies the current Branch Outline as
+  delimited untrusted data. Ordinary discussion may see a disclosed stale
+  outline, but Summary proposal generation requires it to be non-stale, and
+  approval verifies that its recorded version remains current and non-stale.
+- Branch Outline section below Summary with empty, generating, current, stale,
+  retryable failure, Generate, and Regenerate states. It uses ordinary product
+  language and does not label the outline as auxiliary AI context.
+- Bounded Branch Outline Markdown validation using the existing Summary
+  allowlist; no HTML, arbitrary links, images, code, or citations in Phase 8.
+- Iterative ancestor-path stale marking shared by synthesis approval and tree
+  mutations. Summary approval marks the same node's outline stale; outline
+  regeneration never marks the Summary stale, preventing a refresh loop.
+- Stale propagation for node creation, rename, move, archive, unarchive, and
+  deletion across former/new surviving ancestor paths as specified.
+- Stale badges and reason copy. A stale Summary directs the owner to Chat;
+  Summary generation has no separate detail-surface control.
+- Prompt contracts distinguishing approved Summary evidence, generated Branch
+  Outline context, and untrusted instructions while prohibiting unsupported
+  claims.
 
 ### Proposed commit units
 
-1. `feat: add child synthesis provenance`
-2. `feat: add synthesis staleness and refresh proposals`
-3. `test: cover recursive synthesis integrity races`
+1. `feat: add branch outline persistence`
+2. `feat: add branch outline generation`
+3. `feat: add branch outline context and recursive staleness`
+4. `test: cover branch outline integrity races`
 
 ### Acceptance
 
-- Parent context uses only current approved child syntheses, never chat or
-  pending proposals.
-- Child approval does not call a model for any ancestor.
-- All current ancestors become stale without losing their published synthesis.
-- Approval fails if any recorded child source changed after proposal generation.
+- Summary proposals are generated only through Chat and remain approval-gated.
+- Branch Outline generation never changes the published Summary pointer and its
+  result becomes the current visible outline without a synthesis approval.
+- A Branch Outline uses only the current approved target/child Summaries and
+  current non-stale child outlines, never child Chat or pending Summary
+  proposals. Missing and stale child-outline states are explicit.
+- A Branch Outline contains exactly one concise line per direct child in sibling
+  order, never an entry for the selected node or separate descendant entries.
+  Each line prioritizes the child's approved Summary, uses its current outline
+  only to compress deeper relationships, and never surfaces archive or missing,
+  stale, or unavailable evidence-state boilerplate.
+- Provider output contains descriptions keyed by stable direct-child ordinal;
+  the server validates the exact count and order, rejects metadata boilerplate,
+  and assembles title-safe Markdown from trusted node records. Requests whose
+  minimum required output cannot fit fail before a provider call.
+- Child approval and Branch Outline generation do not call a model for any
+  ancestor or descendant.
+- All affected current ancestors become stale without losing their published
+  Summary or current Branch Outline.
+- Summary approval fails if its recorded Branch Outline changed or became stale
+  after proposal generation.
+- Outline installation fails safely if its recorded Summary, child Summary,
+  child outline, archive state, or child set changed after generation began.
+- Replaying a completed request returns its installed outline, while concurrent
+  duplicate or failed requests cannot create two active generations or replace
+  a prior current outline.
 - Move marks both former and new ancestor paths stale.
+- Creating a child marks its ancestor path stale even when that child has no
+  Summary or Branch Outline yet.
 - Deep ancestor propagation is iterative and owner-scoped.
+- Regenerating an outline clears only that outline's stale state and does not
+  stale its Summary.
+- Branch Outlines never appear in the read-only approved-synthesis agent API.
 
 ### Verification
 
-- Context/fingerprint/stale-path unit tests.
-- Integration races between proposal approval and child approval, movement,
-  archive, or deletion.
-- Deterministic model fixtures proving child summaries are used and malicious
-  child instructions are treated as data.
-- Browser flow: approve leaf, observe stale parent/root, propose parent refresh,
-  approve deliberately.
+- Summary/outline context, fingerprint, stale-path, and prompt unit tests.
+- Integration races among outline generation, Summary proposal approval, child
+  approval, movement, archive, rename, and deletion.
+- Deterministic model fixtures proving Summary/child-outline context is used and
+  malicious child content is treated as data.
+- Browser flow: generate an outline, use it in Chat, approve a leaf Summary,
+  observe stale ancestor Summaries/outlines, regenerate an outline, and refresh
+  a Summary deliberately through Chat.
 - Two reviewers: data-integrity and AI-security/experience.
 
 ---
@@ -872,9 +938,9 @@ access and the final Constellation feature.
 
 ### Deliverables
 
-- Context-budget policy for long chats, many children, and related-node
-  candidates, with deterministic truncation that never drops required approval
-  metadata.
+- Context-budget policy for long chats, Branch Outlines, many children, and
+  related-node candidates, with deterministic truncation that never drops
+  required approval or freshness metadata.
 - Pagination/load-more for chat and synthesis history as justified by actual
   layouts.
 - Concurrency and uncertain-result recovery across chat, proposal generation,
@@ -898,13 +964,14 @@ At minimum, synthetic cases cover:
 1. Leaf-node idea refinement without a proposal.
 2. A requested proposal requiring explicit approval.
 3. Proposal refinement and rejection.
-4. Parent synthesis using several child summaries.
-5. Malicious instruction text inside a child summary.
-6. A stale child input preventing approval.
-7. Related-node discovery and exact internal citation.
-8. Requested web research with supported external claims.
-9. Web result containing adversarial instructions.
-10. No-web turn that must not search externally.
+4. Branch Outline generation from a Summary and several child artifacts.
+5. A Summary proposal using the current Branch Outline.
+6. Malicious instruction text inside a child Summary or outline.
+7. A stale or replaced Branch Outline preventing Summary approval.
+8. Related-node discovery and exact internal citation.
+9. Requested web research with supported external claims.
+10. Web result containing adversarial instructions.
+11. No-web turn that must not search externally.
 
 Structural invariants—no autonomous publication, no unsupported internal IDs,
 no unannotated external links, and valid output schema—must pass 100%. Quality
@@ -988,7 +1055,8 @@ approved knowledge through one read-only route.
 - No node creation, proposal submission, chat, model invocation, rename,
   movement, archive, deletion, approval, or rejection through the key.
 - No raw chat, pending/rejected/superseded proposal, prior synthesis revision,
-  embedding, owner, credential, or provider metadata in a response.
+  Branch Outline, embedding, owner, credential, or provider metadata in a
+  response.
 - No MCP server, general OAuth/API platform, per-key permissions, labels,
   expiration, last-used tracking, audit history, application-level rate
   limiter, arbitrary node lookup, search, or pagination.
@@ -1216,7 +1284,8 @@ temporary plan, and prepare—but do not automatically create—the first tag.
    - multiple roots, deep children, search, DnD, and **Move To…**;
    - persistent chat and retry;
    - proposal, diff, refinement, rejection, and approval;
-   - child approval, stale ancestors, and deliberate refresh;
+   - Branch Outline generation/regeneration, child approval, stale ancestors,
+     and deliberate Summary refresh through Chat;
    - related-node internal citation navigation;
    - explicitly enabled web research, inline citations, and References;
    - archive, show archived, unarchive, and confirmed deletion;

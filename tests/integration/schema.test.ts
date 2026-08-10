@@ -30,9 +30,12 @@ describe("initial authentication schema", () => {
 
     expect(result.rows.map((row) => row.tablename)).toEqual([
       "account",
+      "branch_outline_inputs",
+      "branch_outline_versions",
       "chat_messages",
       "nodes",
       "session",
+      "synthesis_inputs",
       "synthesis_versions",
       "user",
       "verification",
@@ -242,6 +245,9 @@ describe("initial authentication schema", () => {
          'nodes_parent_owner_fk',
          'nodes_sibling_position_unique',
          'nodes_published_synthesis_owner_fk',
+         'nodes_current_branch_outline_owner_fk',
+         'nodes_branch_outline_stale_state_check',
+         'nodes_branch_outline_stale_reason_check',
          'nodes_not_own_parent_check',
          'nodes_position_non_negative_check',
          'nodes_title_trimmed_length_check'
@@ -250,6 +256,9 @@ describe("initial authentication schema", () => {
     );
 
     expect(constraints.rows.map(({ conname }) => conname)).toEqual([
+      "nodes_branch_outline_stale_reason_check",
+      "nodes_branch_outline_stale_state_check",
+      "nodes_current_branch_outline_owner_fk",
       "nodes_not_own_parent_check",
       "nodes_parent_owner_fk",
       "nodes_position_non_negative_check",
@@ -276,6 +285,110 @@ describe("initial authentication schema", () => {
         "FOREIGN KEY (user_id, id, published_synthesis_version_id) REFERENCES synthesis_versions(user_id, node_id, id) DEFERRABLE INITIALLY DEFERRED",
       ),
     });
+    expect(
+      constraints.rows.find(
+        ({ conname }) => conname === "nodes_current_branch_outline_owner_fk",
+      ),
+    ).toMatchObject({
+      condeferrable: true,
+      definition: expect.stringContaining(
+        "FOREIGN KEY (user_id, id, current_branch_outline_version_id) REFERENCES branch_outline_versions(user_id, node_id, id) DEFERRABLE INITIALLY DEFERRED",
+      ),
+    });
+  });
+
+  it("defines owner-scoped Branch Outline lifecycle and provenance constraints", async () => {
+    const versionConstraints = await client.query<{
+      conname: string;
+      definition: string;
+    }>(
+      `select conname, pg_get_constraintdef(oid) as definition
+       from pg_constraint
+       where conname like 'branch_outline_versions_%'
+       order by conname`,
+    );
+    expect(versionConstraints.rows.map(({ conname }) => conname)).toEqual([
+      "branch_outline_versions_base_owner_fk",
+      "branch_outline_versions_failure_code_check",
+      "branch_outline_versions_input_fingerprint_check",
+      "branch_outline_versions_lifecycle_check",
+      "branch_outline_versions_node_owner_fk",
+      "branch_outline_versions_pkey",
+      "branch_outline_versions_profile_check",
+      "branch_outline_versions_request_unique",
+      "branch_outline_versions_status_check",
+      "branch_outline_versions_user_node_id_unique",
+    ]);
+    expect(
+      versionConstraints.rows.find(
+        ({ conname }) => conname === "branch_outline_versions_node_owner_fk",
+      )?.definition,
+    ).toContain(
+      "FOREIGN KEY (user_id, node_id) REFERENCES nodes(user_id, id) ON DELETE CASCADE",
+    );
+
+    const versionIndexes = await client.query<{ indexdef: string; indexname: string }>(
+      `select indexname, indexdef
+       from pg_indexes
+       where tablename = 'branch_outline_versions'
+       order by indexname`,
+    );
+    expect(versionIndexes.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        indexname: "branch_outline_versions_one_pending_per_node",
+        indexdef: expect.stringContaining("WHERE ((status)::text = 'pending'::text)"),
+      }),
+    ]));
+    const versionTriggers = await client.query<{ tgname: string }>(
+      `select tgname from pg_trigger
+       where tgrelid = 'branch_outline_versions'::regclass and not tgisinternal`,
+    );
+    expect(versionTriggers.rows).toEqual([{
+      tgname: "branch_outline_versions_immutable_transition_trigger",
+    }]);
+
+    const inputConstraints = await client.query<{ conname: string }>(
+      `select conname from pg_constraint
+       where conname like 'branch_outline_inputs_%'
+       order by conname`,
+    );
+    expect(inputConstraints.rows.map(({ conname }) => conname)).toEqual([
+      "branch_outline_inputs_fingerprint_check",
+      "branch_outline_inputs_outline_state_check",
+      "branch_outline_inputs_pkey",
+      "branch_outline_inputs_position_check",
+      "branch_outline_inputs_source_unique",
+      "branch_outline_inputs_summary_state_check",
+      "branch_outline_inputs_version_owner_fk",
+    ]);
+    const inputTriggers = await client.query<{ tgname: string }>(
+      `select tgname from pg_trigger
+       where tgrelid = 'branch_outline_inputs'::regclass and not tgisinternal`,
+    );
+    expect(inputTriggers.rows).toEqual([{
+      tgname: "branch_outline_inputs_lifecycle_trigger",
+    }]);
+
+    const synthesisInputConstraints = await client.query<{ conname: string }>(
+      `select conname from pg_constraint
+       where conname like 'synthesis_inputs_%'
+       order by conname`,
+    );
+    expect(synthesisInputConstraints.rows.map(({ conname }) => conname)).toEqual([
+      "synthesis_inputs_fingerprint_check",
+      "synthesis_inputs_pkey",
+      "synthesis_inputs_position_check",
+      "synthesis_inputs_relation_state_check",
+      "synthesis_inputs_source_unique",
+      "synthesis_inputs_version_owner_fk",
+    ]);
+    const synthesisInputTriggers = await client.query<{ tgname: string }>(
+      `select tgname from pg_trigger
+       where tgrelid = 'synthesis_inputs'::regclass and not tgisinternal`,
+    );
+    expect(synthesisInputTriggers.rows).toEqual([{
+      tgname: "synthesis_inputs_lifecycle_trigger",
+    }]);
   });
 
   it("defines owner-scoped immutable synthesis proposal constraints", async () => {

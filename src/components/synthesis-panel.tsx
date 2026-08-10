@@ -31,15 +31,25 @@ export function synthesisStatusLabel(status: SynthesisDecisionSummary["status"])
 
 export function PublishedSynthesisArtifact({
   synthesis,
+  staleAt,
   headingRef,
 }: {
   synthesis: SynthesisVersion;
+  staleAt: string | null;
   headingRef?: Ref<HTMLHeadingElement>;
 }) {
   const titleId = `published-synthesis-${synthesis.id}`;
   return (
     <section className="synthesis-published" aria-labelledby={titleId}>
       <h2 id={titleId} ref={headingRef} tabIndex={-1}>Summary</h2>
+      {staleAt ? (
+        <div className="synthesis-published__stale" role="status">
+          <p className="synthesis-published__stale-label">Update available</p>
+          <p>
+            This Summary may no longer reflect the current branch. Open Chat to request a refreshed Summary.
+          </p>
+        </div>
+      ) : null}
       <div className="synthesis-document__content">
         <SynthesisDocumentContent content={synthesis.content} />
       </div>

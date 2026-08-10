@@ -12,7 +12,10 @@ import {
 } from "@/lib/ai/openai-profiles";
 import { getServerEnvironment } from "@/lib/env/server";
 import { requireAuthorizedSession } from "@/lib/server/authorization";
-import { prepareChatContextForUser } from "@/lib/server/chat-context";
+import {
+  isSynthesisOutlineInputCurrentForUser,
+  prepareChatContextForUser,
+} from "@/lib/server/chat-context";
 import {
   persistChatTurnContentPrefixForUser,
   cancelChatTurnForUser,
@@ -23,6 +26,7 @@ import {
   recordChatTurnProviderResponseForUser,
   recordChatTurnSynthesisIntentForUser,
   retryChatTurnForUser,
+  synthesisProposalExistsForMessageForUser,
 } from "@/lib/server/chat-service";
 import {
   createOpenAISafetyIdentifier,
@@ -39,6 +43,8 @@ export const runtime = "nodejs";
 const MAX_CHAT_REQUEST_BYTES = 128_000;
 const PERSISTENCE_BATCH_CHARACTERS = 1_024;
 const PERSISTENCE_BATCH_MS = 250;
+export const STALE_BRANCH_OUTLINE_SUMMARY_NOTICE =
+  "Regenerate the stale Branch Outline before requesting a new Summary. You can still discuss the existing outline here.";
 
 class ChatRequestTooLargeError extends Error {}
 
@@ -75,21 +81,27 @@ async function readBoundedJson(request: Request): Promise<unknown> {
   return JSON.parse(new TextDecoder().decode(body));
 }
 
-function terminalResponse(turn: {
+async function terminalResponse(userId: string, turn: {
   userMessage: ChatMessage;
   assistantMessage: ChatMessage;
-}): Response | null {
+}): Promise<Response | null> {
   const status = turn.assistantMessage.status;
   if (status !== "completed" && status !== "failed" && status !== "cancelled") {
     return null;
   }
+  const proposalCreated = status === "completed"
+    ? await synthesisProposalExistsForMessageForUser(userId, {
+        nodeId: turn.assistantMessage.nodeId,
+        messageId: turn.assistantMessage.id,
+      })
+    : false;
   const events: ChatStreamEvent[] = [
     { type: "turn", userMessage: turn.userMessage, assistantMessage: turn.assistantMessage },
     status === "completed"
       ? {
           type: "completed",
           assistantMessage: turn.assistantMessage,
-          proposalCreated: turn.userMessage.proposalRequested,
+          proposalCreated,
         }
       : { type: status, assistantMessage: turn.assistantMessage },
   ];
@@ -151,23 +163,22 @@ export async function POST(request: Request) {
   }
 
   if (!turn.generationClaimed) {
-    return terminalResponse(turn) ?? jsonError(409, "The message is already in progress.");
+    return await terminalResponse(userId, turn) ??
+      jsonError(409, "The message is already in progress.");
   }
 
   let preparedContext;
   try {
     preparedContext = await prepareChatContextForUser(userId, input);
-    await recordChatTurnContextForUser(userId, {
-      ...input,
-      model: OPENAI_CHAT_MODEL,
-      contextFingerprint: preparedContext.fingerprint,
-    });
   } catch {
     const assistantMessage = await failChatTurnForUser(userId, {
       ...input,
       failureCode: "generation-failed",
     });
-    return terminalResponse({ userMessage: turn.userMessage, assistantMessage }) ??
+    return await terminalResponse(userId, {
+      userMessage: turn.userMessage,
+      assistantMessage,
+    }) ??
       jsonError(500, "The response could not be prepared.");
   }
 
@@ -188,6 +199,7 @@ export async function POST(request: Request) {
     async start(controller) {
       controller.enqueue(event({ type: "turn", ...turn }));
       let visibleContent = "";
+      let providerContextRecorded = false;
       let providerResponseRecorded = false;
       let persistedCharacterCount = 0;
       let lastPersistenceAt = Date.now();
@@ -220,6 +232,14 @@ export async function POST(request: Request) {
 
       try {
         const consumeProviderPhase = async (phase: "conversation" | "synthesis") => {
+          if (!providerContextRecorded) {
+            await recordChatTurnContextForUser(userId, {
+              ...input,
+              model: OPENAI_CHAT_MODEL,
+              contextFingerprint: preparedContext.fingerprint,
+            });
+            providerContextRecorded = true;
+          }
           let completedEvent: Extract<
             NormalizedOpenAIChatEvent,
             { type: "completed" }
@@ -257,8 +277,27 @@ export async function POST(request: Request) {
             ? preparedContext.snapshot.node.refinementProposal.versionId
             : null;
         let synthesisRouted = turn.userMessage.proposalRequested;
+        const outlineIsStale =
+          preparedContext.snapshot.node.branchOutline.state === "stale";
+        const outlineIsCurrent = () =>
+          !outlineIsStale && isSynthesisOutlineInputCurrentForUser(
+            userId,
+            input.nodeId,
+            preparedContext.outlineInput,
+          );
         let finalResult: Extract<NormalizedOpenAIChatEvent, { type: "completed" }>;
         if (synthesisRouted) {
+          if (!(await outlineIsCurrent())) {
+            await emitVisibleContent(STALE_BRANCH_OUTLINE_SUMMARY_NOTICE);
+            await flushPersistence(true);
+            const assistantMessage = await completeChatTurnForUser(userId, input);
+            controller.enqueue(event({
+              type: "completed",
+              assistantMessage,
+              proposalCreated: false,
+            }));
+            return;
+          }
           finalResult = await consumeProviderPhase("synthesis");
         } else {
           const conversationResult = await consumeProviderPhase("conversation");
@@ -271,6 +310,17 @@ export async function POST(request: Request) {
             });
             if (visibleContent.length > 0 && !visibleContent.endsWith("\n\n")) {
               await emitVisibleContent(visibleContent.endsWith("\n") ? "\n" : "\n\n");
+            }
+            if (!(await outlineIsCurrent())) {
+              await emitVisibleContent(STALE_BRANCH_OUTLINE_SUMMARY_NOTICE);
+              await flushPersistence(true);
+              const assistantMessage = await completeChatTurnForUser(userId, input);
+              controller.enqueue(event({
+                type: "completed",
+                assistantMessage,
+                proposalCreated: false,
+              }));
+              return;
             }
             finalResult = await consumeProviderPhase("synthesis");
           }
@@ -294,6 +344,7 @@ export async function POST(request: Request) {
                   reasoningMode: "pro",
                   reasoningEffort: "high",
                   inputFingerprint: preparedContext.fingerprint,
+                  outlineInput: preparedContext.outlineInput,
                   refinementProposalId,
                 },
               }

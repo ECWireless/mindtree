@@ -6,6 +6,7 @@ import { Pool } from "pg";
 
 const runtime = vi.hoisted(() => ({
   invocations: 0,
+  beforeRouteComplete: null as null | (() => Promise<void>),
   scenarios: [] as Array<
     | "disconnect-after-delta"
     | "generic-failure"
@@ -52,6 +53,7 @@ vi.mock("@/lib/server/chat-runtime", async () => {
           if (scenario === "route-synthesis-at-content-limit") {
             yield { type: "text-delta" as const, content: "x".repeat(64_000) };
           }
+          await runtime.beforeRouteComplete?.();
           yield {
             type: "completed" as const,
             providerResponseId,
@@ -152,6 +154,27 @@ async function storedTurn(clientMessageId: string) {
   return result.rows;
 }
 
+async function installBranchOutline(stale = false) {
+  const outlineId = randomUUID();
+  await pool.query(
+    `insert into branch_outline_versions
+       (id, user_id, node_id, client_request_id, status, content, model,
+        reasoning_mode, reasoning_effort, input_fingerprint, completed_at)
+     values ($1, $2, $3, $4, 'completed', '# Branch Outline\n\nSynthetic recursive context',
+       'gpt-5.6-sol', 'pro', 'high', $5, now())`,
+    [outlineId, userId, nodeId, randomUUID(), "d".repeat(64)],
+  );
+  await pool.query(
+    `update nodes
+     set current_branch_outline_version_id = $1,
+         branch_outline_stale_at = case when $2 then now() else null end,
+         branch_outline_stale_reason = case when $2 then 'branch-content-changed' else null end
+     where user_id = $3 and id = $4`,
+    [outlineId, stale, userId, nodeId],
+  );
+  return outlineId;
+}
+
 async function createPendingProposalViaRoute() {
   runtime.scenarios.push("route-synthesis", "proposal-success");
   const clientMessageId = randomUUID();
@@ -198,6 +221,7 @@ describe("chat generation failure boundaries", () => {
   beforeEach(async () => {
     runtime.scenarios.length = 0;
     runtime.invocations = 0;
+    runtime.beforeRouteComplete = null;
     await pool.query(`delete from nodes where user_id = $1`, [userId]);
     nodeId = randomUUID();
     await pool.query(
@@ -316,6 +340,7 @@ describe("chat generation failure boundaries", () => {
   });
 
   it("persists a requested synthesis proposal without publishing it", async () => {
+    const outlineId = await installBranchOutline();
     runtime.scenarios.push("route-synthesis", "proposal-success");
     const clientMessageId = randomUUID();
     const createBody = {
@@ -367,6 +392,20 @@ describe("chat generation failure boundaries", () => {
       status: "pending",
     }]);
     expect(pointerResult.rows).toEqual([{ published_synthesis_version_id: null }]);
+    const recordedInputs = await pool.query<{
+      source_branch_outline_version_id: string | null;
+      relation: string;
+      position: number;
+    }>(
+      `select source_branch_outline_version_id, relation, position
+       from synthesis_inputs where synthesis_version_id = $1`,
+      [proposalResult.rows[0]!.id],
+    );
+    expect(recordedInputs.rows).toEqual([{
+      source_branch_outline_version_id: outlineId,
+      relation: "outline",
+      position: 0,
+    }]);
     expect(runtime.invocations).toBe(2);
 
     const replayEvents = await readEvents(await post(createBody));
@@ -409,6 +448,113 @@ describe("chat generation failure boundaries", () => {
       refinement_proposal_id: originalProposalId,
     }]);
     expect(runtime.invocations).toBe(4);
+  });
+
+  it("keeps a stale Branch Outline available for discussion but blocks Summary generation", async () => {
+    await installBranchOutline(true);
+    runtime.scenarios.push("route-synthesis");
+    const clientMessageId = randomUUID();
+    const events = await readEvents(await post({
+      nodeId,
+      clientMessageId,
+      content: "Create a new Summary using this branch",
+      webSearchAuthorized: false,
+    }));
+
+    expect(events.at(-1)).toMatchObject({
+      type: "completed",
+      proposalCreated: false,
+      assistantMessage: {
+        status: "completed",
+        content: expect.stringContaining("Regenerate the stale Branch Outline"),
+      },
+    });
+    expect(runtime.invocations).toBe(1);
+    expect(runtime.scenarios).toHaveLength(0);
+    const proposals = await pool.query<{ count: number }>(
+      `select count(*)::int as count from synthesis_versions
+       where user_id = $1 and node_id = $2`,
+      [userId, nodeId],
+    );
+    expect(proposals.rows).toEqual([{ count: 0 }]);
+
+    const replay = await readEvents(await post({
+      nodeId,
+      clientMessageId,
+      content: "Create a new Summary using this branch",
+      webSearchAuthorized: false,
+    }));
+    expect(replay.at(-1)).toMatchObject({
+      type: "completed",
+      proposalCreated: false,
+    });
+    expect(runtime.invocations).toBe(1);
+  });
+
+  it("rechecks a current outline after routing and avoids an obsolete synthesis call", async () => {
+    await installBranchOutline();
+    runtime.beforeRouteComplete = async () => {
+      await pool.query(
+        `update nodes
+         set branch_outline_stale_at = now(),
+             branch_outline_stale_reason = 'branch-content-changed'
+         where user_id = $1 and id = $2`,
+        [userId, nodeId],
+      );
+      runtime.beforeRouteComplete = null;
+    };
+    runtime.scenarios.push("route-synthesis");
+    const clientMessageId = randomUUID();
+    const events = await readEvents(await post({
+      nodeId,
+      clientMessageId,
+      content: "Create a Summary after checking the current branch",
+      webSearchAuthorized: false,
+    }));
+
+    expect(events.at(-1)).toMatchObject({
+      type: "completed",
+      proposalCreated: false,
+      assistantMessage: {
+        content: expect.stringContaining("Regenerate the stale Branch Outline"),
+      },
+    });
+    expect(runtime.invocations).toBe(1);
+    expect(runtime.scenarios).toHaveLength(0);
+  });
+
+  it("keeps provider provenance empty when a stale-outline retry is blocked before a call", async () => {
+    runtime.scenarios.push("route-synthesis", "generic-failure");
+    const clientMessageId = randomUUID();
+    const failed = await readEvents(await post({
+      nodeId,
+      clientMessageId,
+      content: "Create a Summary that will need a retry",
+      webSearchAuthorized: false,
+    }));
+    expect(failed.at(-1)).toMatchObject({
+      type: "failed",
+      assistantMessage: { status: "failed" },
+    });
+    expect(runtime.invocations).toBe(2);
+
+    await installBranchOutline(true);
+    const retried = await readEvents(await post({ nodeId, clientMessageId, retry: true }));
+    expect(retried.at(-1)).toMatchObject({
+      type: "completed",
+      proposalCreated: false,
+      assistantMessage: {
+        status: "completed",
+        content: expect.stringContaining("Regenerate the stale Branch Outline"),
+      },
+    });
+    expect(runtime.invocations).toBe(2);
+    expect((await storedTurn(clientMessageId)).find(({ role }) => role === "assistant"))
+      .toMatchObject({
+        model: null,
+        provider_response_id: null,
+        context_fingerprint: null,
+      });
   });
 
   it("bounds combined conversational routing and synthesis output before a second call", async () => {

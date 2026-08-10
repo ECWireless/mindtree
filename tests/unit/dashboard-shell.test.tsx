@@ -144,8 +144,9 @@ describe("DashboardShell", () => {
         nodes={syntheticDashboardNodes}
         selectedNodeId="feedback"
         chatGenerationEnabled
-        initialSynthesisWorkspace={{
-          published: {
+      initialSynthesisWorkspace={{
+        staleAt: "2026-08-05T13:00:00.000Z",
+        published: {
             ...versionBase,
             id: "published-id",
             baseVersionId: null,
@@ -183,6 +184,8 @@ describe("DashboardShell", () => {
     expect(markup).toContain("Reject proposal");
     expect(markup).toContain("describe the changes in your next message");
     expect(markup).toContain("Recent synthesis decisions (1)");
+    expect(markup).toContain("Update available");
+    expect(markup).toContain("Open Chat to request a refreshed Summary");
     expect(markup).not.toContain("<h1>Summary</h1>");
     expect(markup).toContain("<h4>Summary</h4>");
   });

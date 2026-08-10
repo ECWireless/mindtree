@@ -16,6 +16,11 @@ import {
   type FlatNode,
   NodeTreeDataError,
 } from "@/lib/nodes/tree";
+import {
+  collectAncestorPathIds,
+  markArtifactsStale,
+  StalenessTreeError,
+} from "@/lib/server/staleness";
 
 type NodeTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -177,7 +182,8 @@ function sanitizeNodeServiceError(error: unknown): Error {
     error instanceof DrizzleError ||
     error instanceof DrizzleQueryError ||
     postgresFailure !== null ||
-    error instanceof NodeTreeDataError
+    error instanceof NodeTreeDataError ||
+    error instanceof StalenessTreeError
   ) {
     return new NodeMutationError("unavailable");
   }
@@ -229,6 +235,20 @@ export async function createNodeForUser(userId: string, input: CreateNodeInput) 
         .values({ userId, parentId, position, title: input.title })
         .returning();
 
+      if (parentId !== null) {
+        const affectedIds = collectAncestorPathIds(lockedNodes, parentId, {
+          includeStart: true,
+        });
+        const changedAt = new Date();
+        await markArtifactsStale(tx, {
+          userId,
+          summaryNodeIds: affectedIds,
+          outlineNodeIds: affectedIds,
+          outlineReason: "branch-structure-changed",
+          at: changedAt,
+        });
+      }
+
       return toFlatNode(created);
     });
   } catch (error) {
@@ -240,16 +260,28 @@ export async function renameNodeForUser(userId: string, input: RenameNodeInput) 
   try {
     return await db.transaction(async (tx) => {
       const lockedNodes = await lockOwnerNodes(tx, userId);
-      requireNode(lockedNodes, input.id);
+      const target = requireNode(lockedNodes, input.id);
+      if (target.title === input.title) return target;
+      const changedAt = new Date();
       const [updated] = await tx
         .update(nodes)
-        .set({ title: input.title, updatedAt: new Date() })
+        .set({ title: input.title, updatedAt: changedAt })
         .where(and(eq(nodes.userId, userId), eq(nodes.id, input.id)))
         .returning();
 
       if (!updated) {
         throw new NodeMutationError("node-not-found");
       }
+      const outlineIds = collectAncestorPathIds(lockedNodes, input.id, {
+        includeStart: true,
+      });
+      await markArtifactsStale(tx, {
+        userId,
+        summaryNodeIds: collectAncestorPathIds(lockedNodes, input.id),
+        outlineNodeIds: outlineIds,
+        outlineReason: "node-renamed",
+        at: changedAt,
+      });
       return toFlatNode(updated);
     });
   } catch (error) {
@@ -304,6 +336,23 @@ export async function moveNodeForUser(userId: string, input: MoveNodeInput) {
       }
       await rewriteSiblingGroup(tx, userId, reorderedDestination, input.parentId);
 
+      if (source.parentId !== input.parentId || source.position !== position) {
+        const formerPathIds = source.parentId === null
+          ? []
+          : collectAncestorPathIds(lockedNodes, source.parentId, { includeStart: true });
+        const destinationPathIds = input.parentId === null
+          ? []
+          : collectAncestorPathIds(lockedNodes, input.parentId, { includeStart: true });
+        const changedAt = new Date();
+        await markArtifactsStale(tx, {
+          userId,
+          summaryNodeIds: [...formerPathIds, ...destinationPathIds],
+          outlineNodeIds: [...formerPathIds, ...destinationPathIds],
+          outlineReason: "branch-structure-changed",
+          at: changedAt,
+        });
+      }
+
       return { ...source, parentId: input.parentId, position };
     });
   } catch (error) {
@@ -317,6 +366,10 @@ export async function archiveNodeForUser(userId: string, input: NodeLifecycleInp
       const lockedNodes = await lockOwnerNodes(tx, userId);
       const target = requireNode(lockedNodes, input.id);
       const subtreeIds = getSubtreeIds(lockedNodes, target.id);
+      const subtreeIdSet = new Set(subtreeIds);
+      const changedSubtreeIds = lockedNodes
+        .filter((node) => subtreeIdSet.has(node.id) && node.archivedAt === null)
+        .map((node) => node.id);
       const archivedAt = new Date();
 
       await tx
@@ -329,6 +382,20 @@ export async function archiveNodeForUser(userId: string, input: NodeLifecycleInp
             isNull(nodes.archivedAt),
           ),
         );
+
+      if (changedSubtreeIds.length > 0) {
+        const affectedIds = [
+          ...changedSubtreeIds,
+          ...collectAncestorPathIds(lockedNodes, target.id),
+        ];
+        await markArtifactsStale(tx, {
+          userId,
+          summaryNodeIds: affectedIds,
+          outlineNodeIds: affectedIds,
+          outlineReason: "branch-availability-changed",
+          at: archivedAt,
+        });
+      }
 
       return { ...target, archivedAt: target.archivedAt ?? archivedAt.toISOString() };
     });
@@ -365,6 +432,9 @@ export async function unarchiveNodeForUser(userId: string, input: NodeLifecycleI
       }
 
       const updatedAt = new Date();
+      const changedPathIds = pathIds.filter((nodeId) =>
+        nodeById.get(nodeId)?.archivedAt !== null
+      );
       await tx
         .update(nodes)
         .set({ archivedAt: null, updatedAt })
@@ -375,6 +445,16 @@ export async function unarchiveNodeForUser(userId: string, input: NodeLifecycleI
             isNotNull(nodes.archivedAt),
           ),
         );
+
+      if (changedPathIds.length > 0) {
+        await markArtifactsStale(tx, {
+          userId,
+          summaryNodeIds: pathIds,
+          outlineNodeIds: pathIds,
+          outlineReason: "branch-availability-changed",
+          at: updatedAt,
+        });
+      }
 
       return { ...target, archivedAt: null };
     });
@@ -414,6 +494,18 @@ export async function deleteNodeForUser(userId: string, input: NodeLifecycleInpu
       }
 
       await rewriteSiblingGroup(tx, userId, remainingSiblings, target.parentId);
+
+      const affectedIds = target.parentId === null
+        ? []
+        : collectAncestorPathIds(lockedNodes, target.parentId, { includeStart: true });
+      const changedAt = new Date();
+      await markArtifactsStale(tx, {
+        userId,
+        summaryNodeIds: affectedIds,
+        outlineNodeIds: affectedIds,
+        outlineReason: "branch-structure-changed",
+        at: changedAt,
+      });
 
       return { nodeId: deleted.id, parentId: target.parentId, recoveryNodeId };
     });

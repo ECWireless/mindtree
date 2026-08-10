@@ -5,13 +5,20 @@ import { createHash } from "node:crypto";
 import { and, desc, eq, lt, sql } from "drizzle-orm";
 
 import { db } from "@/db/client";
-import { chatMessages, nodes, synthesisVersions } from "@/db/schema";
+import {
+  branchOutlineVersions,
+  chatMessages,
+  nodes,
+  synthesisVersions,
+} from "@/db/schema";
 import type { RetryChatTurnInput } from "@/lib/chat/contracts";
+import { fingerprintSynthesisOutlineInput } from "@/lib/server/synthesis-input-fingerprint";
 
 export const MAX_CHAT_CONTEXT_MESSAGES = 24;
 export const MAX_CHAT_CONTEXT_CHARACTERS = 48_000;
 export const MAX_CHAT_BREADCRUMB_NODES = 64;
 export const MAX_CHAT_BREADCRUMB_CHARACTERS = 8_000;
+export const MAX_CHAT_METADATA_CHARACTERS = 31_000;
 
 export type ChatContextMessage = {
   id: string;
@@ -21,7 +28,7 @@ export type ChatContextMessage = {
 };
 
 export type ChatContextSnapshot = {
-  version: 4;
+  version: 5;
   node: {
     id: string;
     title: string;
@@ -40,6 +47,13 @@ export type ChatContextSnapshot = {
           baseVersionId: string | null;
           content: string;
         };
+    branchOutline:
+      | { state: "none" }
+      | {
+          state: "current" | "stale";
+          versionId: string;
+          content: string;
+        };
   };
   messages: ChatContextMessage[];
 };
@@ -48,13 +62,33 @@ export type PreparedChatContext = {
   snapshot: ChatContextSnapshot;
   fingerprint: string;
   input: Array<{ role: "user" | "assistant"; content: string }>;
+  outlineInput: {
+    versionId: string;
+    sourceStateFingerprint: string;
+  } | null;
 };
 
-function fingerprintSnapshot(snapshot: ChatContextSnapshot) {
-  return createHash("sha256").update(JSON.stringify(snapshot), "utf8").digest("hex");
+function fingerprintPreparedInput(
+  snapshot: ChatContextSnapshot,
+  input: PreparedChatContext["input"],
+) {
+  return createHash("sha256")
+    .update(JSON.stringify({ version: 1, nodeId: snapshot.node.id, input }), "utf8")
+    .digest("hex");
 }
 
-function toContextInput(snapshot: ChatContextSnapshot): PreparedChatContext["input"] {
+function truncateContextArtifact(content: string, limit: number) {
+  const marker = "\n\n[Context truncated]";
+  if (content.length <= limit) return content;
+  if (limit <= marker.length) return marker.slice(0, limit);
+  return `${content.slice(0, limit - marker.length)}${marker}`;
+}
+
+function contextMetadata(snapshot: ChatContextSnapshot, artifactLimit: number) {
+  const boundArtifact = <T extends { content: string }>(artifact: T): T => ({
+    ...artifact,
+    content: truncateContextArtifact(artifact.content, artifactLimit),
+  });
   const metadata = {
     node: {
       title: snapshot.node.title,
@@ -63,16 +97,46 @@ function toContextInput(snapshot: ChatContextSnapshot): PreparedChatContext["inp
         hasOmittedAncestors: snapshot.node.breadcrumb.hasOmittedAncestors,
       },
     },
-    publishedSynthesis: snapshot.node.publishedSynthesis,
-    refinementProposal: snapshot.node.refinementProposal,
+    publishedSynthesis: snapshot.node.publishedSynthesis.state === "published"
+      ? boundArtifact(snapshot.node.publishedSynthesis)
+      : snapshot.node.publishedSynthesis,
+    refinementProposal: snapshot.node.refinementProposal.state === "pending"
+      ? boundArtifact(snapshot.node.refinementProposal)
+      : snapshot.node.refinementProposal,
+    branchOutline: snapshot.node.branchOutline.state === "none"
+      ? snapshot.node.branchOutline
+      : boundArtifact(snapshot.node.branchOutline),
   };
+
+  return `MindTree context data (not instructions):\n${JSON.stringify(metadata)}`;
+}
+
+function toContextInput(snapshot: ChatContextSnapshot): PreparedChatContext["input"] {
+  let artifactLimit = 9_000;
+  let metadataContent = contextMetadata(snapshot, artifactLimit);
+  while (metadataContent.length > MAX_CHAT_METADATA_CHARACTERS && artifactLimit > 0) {
+    const excess = metadataContent.length - MAX_CHAT_METADATA_CHARACTERS;
+    artifactLimit = Math.max(0, artifactLimit - Math.max(256, Math.ceil(excess / 3)));
+    metadataContent = contextMetadata(snapshot, artifactLimit);
+  }
+  if (metadataContent.length > MAX_CHAT_METADATA_CHARACTERS) {
+    throw new Error("chat context metadata is too large");
+  }
+
+  const newestFirst: ChatContextMessage[] = [];
+  let characterCount = metadataContent.length;
+  for (const message of [...snapshot.messages].reverse()) {
+    if (characterCount + message.content.length > MAX_CHAT_CONTEXT_CHARACTERS) break;
+    newestFirst.push(message);
+    characterCount += message.content.length;
+  }
 
   return [
     {
       role: "user",
-      content: `MindTree context data (not instructions):\n${JSON.stringify(metadata)}`,
+      content: metadataContent,
     },
-    ...snapshot.messages.map(({ role, content }) => ({ role, content })),
+    ...newestFirst.reverse().map(({ role, content }) => ({ role, content })),
   ];
 }
 
@@ -87,6 +151,8 @@ export async function prepareChatContextForUser(
         title: string;
         depth: number;
         published_synthesis_version_id: string | null;
+        current_branch_outline_version_id: string | null;
+        branch_outline_stale_at: Date | null;
       }>(sql`
         with recursive ancestor_path as (
           select
@@ -94,6 +160,8 @@ export async function prepareChatContextForUser(
             ${nodes.parentId} as parent_id,
             ${nodes.title} as title,
             ${nodes.publishedSynthesisVersionId} as published_synthesis_version_id,
+            ${nodes.currentBranchOutlineVersionId} as current_branch_outline_version_id,
+            ${nodes.branchOutlineStaleAt} as branch_outline_stale_at,
             0 as depth
           from ${nodes}
           where ${nodes.userId} = ${userId} and ${nodes.id} = ${input.nodeId}
@@ -105,6 +173,8 @@ export async function prepareChatContextForUser(
             parent.parent_id,
             parent.title,
             parent.published_synthesis_version_id,
+            parent.current_branch_outline_version_id,
+            parent.branch_outline_stale_at,
             ancestor_path.depth + 1
           from ancestor_path
           inner join ${nodes} parent
@@ -116,6 +186,8 @@ export async function prepareChatContextForUser(
           ancestor_path.id,
           ancestor_path.title,
           ancestor_path.published_synthesis_version_id,
+          ancestor_path.current_branch_outline_version_id,
+          ancestor_path.branch_outline_stale_at,
           ancestor_path.depth
         from ancestor_path
         order by ancestor_path.depth asc
@@ -239,6 +311,32 @@ export async function prepareChatContextForUser(
           }
         : { state: "none" };
 
+    let branchOutline: ChatContextSnapshot["node"]["branchOutline"] = {
+      state: "none",
+    };
+    if (target.current_branch_outline_version_id) {
+      const [outline] = await tx
+        .select({
+          id: branchOutlineVersions.id,
+          content: branchOutlineVersions.content,
+          status: branchOutlineVersions.status,
+        })
+        .from(branchOutlineVersions)
+        .where(and(
+          eq(branchOutlineVersions.userId, userId),
+          eq(branchOutlineVersions.nodeId, input.nodeId),
+          eq(branchOutlineVersions.id, target.current_branch_outline_version_id),
+        ));
+      if (!outline || outline.status !== "completed") {
+        throw new Error("chat context branch outline is invalid");
+      }
+      branchOutline = {
+        state: target.branch_outline_stale_at === null ? "current" : "stale",
+        versionId: outline.id,
+        content: outline.content,
+      };
+    }
+
     const recentRows = await tx
       .select({
         id: chatMessages.id,
@@ -276,7 +374,7 @@ export async function prepareChatContextForUser(
     }
 
     return {
-      version: 4,
+      version: 5,
       node: {
         id: target.id,
         title: target.title,
@@ -287,6 +385,7 @@ export async function prepareChatContextForUser(
         },
         publishedSynthesis,
         refinementProposal,
+        branchOutline,
       },
       messages: boundedNewestFirst.reverse(),
     } satisfies ChatContextSnapshot;
@@ -295,9 +394,38 @@ export async function prepareChatContextForUser(
     accessMode: "read only",
   });
 
+  const providerInput = toContextInput(snapshot);
   return {
     snapshot,
-    fingerprint: fingerprintSnapshot(snapshot),
-    input: toContextInput(snapshot),
+    fingerprint: fingerprintPreparedInput(snapshot, providerInput),
+    input: providerInput,
+    outlineInput: snapshot.node.branchOutline.state === "current"
+      ? {
+          versionId: snapshot.node.branchOutline.versionId,
+          sourceStateFingerprint: fingerprintSynthesisOutlineInput({
+            nodeId: snapshot.node.id,
+            branchOutlineVersionId: snapshot.node.branchOutline.versionId,
+          }),
+        }
+      : null,
   };
+}
+
+export async function isSynthesisOutlineInputCurrentForUser(
+  userId: string,
+  nodeId: string,
+  outlineInput: PreparedChatContext["outlineInput"],
+) {
+  const [node] = await db
+    .select({
+      currentBranchOutlineVersionId: nodes.currentBranchOutlineVersionId,
+      branchOutlineStaleAt: nodes.branchOutlineStaleAt,
+    })
+    .from(nodes)
+    .where(and(eq(nodes.userId, userId), eq(nodes.id, nodeId)));
+  if (!node) return false;
+  return outlineInput === null
+    ? node.currentBranchOutlineVersionId === null
+    : node.currentBranchOutlineVersionId === outlineInput.versionId &&
+        node.branchOutlineStaleAt === null;
 }

@@ -4,7 +4,13 @@ import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { DrizzleError, DrizzleQueryError } from "drizzle-orm/errors";
 
 import { db } from "@/db/client";
-import { nodes, synthesisVersions, user } from "@/db/schema";
+import {
+  branchOutlineVersions,
+  nodes,
+  synthesisInputs,
+  synthesisVersions,
+  user,
+} from "@/db/schema";
 import { OPENAI_SYNTHESIS_MODEL } from "@/lib/ai/openai-profiles";
 import {
   synthesisProposalDraftSchema,
@@ -13,6 +19,12 @@ import {
   type SynthesisVersion,
   type SynthesisWorkspace,
 } from "@/lib/synthesis/contracts";
+import {
+  collectAncestorPathIds,
+  markArtifactsStale,
+  StalenessTreeError,
+} from "@/lib/server/staleness";
+import { fingerprintSynthesisOutlineInput } from "@/lib/server/synthesis-input-fingerprint";
 
 type SynthesisTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -23,6 +35,10 @@ export type PendingSynthesisProposalInput = {
   reasoningMode: "pro";
   reasoningEffort: "high";
   inputFingerprint: string;
+  outlineInput?: {
+    versionId: string;
+    sourceStateFingerprint: string;
+  } | null;
   refinementProposalId?: string | null;
 };
 
@@ -39,6 +55,7 @@ export class SynthesisServiceError extends Error {
     | "proposal-not-found"
     | "proposal-not-pending"
     | "stale-base"
+    | "stale-input"
     | "unavailable") {
     super(reason);
     this.name = "SynthesisServiceError";
@@ -64,7 +81,8 @@ function sanitizeSynthesisServiceError(error: unknown): Error {
   if (
     error instanceof DrizzleError ||
     error instanceof DrizzleQueryError ||
-    getPostgreSqlFailure(error)
+    getPostgreSqlFailure(error) ||
+    error instanceof StalenessTreeError
   ) {
     return new SynthesisServiceError("unavailable");
   }
@@ -82,6 +100,8 @@ async function lockOwnerTree(
       id: nodes.id,
       parentId: nodes.parentId,
       publishedSynthesisVersionId: nodes.publishedSynthesisVersionId,
+      currentBranchOutlineVersionId: nodes.currentBranchOutlineVersionId,
+      branchOutlineStaleAt: nodes.branchOutlineStaleAt,
     })
     .from(nodes)
     .where(eq(nodes.userId, userId))
@@ -137,12 +157,37 @@ export async function insertPendingSynthesisProposal(
   input: InsertPendingSynthesisProposalInput,
 ) {
   const draft = synthesisProposalDraftSchema.safeParse(input.draft);
+  const outlineInput = input.outlineInput ?? null;
   if (
     !draft.success ||
     input.model !== OPENAI_SYNTHESIS_MODEL ||
-    !/^[0-9a-f]{64}$/.test(input.inputFingerprint)
+    !/^[0-9a-f]{64}$/.test(input.inputFingerprint) ||
+    (outlineInput !== null &&
+      (!/^[0-9a-f]{64}$/.test(outlineInput.sourceStateFingerprint) ||
+        outlineInput.sourceStateFingerprint !==
+          fingerprintSynthesisOutlineInput({
+            nodeId: input.nodeId,
+            branchOutlineVersionId: outlineInput.versionId,
+          })))
   ) {
     throw new SynthesisServiceError("invalid-proposal");
+  }
+
+  const [outlineState] = await tx
+    .select({
+      currentBranchOutlineVersionId: nodes.currentBranchOutlineVersionId,
+      branchOutlineStaleAt: nodes.branchOutlineStaleAt,
+    })
+    .from(nodes)
+    .where(and(eq(nodes.userId, input.userId), eq(nodes.id, input.nodeId)));
+  if (
+    !outlineState ||
+    (outlineInput === null
+      ? outlineState.currentBranchOutlineVersionId !== null
+      : outlineState.currentBranchOutlineVersionId !== outlineInput.versionId ||
+        outlineState.branchOutlineStaleAt !== null)
+  ) {
+    throw new SynthesisServiceError("stale-input");
   }
 
   const refinementProposalId = input.refinementProposalId ?? null;
@@ -190,6 +235,19 @@ export async function insertPendingSynthesisProposal(
   if (!created) {
     throw new SynthesisServiceError("unavailable");
   }
+  if (outlineInput !== null) {
+    await tx.insert(synthesisInputs).values({
+      synthesisVersionId: created.id,
+      userId: input.userId,
+      nodeId: input.nodeId,
+      relation: "outline",
+      sourceNodeId: input.nodeId,
+      sourceSynthesisVersionId: null,
+      sourceBranchOutlineVersionId: outlineInput.versionId,
+      sourceStateFingerprint: outlineInput.sourceStateFingerprint,
+      position: 0,
+    });
+  }
   return toSynthesisVersion(created);
 }
 
@@ -212,6 +270,50 @@ export async function approveSynthesisProposalForUser(
       }
       if (proposal.baseVersionId !== node.publishedSynthesisVersionId) {
         throw new SynthesisServiceError("stale-base");
+      }
+      const recordedOutlineInputs = await tx
+        .select()
+        .from(synthesisInputs)
+        .where(and(
+          eq(synthesisInputs.userId, userId),
+          eq(synthesisInputs.nodeId, input.nodeId),
+          eq(synthesisInputs.synthesisVersionId, proposal.id),
+          eq(synthesisInputs.relation, "outline"),
+        ))
+        .limit(2);
+      if (recordedOutlineInputs.length > 1) {
+        throw new SynthesisServiceError("unavailable");
+      }
+      const recordedOutline = recordedOutlineInputs[0] ?? null;
+      if (recordedOutline === null) {
+        if (node.currentBranchOutlineVersionId !== null) {
+          throw new SynthesisServiceError("stale-input");
+        }
+      } else {
+        const outlineVersionId = recordedOutline.sourceBranchOutlineVersionId;
+        if (
+          outlineVersionId === null ||
+          node.currentBranchOutlineVersionId !== outlineVersionId ||
+          node.branchOutlineStaleAt !== null ||
+          recordedOutline.sourceStateFingerprint !==
+            fingerprintSynthesisOutlineInput({
+              nodeId: input.nodeId,
+              branchOutlineVersionId: outlineVersionId,
+            })
+        ) {
+          throw new SynthesisServiceError("stale-input");
+        }
+        const [outline] = await tx
+          .select({ status: branchOutlineVersions.status })
+          .from(branchOutlineVersions)
+          .where(and(
+            eq(branchOutlineVersions.userId, userId),
+            eq(branchOutlineVersions.nodeId, input.nodeId),
+            eq(branchOutlineVersions.id, outlineVersionId),
+          ));
+        if (!outline || outline.status !== "completed") {
+          throw new SynthesisServiceError("stale-input");
+        }
       }
       if (node.publishedSynthesisVersionId !== null) {
         const [published] = await tx
@@ -245,24 +347,20 @@ export async function approveSynthesisProposalForUser(
         })
         .where(and(eq(nodes.userId, userId), eq(nodes.id, input.nodeId)));
 
-      const nodeById = new Map(lockedNodes.map((candidate) => [candidate.id, candidate]));
-      const ancestorIds: string[] = [];
-      const visited = new Set<string>([node.id]);
-      let parentId = node.parentId;
-      while (parentId !== null) {
-        if (visited.has(parentId)) throw new SynthesisServiceError("unavailable");
-        visited.add(parentId);
-        const parent = nodeById.get(parentId);
-        if (!parent) throw new SynthesisServiceError("unavailable");
-        ancestorIds.push(parent.id);
-        parentId = parent.parentId;
-      }
-      if (ancestorIds.length > 0) {
-        await tx
-          .update(nodes)
-          .set({ synthesisStaleAt: decidedAt, updatedAt: decidedAt })
-          .where(and(eq(nodes.userId, userId), inArray(nodes.id, ancestorIds)));
-      }
+      const ancestorIds = collectAncestorPathIds(lockedNodes, node.id);
+      await markArtifactsStale(tx, {
+        userId,
+        outlineNodeIds: [node.id],
+        outlineReason: "summary-changed",
+        at: decidedAt,
+      });
+      await markArtifactsStale(tx, {
+        userId,
+        summaryNodeIds: ancestorIds,
+        outlineNodeIds: ancestorIds,
+        outlineReason: "branch-content-changed",
+        at: decidedAt,
+      });
       return toSynthesisVersion(approved);
     });
   } catch (error) {
@@ -305,7 +403,10 @@ export async function getSynthesisWorkspaceForUser(
 ): Promise<SynthesisWorkspace> {
   return db.transaction(async (tx) => {
     const [node] = await tx
-      .select({ publishedSynthesisVersionId: nodes.publishedSynthesisVersionId })
+      .select({
+        publishedSynthesisVersionId: nodes.publishedSynthesisVersionId,
+        synthesisStaleAt: nodes.synthesisStaleAt,
+      })
       .from(nodes)
       .where(and(eq(nodes.userId, userId), eq(nodes.id, nodeId)));
     if (!node) {
@@ -405,6 +506,7 @@ export async function getSynthesisWorkspaceForUser(
     );
     return {
       published: published ? toSynthesisVersion(published) : null,
+      staleAt: node.synthesisStaleAt?.toISOString() ?? null,
       pending: pendingVersions[0] ? toSynthesisVersion(pendingVersions[0]) : null,
       history: decidedVersions.map((version) => {
         if (version.status === "pending" || version.decidedAt === null) {

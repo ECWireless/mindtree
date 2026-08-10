@@ -51,6 +51,69 @@ async function siblingPositions(userId: string, parentId: string | null) {
   return result.rows;
 }
 
+async function installArtifacts(userId: string, nodeId: string) {
+  const messageId = randomUUID();
+  const summaryId = randomUUID();
+  const outlineId = randomUUID();
+  await pool.query(
+    `insert into chat_messages
+       (id, user_id, node_id, client_message_id, sequence, role, status, content,
+        model, context_fingerprint, completed_at)
+     values ($1, $2, $3, $4, 0, 'assistant', 'completed', 'Synthetic artifact response',
+       'gpt-5.6-sol', $5, now())`,
+    [messageId, userId, nodeId, randomUUID(), "a".repeat(64)],
+  );
+  await pool.query(
+    `insert into synthesis_versions
+       (id, user_id, node_id, base_version_id, status, content, model,
+        reasoning_mode, reasoning_effort, input_fingerprint, generating_message_id, decided_at)
+     values ($1, $2, $3, null, 'approved', 'Synthetic Summary', 'gpt-5.6-sol',
+       'pro', 'high', $4, $5, now())`,
+    [summaryId, userId, nodeId, "b".repeat(64), messageId],
+  );
+  await pool.query(
+    `insert into branch_outline_versions
+       (id, user_id, node_id, client_request_id, status, content, model,
+        reasoning_mode, reasoning_effort, input_fingerprint, completed_at)
+     values ($1, $2, $3, $4, 'completed', 'Synthetic Branch Outline', 'gpt-5.6-sol',
+       'pro', 'high', $5, now())`,
+    [outlineId, userId, nodeId, randomUUID(), "c".repeat(64)],
+  );
+  await pool.query(
+    `update nodes
+     set published_synthesis_version_id = $1,
+         current_branch_outline_version_id = $2
+     where user_id = $3 and id = $4`,
+    [summaryId, outlineId, userId, nodeId],
+  );
+}
+
+async function clearStaleness(userId: string) {
+  await pool.query(
+    `update nodes
+     set synthesis_stale_at = null,
+         branch_outline_stale_at = null,
+         branch_outline_stale_reason = null
+     where user_id = $1`,
+    [userId],
+  );
+}
+
+async function artifactStates(userId: string) {
+  const result = await pool.query<{
+    id: string;
+    synthesis_stale_at: Date | null;
+    branch_outline_stale_at: Date | null;
+    branch_outline_stale_reason: string | null;
+  }>(
+    `select id, synthesis_stale_at, branch_outline_stale_at,
+            branch_outline_stale_reason
+     from nodes where user_id = $1`,
+    [userId],
+  );
+  return new Map(result.rows.map((row) => [row.id, row]));
+}
+
 describe("owner-scoped node service", () => {
   beforeAll(async () => {
     ({
@@ -116,6 +179,127 @@ describe("owner-scoped node service", () => {
 
     const renamed = await renameNodeForUser(ownerId, { id: root.id, title: "Renamed" });
     expect(renamed.title).toBe("Renamed");
+  });
+
+  it("recursively stales only the affected artifact paths for every tree mutation", async () => {
+    const userId = await insertUser();
+    const firstRoot = await createNodeForUser(userId, { title: "First root" });
+    const secondRoot = await createNodeForUser(userId, { title: "Second root" });
+    const child = await createNodeForUser(userId, {
+      title: "Child",
+      parentId: firstRoot.id,
+    });
+    const grandchild = await createNodeForUser(userId, {
+      title: "Grandchild",
+      parentId: child.id,
+    });
+    for (const node of [firstRoot, secondRoot, child, grandchild]) {
+      await installArtifacts(userId, node.id);
+    }
+
+    await renameNodeForUser(userId, { id: child.id, title: "Renamed child" });
+    let states = await artifactStates(userId);
+    expect(states.get(firstRoot.id)).toMatchObject({
+      synthesis_stale_at: expect.any(Date),
+      branch_outline_stale_reason: "node-renamed",
+    });
+    expect(states.get(child.id)).toMatchObject({
+      synthesis_stale_at: null,
+      branch_outline_stale_at: expect.any(Date),
+      branch_outline_stale_reason: "node-renamed",
+    });
+    expect(states.get(secondRoot.id)?.synthesis_stale_at).toBeNull();
+    expect(states.get(grandchild.id)?.synthesis_stale_at).toBeNull();
+
+    await clearStaleness(userId);
+    await createNodeForUser(userId, { title: "New leaf", parentId: child.id });
+    states = await artifactStates(userId);
+    for (const id of [firstRoot.id, child.id]) {
+      expect(states.get(id)).toMatchObject({
+        synthesis_stale_at: expect.any(Date),
+        branch_outline_stale_reason: "branch-structure-changed",
+      });
+    }
+    expect(states.get(grandchild.id)?.synthesis_stale_at).toBeNull();
+
+    await clearStaleness(userId);
+    await moveNodeForUser(userId, { id: child.id, parentId: secondRoot.id });
+    states = await artifactStates(userId);
+    for (const id of [firstRoot.id, secondRoot.id]) {
+      expect(states.get(id)).toMatchObject({
+        synthesis_stale_at: expect.any(Date),
+        branch_outline_stale_reason: "branch-structure-changed",
+      });
+    }
+    expect(states.get(child.id)?.synthesis_stale_at).toBeNull();
+
+    await clearStaleness(userId);
+    await archiveNodeForUser(userId, { id: child.id });
+    states = await artifactStates(userId);
+    for (const id of [secondRoot.id, child.id, grandchild.id]) {
+      expect(states.get(id)).toMatchObject({
+        synthesis_stale_at: expect.any(Date),
+        branch_outline_stale_reason: "branch-availability-changed",
+      });
+    }
+    expect(states.get(firstRoot.id)?.synthesis_stale_at).toBeNull();
+
+    await clearStaleness(userId);
+    await unarchiveNodeForUser(userId, { id: child.id });
+    states = await artifactStates(userId);
+    for (const id of [secondRoot.id, child.id]) {
+      expect(states.get(id)).toMatchObject({
+        synthesis_stale_at: expect.any(Date),
+        branch_outline_stale_reason: "branch-availability-changed",
+      });
+    }
+    expect(states.get(grandchild.id)?.synthesis_stale_at).toBeNull();
+
+    await clearStaleness(userId);
+    await deleteNodeForUser(userId, { id: child.id });
+    states = await artifactStates(userId);
+    expect(states.get(secondRoot.id)).toMatchObject({
+      synthesis_stale_at: expect.any(Date),
+      branch_outline_stale_reason: "branch-structure-changed",
+    });
+    expect(states.get(firstRoot.id)?.synthesis_stale_at).toBeNull();
+    expect(states.has(child.id)).toBe(false);
+    expect(states.has(grandchild.id)).toBe(false);
+  });
+
+  it("does not stale artifacts for idempotent tree mutation requests", async () => {
+    const userId = await insertUser();
+    const root = await createNodeForUser(userId, { title: "Stable root" });
+    await installArtifacts(userId, root.id);
+
+    await renameNodeForUser(userId, { id: root.id, title: "Stable root" });
+    await moveNodeForUser(userId, { id: root.id, parentId: null, position: 0 });
+    let state = (await artifactStates(userId)).get(root.id);
+    expect(state).toMatchObject({
+      synthesis_stale_at: null,
+      branch_outline_stale_at: null,
+      branch_outline_stale_reason: null,
+    });
+
+    await archiveNodeForUser(userId, { id: root.id });
+    await clearStaleness(userId);
+    await archiveNodeForUser(userId, { id: root.id });
+    state = (await artifactStates(userId)).get(root.id);
+    expect(state).toMatchObject({
+      synthesis_stale_at: null,
+      branch_outline_stale_at: null,
+      branch_outline_stale_reason: null,
+    });
+
+    await unarchiveNodeForUser(userId, { id: root.id });
+    await clearStaleness(userId);
+    await unarchiveNodeForUser(userId, { id: root.id });
+    state = (await artifactStates(userId)).get(root.id);
+    expect(state).toMatchObject({
+      synthesis_stale_at: null,
+      branch_outline_stale_at: null,
+      branch_outline_stale_reason: null,
+    });
   });
 
   it("moves and reorders subtrees while keeping both sibling groups contiguous", async () => {
