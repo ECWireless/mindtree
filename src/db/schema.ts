@@ -362,6 +362,108 @@ export const synthesisVersions = pgTable(
   ],
 );
 
+// The reviewed migration owns the nullable live-target FK and citation lifecycle
+// triggers because PostgreSQL must preserve immutable snapshots while clearing
+// both live target columns during explicit node deletion.
+export const citations = pgTable(
+  "citations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id").notNull(),
+    ownerNodeId: uuid("owner_node_id").notNull(),
+    assistantMessageId: uuid("assistant_message_id"),
+    synthesisVersionId: uuid("synthesis_version_id"),
+    kind: varchar("kind", { length: 16, enum: ["internal", "external"] }).notNull(),
+    ordinal: integer("ordinal").notNull(),
+    startUtf16: integer("start_utf16").notNull(),
+    endUtf16: integer("end_utf16").notNull(),
+    liveTargetNodeId: uuid("live_target_node_id"),
+    liveTargetSynthesisVersionId: uuid("live_target_synthesis_version_id"),
+    targetNodeIdSnapshot: uuid("target_node_id_snapshot"),
+    targetTitleSnapshot: varchar("target_title_snapshot", { length: 200 }),
+    targetParentIdSnapshot: uuid("target_parent_id_snapshot"),
+    targetSynthesisVersionIdSnapshot: uuid("target_synthesis_version_id_snapshot"),
+    targetDeletedAt: timestamp("target_deleted_at", { withTimezone: true }),
+    externalUrl: text("external_url"),
+    externalTitle: varchar("external_title", { length: 500 }),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    foreignKey({
+      name: "citations_synthesis_owner_fk",
+      columns: [table.userId, table.ownerNodeId, table.synthesisVersionId],
+      foreignColumns: [
+        synthesisVersions.userId,
+        synthesisVersions.nodeId,
+        synthesisVersions.id,
+      ],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "citations_message_owner_fk",
+      columns: [table.userId, table.ownerNodeId, table.assistantMessageId],
+      foreignColumns: [chatMessages.userId, chatMessages.nodeId, chatMessages.id],
+    }).onDelete("cascade"),
+    uniqueIndex("citations_synthesis_ordinal_unique")
+      .on(table.synthesisVersionId, table.ordinal)
+      .where(sql`${table.synthesisVersionId} is not null`),
+    uniqueIndex("citations_message_ordinal_unique")
+      .on(table.assistantMessageId, table.ordinal)
+      .where(sql`${table.assistantMessageId} is not null`),
+    index("citations_live_target_idx").on(table.userId, table.liveTargetNodeId),
+    check(
+      "citations_owner_check",
+      sql`num_nonnulls(${table.assistantMessageId}, ${table.synthesisVersionId}) = 1`,
+    ),
+    check(
+      "citations_kind_check",
+      sql`${table.kind} in ('internal', 'external')`,
+    ),
+    check(
+      "citations_ordinal_check",
+      sql`${table.ordinal} between 1 and 32`,
+    ),
+    check(
+      "citations_location_check",
+      sql`${table.startUtf16} >= 0
+        and ${table.endUtf16} > ${table.startUtf16}
+        and ${table.endUtf16} <= 64000`,
+    ),
+    check(
+      "citations_kind_fields_check",
+      sql`(
+        ${table.kind} = 'internal'
+        and ${table.assistantMessageId} is null
+        and ${table.synthesisVersionId} is not null
+        and ${table.targetNodeIdSnapshot} is not null
+        and ${table.targetTitleSnapshot} is not null
+        and ${table.targetSynthesisVersionIdSnapshot} is not null
+        and ${table.externalUrl} is null
+        and ${table.externalTitle} is null
+        and (
+          (${table.liveTargetNodeId} is not null
+            and ${table.liveTargetSynthesisVersionId} is not null
+            and ${table.targetDeletedAt} is null)
+          or
+          (${table.liveTargetNodeId} is null
+            and ${table.liveTargetSynthesisVersionId} is null
+            and ${table.targetDeletedAt} is not null)
+        )
+      ) or (
+        ${table.kind} = 'external'
+        and ${table.liveTargetNodeId} is null
+        and ${table.liveTargetSynthesisVersionId} is null
+        and ${table.targetNodeIdSnapshot} is null
+        and ${table.targetTitleSnapshot} is null
+        and ${table.targetParentIdSnapshot} is null
+        and ${table.targetSynthesisVersionIdSnapshot} is null
+        and ${table.targetDeletedAt} is null
+        and ${table.externalUrl} is not null
+        and ${table.externalTitle} is not null
+      )`,
+    ),
+  ],
+);
+
 export const branchOutlineVersions = pgTable(
   "branch_outline_versions",
   {
@@ -651,6 +753,7 @@ export const schema = {
   nodes,
   chatMessages,
   synthesisVersions,
+  citations,
   synthesisInputs,
   nodeEmbeddings,
   branchOutlineVersions,

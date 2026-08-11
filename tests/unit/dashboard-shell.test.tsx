@@ -152,6 +152,7 @@ describe("DashboardShell", () => {
             baseVersionId: null,
             status: "approved",
             content: "# Summary\n\nOld point",
+            citations: [],
             decidedAt: "2026-08-05T12:00:00.000Z",
           },
           pending: {
@@ -160,6 +161,7 @@ describe("DashboardShell", () => {
             baseVersionId: "published-id",
             status: "pending",
             content: "# Summary\n\nNew point",
+            citations: [],
             decidedAt: null,
           },
           history: [{
@@ -167,6 +169,7 @@ describe("DashboardShell", () => {
             generatingMessageId: "message-id",
             status: "approved",
             content: "# Summary\n\nOld point",
+            citations: [],
             baseContent: null,
             decidedAt: "2026-08-05T12:00:00.000Z",
           }],

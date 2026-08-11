@@ -70,7 +70,7 @@ function decisionFailure(error: unknown): SynthesisDecisionResult {
       case "stale-input":
         return {
           ok: false,
-          message: "The Branch Outline changed or became stale. Regenerate it, then request a fresh Summary proposal.",
+          message: "The Branch Outline or related evidence changed. Refresh the relevant context, then request a fresh Summary proposal.",
         };
       case "invalid-proposal":
       case "unavailable":

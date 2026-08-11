@@ -232,11 +232,14 @@ export async function POST(request: Request) {
 
       try {
         const consumeProviderPhase = async (phase: "conversation" | "synthesis") => {
-          if (!providerContextRecorded) {
+          if (!providerContextRecorded || phase === "synthesis") {
             await recordChatTurnContextForUser(userId, {
               ...input,
               model: OPENAI_CHAT_MODEL,
-              contextFingerprint: preparedContext.fingerprint,
+              contextFingerprint: phase === "synthesis"
+                ? preparedContext.synthesisFingerprint
+                : preparedContext.fingerprint,
+              replaceExistingContext: providerContextRecorded && phase === "synthesis",
             });
             providerContextRecorded = true;
           }
@@ -245,7 +248,9 @@ export async function POST(request: Request) {
             { type: "completed" }
           > | null = null;
           for await (const providerEvent of streamChatResponse({
-            messages: preparedContext.input,
+            messages: phase === "synthesis"
+              ? preparedContext.synthesisInput
+              : preparedContext.input,
             phase,
             safetyIdentifier,
             signal: generationSignal,
@@ -343,8 +348,9 @@ export async function POST(request: Request) {
                   model: OPENAI_SYNTHESIS_MODEL,
                   reasoningMode: "pro",
                   reasoningEffort: "high",
-                  inputFingerprint: preparedContext.fingerprint,
+                  inputFingerprint: preparedContext.synthesisFingerprint,
                   outlineInput: preparedContext.outlineInput,
+                  relatedInputs: preparedContext.relatedInputs,
                   refinementProposalId,
                 },
               }

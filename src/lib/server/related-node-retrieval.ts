@@ -17,6 +17,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 
 export type RelatedNodeResult = {
   nodeId: string;
+  parentId: string | null;
   title: string;
   archived: boolean;
   synthesisVersionId: string;
@@ -27,6 +28,7 @@ export type RelatedNodeResult = {
 
 type RelatedNodeRow = {
   node_id: string;
+  parent_id: string | null;
   title: string;
   archived_at: Date | null;
   synthesis_version_id: string;
@@ -68,7 +70,22 @@ export async function getRelatedNodesForUser(
     sql`, `,
   );
   const result = await db.execute<RelatedNodeRow>(sql`
-    with query_embedding as (
+    with recursive target_ancestor_ids as (
+      select candidate.parent_id as id
+      from "nodes" as candidate
+      where candidate.user_id = ${userId}
+        and candidate.id = ${input.targetNodeId}
+        and candidate.parent_id is not null
+
+      union
+
+      select ancestor.parent_id
+      from "nodes" as ancestor
+      inner join target_ancestor_ids
+        on target_ancestor_ids.id = ancestor.id
+      where ancestor.user_id = ${userId}
+        and ancestor.parent_id is not null
+    ), query_embedding as (
       select ${nodeEmbeddings.embedding} as embedding
       from ${nodeEmbeddings}
       inner join "nodes" as query_node
@@ -89,6 +106,7 @@ export async function getRelatedNodesForUser(
     )
     select
       candidate_node.id as node_id,
+      candidate_node.parent_id as parent_id,
       candidate_node.title as title,
       candidate_node.archived_at as archived_at,
       candidate_version.id as synthesis_version_id,
@@ -109,6 +127,11 @@ export async function getRelatedNodesForUser(
         ${nodeEmbeddings.sourceSynthesisVersionId}
       and candidate_version.status = 'approved'
     where ${nodeEmbeddings.nodeId} not in (${excludedNodeList})
+      and candidate_node.parent_id is distinct from ${input.targetNodeId}
+      and not exists (
+        select 1 from target_ancestor_ids
+        where target_ancestor_ids.id = ${nodeEmbeddings.nodeId}
+      )
       and ${nodeEmbeddings.model} = ${OPENAI_EMBEDDING_MODEL}
       and ${nodeEmbeddings.dimensions} = ${OPENAI_EMBEDDING_DIMENSIONS}
     order by cosine_distance asc, candidate_node.id asc
@@ -117,6 +140,7 @@ export async function getRelatedNodesForUser(
 
   return result.rows.map((row) => ({
     nodeId: row.node_id,
+    parentId: row.parent_id,
     title: row.title,
     archived: row.archived_at !== null,
     synthesisVersionId: row.synthesis_version_id,

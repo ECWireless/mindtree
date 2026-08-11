@@ -33,6 +33,7 @@ describe("initial authentication schema", () => {
       "branch_outline_inputs",
       "branch_outline_versions",
       "chat_messages",
+      "citations",
       "node_embeddings",
       "nodes",
       "session",
@@ -103,6 +104,45 @@ describe("initial authentication schema", () => {
     expect(triggers.rows).toEqual([{
       tgname: "node_embeddings_approved_source_trigger",
     }]);
+  });
+
+  it("defines immutable owner-scoped citation provenance and deletion triggers", async () => {
+    const constraints = await client.query<{ conname: string; definition: string }>(
+      `select conname, pg_get_constraintdef(oid) as definition
+       from pg_constraint
+       where conname like 'citations_%'
+       order by conname`,
+    );
+    expect(constraints.rows.map(({ conname }) => conname)).toEqual([
+      "citations_kind_check",
+      "citations_kind_fields_check",
+      "citations_live_snapshot_check",
+      "citations_live_target_owner_fk",
+      "citations_location_check",
+      "citations_message_owner_fk",
+      "citations_ordinal_check",
+      "citations_owner_check",
+      "citations_pkey",
+      "citations_synthesis_owner_fk",
+    ]);
+    expect(
+      constraints.rows.find(({ conname }) => conname === "citations_live_target_owner_fk")
+        ?.definition,
+    ).toContain(
+      "FOREIGN KEY (user_id, live_target_node_id, live_target_synthesis_version_id) REFERENCES synthesis_versions(user_id, node_id, id)",
+    );
+
+    const citationTriggers = await client.query<{ tgname: string }>(
+      `select tgname from pg_trigger
+       where tgrelid = 'citations'::regclass and not tgisinternal`,
+    );
+    expect(citationTriggers.rows).toEqual([{ tgname: "citations_lifecycle_trigger" }]);
+    const nodeTriggers = await client.query<{ tgname: string }>(
+      `select tgname from pg_trigger
+       where tgrelid = 'nodes'::regclass and not tgisinternal
+       and tgname = 'nodes_clear_citation_targets_trigger'`,
+    );
+    expect(nodeTriggers.rows).toEqual([{ tgname: "nodes_clear_citation_targets_trigger" }]);
   });
 
   it("defines the owner-scoped persistent chat ledger constraints", async () => {

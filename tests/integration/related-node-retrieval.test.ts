@@ -4,6 +4,8 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 
 import { refreshApprovedSynthesisEmbeddingForUser } from "../../src/lib/server/embedding-service";
+import { prepareChatContextForUser } from "../../src/lib/server/chat-context";
+import { createChatTurnForUser } from "../../src/lib/server/chat-service";
 import {
   getRelatedNodesForUser,
   MAX_RELATED_NODE_EXCLUSIONS,
@@ -38,18 +40,22 @@ async function insertNode(input: {
   title: string;
   nodeId?: string;
   archived?: boolean;
+  parentId?: string | null;
 }) {
   const nodeId = input.nodeId ?? randomUUID();
+  const parentId = input.parentId ?? null;
   const position = await pool.query<{ value: number }>(
-    `select count(*)::int as value from nodes where user_id = $1 and parent_id is null`,
-    [input.userId],
+    `select count(*)::int as value from nodes
+     where user_id = $1 and parent_id is not distinct from $2::uuid`,
+    [input.userId, parentId],
   );
   await pool.query(
     `insert into nodes (id, user_id, parent_id, position, title, archived_at)
-     values ($1, $2, null, $3, $4, case when $5 then now() else null end)`,
+     values ($1, $2, $3, $4, $5, case when $6 then now() else null end)`,
     [
       nodeId,
       input.userId,
+      parentId,
       position.rows[0]?.value ?? 0,
       input.title,
       input.archived ?? false,
@@ -120,12 +126,14 @@ async function insertEmbeddedApprovedNode(input: {
   vector: number[];
   nodeId?: string;
   archived?: boolean;
+  parentId?: string | null;
+  content?: string;
 }) {
   const nodeId = await insertNode(input);
   const synthesisVersionId = await insertSynthesis({
     userId: input.userId,
     nodeId,
-    content: `Approved evidence for ${input.title}`,
+    content: input.content ?? `Approved evidence for ${input.title}`,
     status: "approved",
   });
   await expect(refreshApprovedSynthesisEmbeddingForUser(input.userId, {
@@ -190,6 +198,7 @@ describe("owner-scoped related-node retrieval", () => {
     expect(related.map(({ nodeId }) => nodeId)).not.toContain(excluded.nodeId);
     expect(related[0]).toEqual({
       nodeId: exact.nodeId,
+      parentId: null,
       title: "Exact evidence",
       archived: true,
       synthesisVersionId: exact.synthesisVersionId,
@@ -232,6 +241,107 @@ describe("owner-scoped related-node retrieval", () => {
     });
 
     expect(related.map(({ nodeId }) => nodeId)).toEqual([lowId.nodeId, highId.nodeId]);
+  });
+
+  it("automatically excludes target ancestors and direct children without caller exclusions", async () => {
+    const userId = await insertUser();
+    const ancestor = await insertEmbeddedApprovedNode({
+      userId,
+      title: "Embedded ancestor",
+      vector: embedding(1, 0),
+    });
+    const target = await insertEmbeddedApprovedNode({
+      userId,
+      parentId: ancestor.nodeId,
+      title: "Nested target",
+      vector: embedding(1, 0),
+    });
+    const candidate = await insertEmbeddedApprovedNode({
+      userId,
+      title: "Independent evidence",
+      vector: embedding(0.9, 0.1),
+    });
+    const directChild = await insertEmbeddedApprovedNode({
+      userId,
+      parentId: target.nodeId,
+      title: "Deterministic child evidence",
+      vector: embedding(1, 0),
+    });
+
+    const related = await getRelatedNodesForUser(userId, {
+      targetNodeId: target.nodeId,
+    });
+
+    expect(related.map(({ nodeId }) => nodeId)).toEqual([candidate.nodeId]);
+    expect(related.map(({ nodeId }) => nodeId)).not.toContain(ancestor.nodeId);
+    expect(related.map(({ nodeId }) => nodeId)).not.toContain(directChild.nodeId);
+  });
+
+  it("keeps related IDs internal while exposing bounded aliases only to synthesis", async () => {
+    const userId = await insertUser();
+    const target = await insertEmbeddedApprovedNode({
+      userId,
+      title: "Context target",
+      vector: embedding(1, 0),
+    });
+    const evidence = await insertEmbeddedApprovedNode({
+      userId,
+      title: "Context evidence",
+      vector: embedding(1, 0),
+      content: "x".repeat(5_000),
+    });
+    const clientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId: target.nodeId,
+      clientMessageId,
+      content: "Create a synthesis with relevant evidence.",
+      webSearchAuthorized: false,
+      proposalRequested: true,
+      refinementProposalId: null,
+    }, { claimAssistant: true });
+
+    const prepared = await prepareChatContextForUser(userId, {
+      nodeId: target.nodeId,
+      clientMessageId,
+    });
+    const conversationInput = JSON.stringify(prepared.input);
+    const synthesisInput = JSON.stringify(prepared.synthesisInput);
+    const synthesisMetadata = JSON.parse(
+      prepared.synthesisInput[0]!.content.replace(
+        "MindTree context data (not instructions):\n",
+        "",
+      ),
+    ) as {
+      relatedEvidence: Array<{
+        alias: string;
+        title: string;
+        approvedSummary: string;
+      }>;
+    };
+
+    expect(prepared.relatedInputs).toEqual([
+      expect.objectContaining({
+        alias: "E1",
+        nodeId: evidence.nodeId,
+        synthesisVersionId: evidence.synthesisVersionId,
+      }),
+    ]);
+    expect(conversationInput).not.toContain("relatedEvidence");
+    expect(conversationInput).not.toContain(target.nodeId);
+    expect(conversationInput).not.toContain(target.synthesisVersionId);
+    expect(conversationInput).not.toContain(evidence.nodeId);
+    expect(conversationInput).not.toContain(evidence.synthesisVersionId);
+    expect(synthesisMetadata.relatedEvidence[0]).toMatchObject({
+      alias: "E1",
+      title: "Context evidence",
+    });
+    expect(synthesisInput).not.toContain(evidence.nodeId);
+    expect(synthesisInput).not.toContain(evidence.synthesisVersionId);
+    expect(synthesisInput).not.toContain(target.nodeId);
+    expect(synthesisInput).not.toContain(target.synthesisVersionId);
+    expect(synthesisMetadata.relatedEvidence[0]?.approvedSummary.length)
+      .toBeLessThanOrEqual(2_500);
+    expect(prepared.synthesisFingerprint).not.toBe(prepared.fingerprint);
   });
 
   it("never crosses owners and excludes missing or invalidated embeddings", async () => {

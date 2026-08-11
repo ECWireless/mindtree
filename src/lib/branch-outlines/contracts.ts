@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import {
   MAX_SYNTHESIS_CONTENT_LENGTH,
-  synthesisProposalDraftSchema,
+  synthesisContentSchema,
 } from "@/lib/synthesis/contracts";
 
 export const MAX_BRANCH_OUTLINE_CONTENT_LENGTH = MAX_SYNTHESIS_CONTENT_LENGTH;
@@ -30,7 +30,9 @@ export const branchOutlineStaleReasonSchema = z.enum([
   "node-renamed",
 ]);
 
-export const branchOutlineDraftSchema = synthesisProposalDraftSchema;
+export const branchOutlineDraftSchema = z.object({
+  content: synthesisContentSchema,
+}).strict();
 
 export const generateBranchOutlineInputSchema = z.object({
   nodeId: z.uuid(),

@@ -207,7 +207,7 @@ describe("persistent chat ledger", () => {
     const prepared = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
     const repeated = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
     expect(prepared.snapshot).toMatchObject({
-      version: 5,
+      version: 6,
       node: {
         id: nodeId,
         title: "Context leaf",
@@ -231,11 +231,15 @@ describe("persistent chat ledger", () => {
         { role: "assistant", content: "Earlier assistant response" },
         { role: "user", content: "Current owner request" },
       ],
+      relatedEvidence: [],
     });
     expect(prepared.fingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(repeated.fingerprint).toBe(prepared.fingerprint);
     expect(prepared.outlineInput).toMatchObject({ versionId: outlineId });
     expect(prepared.input[0]?.content).toContain("Recursive context");
+    expect(prepared.input[0]?.content).not.toContain(rootId);
+    expect(prepared.input[0]?.content).not.toContain(nodeId);
+    expect(prepared.input[0]?.content).not.toContain(outlineId);
     expect(prepared.input.at(-1)).toEqual({
       role: "user",
       content: "Current owner request",
@@ -300,7 +304,7 @@ describe("persistent chat ledger", () => {
     }, {
       proposal: {
         baseVersionId: null,
-        draft: { content: "# Proposal\n\nA concise synthetic synthesis." },
+        draft: { content: "# Proposal\n\nA concise synthetic synthesis.", citations: [] },
         model: "gpt-5.6-sol",
         reasoningMode: "pro",
         reasoningEffort: "high",
@@ -359,7 +363,7 @@ describe("persistent chat ledger", () => {
     await expect(completeChatTurnForUser(userId, { nodeId, clientMessageId }, {
       proposal: {
         baseVersionId: null,
-        draft: { content: "Wrong-model proposal" },
+        draft: { content: "Wrong-model proposal", citations: [] },
         model: "gpt-4.1" as "gpt-5.6-sol",
         reasoningMode: "pro",
         reasoningEffort: "high",
@@ -407,7 +411,7 @@ describe("persistent chat ledger", () => {
     }, {
       proposal: {
         baseVersionId: null,
-        draft: { content: "First approved synthesis" },
+        draft: { content: "First approved synthesis", citations: [] },
         model: "gpt-5.6-sol",
         reasoningMode: "pro",
         reasoningEffort: "high",
@@ -461,7 +465,7 @@ describe("persistent chat ledger", () => {
     }, {
       proposal: {
         baseVersionId: firstProposalId,
-        draft: { content: "Second pending synthesis" },
+        draft: { content: "Second pending synthesis", citations: [] },
         model: "gpt-5.6-sol",
         reasoningMode: "pro",
         reasoningEffort: "high",
@@ -492,7 +496,7 @@ describe("persistent chat ledger", () => {
     }, {
       proposal: {
         baseVersionId: null,
-        draft: { content: "Original pending synthesis" },
+        draft: { content: "Original pending synthesis", citations: [] },
         model: "gpt-5.6-sol",
         reasoningMode: "pro",
         reasoningEffort: "high",
@@ -540,7 +544,7 @@ describe("persistent chat ledger", () => {
     }, {
       proposal: {
         baseVersionId: null,
-        draft: { content: "Replacement pending synthesis" },
+        draft: { content: "Replacement pending synthesis", citations: [] },
         model: "gpt-5.6-sol",
         reasoningMode: "pro",
         reasoningEffort: "high",
@@ -586,7 +590,7 @@ describe("persistent chat ledger", () => {
     }, {
       proposal: {
         baseVersionId: null,
-        draft: { content: "Original race proposal" },
+        draft: { content: "Original race proposal", citations: [] },
         model: "gpt-5.6-sol",
         reasoningMode: "pro",
         reasoningEffort: "high",
@@ -609,7 +613,7 @@ describe("persistent chat ledger", () => {
       }, {
         proposal: {
           baseVersionId: null,
-          draft: { content: `${index === 0 ? "First" : "Second"} replacement` },
+          draft: { content: `${index === 0 ? "First" : "Second"} replacement`, citations: [] },
           model: "gpt-5.6-sol",
           reasoningMode: "pro",
           reasoningEffort: "high",
@@ -642,7 +646,7 @@ describe("persistent chat ledger", () => {
     }, {
       proposal: {
         baseVersionId: null,
-        draft: { content: "Original decision proposal" },
+        draft: { content: "Original decision proposal", citations: [] },
         model: "gpt-5.6-sol",
         reasoningMode: "pro",
         reasoningEffort: "high",
@@ -665,7 +669,7 @@ describe("persistent chat ledger", () => {
       }, {
         proposal: {
           baseVersionId: null,
-          draft: { content: "Unpublished racing replacement" },
+          draft: { content: "Unpublished racing replacement", citations: [] },
           model: "gpt-5.6-sol",
           reasoningMode: "pro",
           reasoningEffort: "high",
@@ -716,7 +720,7 @@ describe("persistent chat ledger", () => {
     }, {
       proposal: {
         baseVersionId: null,
-        draft: { content: "Unauthorized proposal" },
+        draft: { content: "Unauthorized proposal", citations: [] },
         model: "gpt-5.6-sol",
         reasoningMode: "pro",
         reasoningEffort: "high",
@@ -762,7 +766,7 @@ describe("persistent chat ledger", () => {
       completeChatTurnForUser(userId, { nodeId, clientMessageId }, {
         proposal: {
           baseVersionId: null,
-          draft: { content: `${label} pending synthesis` },
+          draft: { content: `${label} pending synthesis`, citations: [] },
           model: "gpt-5.6-sol",
           reasoningMode: "pro",
           reasoningEffort: "high",

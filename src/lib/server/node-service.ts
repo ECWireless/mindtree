@@ -4,7 +4,7 @@ import { and, asc, eq, inArray, isNotNull, isNull, max, sql } from "drizzle-orm"
 import { DrizzleError, DrizzleQueryError } from "drizzle-orm/errors";
 
 import { db } from "@/db/client";
-import { nodes, user } from "@/db/schema";
+import { citations, nodes, user } from "@/db/schema";
 import type {
   CreateNodeInput,
   MoveNodeInput,
@@ -60,6 +60,31 @@ async function lockOwnerNodes(tx: NodeTransaction, userId: string) {
     .for("update");
 
   return rows.map(toFlatNode);
+}
+
+async function getCurrentCitingNodeIds(
+  tx: NodeTransaction,
+  userId: string,
+  targetNodeIds: readonly string[],
+) {
+  if (targetNodeIds.length === 0) return [];
+  const rows = await tx
+    .select({ nodeId: citations.ownerNodeId })
+    .from(citations)
+    .innerJoin(
+      nodes,
+      and(
+        eq(nodes.userId, citations.userId),
+        eq(nodes.id, citations.ownerNodeId),
+        eq(nodes.publishedSynthesisVersionId, citations.synthesisVersionId),
+      ),
+    )
+    .where(and(
+      eq(citations.userId, userId),
+      eq(citations.kind, "internal"),
+      inArray(citations.liveTargetNodeId, [...targetNodeIds]),
+    ));
+  return [...new Set(rows.map(({ nodeId }) => nodeId))];
 }
 
 function requireNode(lockedNodes: readonly FlatNode[], nodeId: string) {
@@ -263,6 +288,7 @@ export async function renameNodeForUser(userId: string, input: RenameNodeInput) 
       const target = requireNode(lockedNodes, input.id);
       if (target.title === input.title) return target;
       const changedAt = new Date();
+      const citingNodeIds = await getCurrentCitingNodeIds(tx, userId, [input.id]);
       const [updated] = await tx
         .update(nodes)
         .set({ title: input.title, updatedAt: changedAt })
@@ -277,7 +303,10 @@ export async function renameNodeForUser(userId: string, input: RenameNodeInput) 
       });
       await markArtifactsStale(tx, {
         userId,
-        summaryNodeIds: collectAncestorPathIds(lockedNodes, input.id),
+        summaryNodeIds: [
+          ...collectAncestorPathIds(lockedNodes, input.id),
+          ...citingNodeIds,
+        ],
         outlineNodeIds: outlineIds,
         outlineReason: "node-renamed",
         at: changedAt,
@@ -482,6 +511,11 @@ export async function deleteNodeForUser(userId: string, input: NodeLifecycleInpu
         remainingSiblings.at(-1)?.id ??
         null
       );
+      const citingNodeIds = (await getCurrentCitingNodeIds(
+        tx,
+        userId,
+        [...subtreeIds],
+      )).filter((nodeId) => !subtreeIds.has(nodeId));
 
       await tx.execute(sql`set constraints nodes_sibling_position_unique deferred`);
       const [deleted] = await tx
@@ -501,7 +535,7 @@ export async function deleteNodeForUser(userId: string, input: NodeLifecycleInpu
       const changedAt = new Date();
       await markArtifactsStale(tx, {
         userId,
-        summaryNodeIds: affectedIds,
+        summaryNodeIds: [...affectedIds, ...citingNodeIds],
         outlineNodeIds: affectedIds,
         outlineReason: "branch-structure-changed",
         at: changedAt,

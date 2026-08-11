@@ -277,7 +277,13 @@ describe("OpenAI Responses chat stream", () => {
             type: "function_call",
             name: "propose_synthesis",
             status: "completed",
-            arguments: JSON.stringify({ content: "# Synthetic synthesis\n\nA bounded proposal." }),
+            arguments: JSON.stringify({
+              content: "# Synthetic synthesis\n\nA bounded proposal.",
+              citations: [{
+                evidenceAlias: "E1",
+                citedText: "A bounded proposal",
+              }],
+            }),
           }],
         },
       },
@@ -287,7 +293,13 @@ describe("OpenAI Responses chat stream", () => {
       type: "completed",
       providerResponseId: "resp_synthetic",
       synthesisRequested: false,
-      proposal: { content: "# Synthetic synthesis\n\nA bounded proposal." },
+      proposal: {
+        content: "# Synthetic synthesis\n\nA bounded proposal.",
+        citations: [{
+          evidenceAlias: "E1",
+          citedText: "A bounded proposal",
+        }],
+      },
     });
   });
 
@@ -302,7 +314,10 @@ describe("OpenAI Responses chat stream", () => {
             type: "function_call",
             name: "propose_synthesis",
             status: "completed",
-            arguments: JSON.stringify({ content: "# Tool-only synthesis\n\nA bounded proposal." }),
+            arguments: JSON.stringify({
+              content: "# Tool-only synthesis\n\nA bounded proposal.",
+              citations: [],
+            }),
           }],
         },
       },
@@ -315,7 +330,10 @@ describe("OpenAI Responses chat stream", () => {
         type: "completed",
         providerResponseId: "resp_synthetic",
         synthesisRequested: false,
-        proposal: { content: "# Tool-only synthesis\n\nA bounded proposal." },
+        proposal: {
+          content: "# Tool-only synthesis\n\nA bounded proposal.",
+          citations: [],
+        },
       },
     ]);
   });
@@ -325,7 +343,7 @@ describe("OpenAI Responses chat stream", () => {
       type: "function_call",
       name: "propose_synthesis",
       status: "completed",
-      arguments: JSON.stringify({ content: "Valid proposal" }),
+      arguments: JSON.stringify({ content: "Valid proposal", citations: [] }),
     };
     await expectInvalid([
       createdEvent,
@@ -340,6 +358,24 @@ describe("OpenAI Responses chat stream", () => {
       [{ ...proposalCall, arguments: "not-json" }],
       [{ ...proposalCall, arguments: JSON.stringify({ content: "[unsafe](https://example.test)" }) }],
       [{ ...proposalCall, arguments: JSON.stringify({ content: "Valid", unexpected: true }) }],
+      [{
+        ...proposalCall,
+        arguments: JSON.stringify({
+          content: "Valid",
+          citations: [{ evidenceAlias: "E0", citedText: "Valid" }],
+        }),
+      }],
+      [{
+        ...proposalCall,
+        arguments: JSON.stringify({
+          content: "Valid",
+          citations: [{
+            evidenceAlias: "E1",
+            citedText: "Valid",
+            nodeId: "11111111-1111-4111-8111-111111111111",
+          }],
+        }),
+      }],
       [{ ...proposalCall, arguments: JSON.stringify({ content: "x".repeat(32_001) }) }],
       [{ type: "custom_tool_call", name: "unexpected", input: "{}" }],
     ]) {
@@ -400,7 +436,10 @@ describe("OpenAI Responses chat stream", () => {
           type: "function_call",
           name: "propose_synthesis",
           status: "completed",
-          arguments: JSON.stringify({ content: "# Tool-only synthesis\n\nA bounded proposal." }),
+          arguments: JSON.stringify({
+            content: "# Tool-only synthesis\n\nA bounded proposal.",
+            citations: [],
+          }),
         }],
       },
     };
