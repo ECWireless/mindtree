@@ -149,6 +149,16 @@ type TooltipRect = {
   height: number;
 };
 
+type ManualPopoverElement = HTMLSpanElement & {
+  hidePopover: () => void;
+  showPopover: () => void;
+};
+
+function supportsManualPopover(element: HTMLSpanElement): element is ManualPopoverElement {
+  return typeof element.showPopover === "function" &&
+    typeof element.hidePopover === "function";
+}
+
 export function calculateInternalTooltipPosition(input: {
   target: TooltipRect;
   tooltip: Pick<TooltipRect, "width" | "height">;
@@ -216,14 +226,23 @@ function InternalNodeTooltipTarget({
   useLayoutEffect(() => {
     const tooltip = tooltipRef.current;
     if (!open || !tooltip) return;
-    tooltip.showPopover();
+    if (!supportsManualPopover(tooltip)) return;
+    try {
+      tooltip.showPopover();
+    } catch {
+      return;
+    }
     updatePosition();
     window.addEventListener("resize", updatePosition);
     window.addEventListener("scroll", updatePosition, true);
     return () => {
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
-      if (tooltip.matches(":popover-open")) tooltip.hidePopover();
+      try {
+        tooltip.hidePopover();
+      } catch {
+        // The browser may have dismissed the popover before React cleanup.
+      }
     };
   }, [open, updatePosition]);
 

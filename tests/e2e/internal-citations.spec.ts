@@ -25,6 +25,8 @@ test("navigates internal links and presents changed or unavailable evidence", as
   page,
 }) => {
   const seeded = await seedBrowserSession(pool);
+  const pageErrors: Error[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error));
   const firstParentId = randomUUID();
   const secondParentId = randomUUID();
   const sourceNodeId = randomUUID();
@@ -172,6 +174,22 @@ test("navigates internal links and presents changed or unavailable evidence", as
     })).toHaveCount(1);
     await expect(summary.getByText("Cited thoughts", { exact: false })).toHaveCount(0);
     await expect(summary.getByText("[1]", { exact: true })).toHaveCount(0);
+
+    await page.mouse.move(0, 0);
+    await expect(page.locator(".internal-node-tooltip:popover-open")).toHaveCount(0);
+    await page.evaluate(() => {
+      Object.defineProperty(HTMLElement.prototype, "showPopover", {
+        configurable: true,
+        value: undefined,
+      });
+      Object.defineProperty(HTMLElement.prototype, "hidePopover", {
+        configurable: true,
+        value: undefined,
+      });
+    });
+    await internalLink.hover();
+    await expect(page.locator(".internal-node-tooltip:popover-open")).toHaveCount(0);
+    expect(pageErrors).toEqual([]);
 
     await internalLink.click();
     await expect(page).toHaveURL(new RegExp(`\\?node=${sourceNodeId}$`));
