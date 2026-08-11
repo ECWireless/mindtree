@@ -633,7 +633,11 @@ export function persistChatTurnContentPrefixForUser(
 
 export function recordChatTurnContextForUser(
   userId: string,
-  input: RetryChatTurnInput & { model: string; contextFingerprint: string },
+  input: RetryChatTurnInput & {
+    model: string;
+    contextFingerprint: string;
+    replaceExistingContext?: boolean;
+  },
 ) {
   if (
     input.model.length < 1 ||
@@ -648,6 +652,7 @@ export function recordChatTurnContextForUser(
       message.status !== "streaming" ||
       (message.model !== null && message.model !== input.model) ||
       (message.contextFingerprint !== null &&
+        !input.replaceExistingContext &&
         message.contextFingerprint !== input.contextFingerprint)
     ) {
       throw new ChatServiceError("retry-unavailable");

@@ -1686,6 +1686,60 @@ button:not(:disabled) {
   text-transform: none;
 }
 
+.internal-node-link {
+  border-radius: 0.2rem;
+  color: var(--color-blue-bright);
+  font-weight: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 0.07em;
+  text-underline-offset: 0.16em;
+}
+
+.internal-node-link:hover,
+.internal-node-link:focus-visible {
+  background: rgb(77 163 220 / 14%);
+}
+
+.internal-node-link--changed {
+  text-decoration-style: dotted;
+}
+
+.internal-node-link--unavailable {
+  color: var(--color-muted);
+  cursor: help;
+  text-decoration-style: wavy;
+}
+
+.internal-node-link-status {
+  font-size: 0.78em;
+  font-style: normal;
+}
+
+.internal-node-tooltip {
+  position: fixed;
+  z-index: 30;
+  inset: auto;
+  width: max-content;
+  max-width: min(18rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  visibility: hidden;
+  border: 1px solid rgb(154 166 178 / 30%);
+  border-radius: 0.35rem;
+  margin: 0;
+  padding: 0.35rem 0.5rem;
+  background: #111820;
+  color: var(--color-ink);
+  box-shadow: 0 0.5rem 1.25rem rgb(0 0 0 / 45%);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.2;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  text-align: center;
+  white-space: normal;
+}
+
 .synthesis-proposal {
   border: 1px solid rgb(77 163 220 / 36%);
   border-radius: 1rem;

@@ -9,8 +9,10 @@ describe("synthesis proposal contracts", () => {
   it("accepts the approved concise Markdown subset and trims it", () => {
     expect(synthesisProposalDraftSchema.parse({
       content: "  # Direction\n\n- **First** point\n- *Second* point  ",
+      citations: [],
     })).toEqual({
       content: "# Direction\n\n- **First** point\n- *Second* point",
+      citations: [],
     });
   });
 
@@ -31,19 +33,22 @@ describe("synthesis proposal contracts", () => {
     "Hidden\u0000separator",
     "Hidden\u001fseparator",
   ])("rejects unsupported proposal Markdown: %s", (content) => {
-    expect(synthesisProposalDraftSchema.safeParse({ content }).success).toBe(false);
+    expect(synthesisProposalDraftSchema.safeParse({ content, citations: [] }).success).toBe(false);
   });
 
   it("rejects empty and oversized synthesis content", () => {
-    expect(synthesisProposalDraftSchema.safeParse({ content: "   " }).success).toBe(false);
+    expect(synthesisProposalDraftSchema.safeParse({ content: "   ", citations: [] }).success)
+      .toBe(false);
     expect(synthesisProposalDraftSchema.safeParse({
       content: "x".repeat(MAX_SYNTHESIS_CONTENT_LENGTH + 1),
+      citations: [],
     }).success).toBe(false);
   });
 
   it("rejects unexpected structured proposal fields", () => {
     expect(synthesisProposalDraftSchema.safeParse({
       content: "Valid proposal",
+      citations: [],
       unexpected: "provider field",
     }).success).toBe(false);
   });

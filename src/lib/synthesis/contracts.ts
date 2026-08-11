@@ -1,5 +1,11 @@
 import { z } from "zod";
 
+import {
+  internalCitationMentionSchema,
+  MAX_INTERNAL_CITATIONS,
+  type InternalCitationView,
+} from "@/lib/citations/contracts";
+
 export const MAX_SYNTHESIS_CONTENT_LENGTH = 32_000;
 
 const unsupportedInlineMarkdown = /[<>\[\]`|]/;
@@ -13,22 +19,25 @@ export const synthesisStatusSchema = z.enum([
   "superseded",
 ]);
 
+export const synthesisContentSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_SYNTHESIS_CONTENT_LENGTH)
+  .refine(
+    (content) => !unsupportedControlCharacter.test(content),
+    "Control characters are not supported.",
+  )
+  .refine(
+    (content) =>
+      !unsupportedInlineMarkdown.test(content) &&
+      !unsupportedBlockMarkdown.test(content),
+    "Use only paragraphs, headings, lists, and emphasis.",
+  );
+
 export const synthesisProposalDraftSchema = z.object({
-  content: z
-    .string()
-    .trim()
-    .min(1)
-    .max(MAX_SYNTHESIS_CONTENT_LENGTH)
-    .refine(
-      (content) => !unsupportedControlCharacter.test(content),
-      "Control characters are not supported.",
-    )
-    .refine(
-      (content) =>
-        !unsupportedInlineMarkdown.test(content) &&
-        !unsupportedBlockMarkdown.test(content),
-      "Use only paragraphs, headings, lists, and emphasis.",
-    ),
+  content: synthesisContentSchema,
+  citations: z.array(internalCitationMentionSchema).max(MAX_INTERNAL_CITATIONS),
 }).strict();
 
 export const synthesisDecisionInputSchema = z.object({
@@ -63,6 +72,7 @@ export type SynthesisVersion = {
   createdAt: string;
   updatedAt: string;
   decidedAt: string | null;
+  citations: InternalCitationView[];
 };
 
 export type SynthesisDecisionSummary = {
@@ -72,6 +82,7 @@ export type SynthesisDecisionSummary = {
   content: string;
   baseContent: string | null;
   decidedAt: string;
+  citations: InternalCitationView[];
 };
 
 export type SynthesisWorkspace = {

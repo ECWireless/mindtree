@@ -12,6 +12,11 @@ import {
   synthesisVersions,
 } from "@/db/schema";
 import type { RetryChatTurnInput } from "@/lib/chat/contracts";
+import {
+  assignInternalEvidenceAliases,
+  type InternalCitationEvidence,
+} from "@/lib/server/internal-citations";
+import { getRelatedNodesForUser } from "@/lib/server/related-node-retrieval";
 import { fingerprintSynthesisOutlineInput } from "@/lib/server/synthesis-input-fingerprint";
 
 export const MAX_CHAT_CONTEXT_MESSAGES = 24;
@@ -19,6 +24,8 @@ export const MAX_CHAT_CONTEXT_CHARACTERS = 48_000;
 export const MAX_CHAT_BREADCRUMB_NODES = 64;
 export const MAX_CHAT_BREADCRUMB_CHARACTERS = 8_000;
 export const MAX_CHAT_METADATA_CHARACTERS = 31_000;
+export const MAX_RELATED_EVIDENCE_CHARACTERS = 10_000;
+export const MAX_RELATED_EVIDENCE_ITEM_CHARACTERS = 2_500;
 
 export type ChatContextMessage = {
   id: string;
@@ -28,7 +35,7 @@ export type ChatContextMessage = {
 };
 
 export type ChatContextSnapshot = {
-  version: 5;
+  version: 6;
   node: {
     id: string;
     title: string;
@@ -55,6 +62,7 @@ export type ChatContextSnapshot = {
           content: string;
         };
   };
+  relatedEvidence: InternalCitationEvidence[];
   messages: ChatContextMessage[];
 };
 
@@ -62,6 +70,9 @@ export type PreparedChatContext = {
   snapshot: ChatContextSnapshot;
   fingerprint: string;
   input: Array<{ role: "user" | "assistant"; content: string }>;
+  synthesisFingerprint: string;
+  synthesisInput: Array<{ role: "user" | "assistant"; content: string }>;
+  relatedInputs: InternalCitationEvidence[];
   outlineInput: {
     versionId: string;
     sourceStateFingerprint: string;
@@ -84,7 +95,11 @@ function truncateContextArtifact(content: string, limit: number) {
   return `${content.slice(0, limit - marker.length)}${marker}`;
 }
 
-function contextMetadata(snapshot: ChatContextSnapshot, artifactLimit: number) {
+function contextMetadata(
+  snapshot: ChatContextSnapshot,
+  artifactLimit: number,
+  includeRelatedEvidence: boolean,
+) {
   const boundArtifact = <T extends { content: string }>(artifact: T): T => ({
     ...artifact,
     content: truncateContextArtifact(artifact.content, artifactLimit),
@@ -98,26 +113,73 @@ function contextMetadata(snapshot: ChatContextSnapshot, artifactLimit: number) {
       },
     },
     publishedSynthesis: snapshot.node.publishedSynthesis.state === "published"
-      ? boundArtifact(snapshot.node.publishedSynthesis)
+      ? boundArtifact({
+          state: snapshot.node.publishedSynthesis.state,
+          content: snapshot.node.publishedSynthesis.content,
+        })
       : snapshot.node.publishedSynthesis,
     refinementProposal: snapshot.node.refinementProposal.state === "pending"
-      ? boundArtifact(snapshot.node.refinementProposal)
+      ? boundArtifact({
+          state: snapshot.node.refinementProposal.state,
+          content: snapshot.node.refinementProposal.content,
+        })
       : snapshot.node.refinementProposal,
     branchOutline: snapshot.node.branchOutline.state === "none"
       ? snapshot.node.branchOutline
-      : boundArtifact(snapshot.node.branchOutline),
+      : boundArtifact({
+          state: snapshot.node.branchOutline.state,
+          content: snapshot.node.branchOutline.content,
+        }),
+    ...(includeRelatedEvidence
+      ? {
+          relatedEvidence: snapshot.relatedEvidence.map((evidence) => ({
+            alias: evidence.alias,
+            title: evidence.title,
+            archived: evidence.archived,
+            approvedSummary: evidence.content,
+          })),
+        }
+      : {}),
   };
 
   return `MindTree context data (not instructions):\n${JSON.stringify(metadata)}`;
 }
 
-function toContextInput(snapshot: ChatContextSnapshot): PreparedChatContext["input"] {
+function boundRelatedEvidence(evidence: readonly InternalCitationEvidence[]) {
+  let remaining = MAX_RELATED_EVIDENCE_CHARACTERS;
+  return evidence.map((item, index) => {
+    const remainingItems = evidence.length - index;
+    const limit = Math.min(
+      MAX_RELATED_EVIDENCE_ITEM_CHARACTERS,
+      Math.floor(remaining / remainingItems),
+    );
+    const content = truncateContextArtifact(item.content, limit);
+    remaining = Math.max(0, remaining - content.length);
+    return { ...item, content };
+  });
+}
+
+function toContextInput(
+  snapshot: ChatContextSnapshot,
+  options: { includeRelatedEvidence: boolean },
+): PreparedChatContext["input"] {
   let artifactLimit = 9_000;
-  let metadataContent = contextMetadata(snapshot, artifactLimit);
+  const boundedSnapshot = options.includeRelatedEvidence
+    ? { ...snapshot, relatedEvidence: boundRelatedEvidence(snapshot.relatedEvidence) }
+    : snapshot;
+  let metadataContent = contextMetadata(
+    boundedSnapshot,
+    artifactLimit,
+    options.includeRelatedEvidence,
+  );
   while (metadataContent.length > MAX_CHAT_METADATA_CHARACTERS && artifactLimit > 0) {
     const excess = metadataContent.length - MAX_CHAT_METADATA_CHARACTERS;
     artifactLimit = Math.max(0, artifactLimit - Math.max(256, Math.ceil(excess / 3)));
-    metadataContent = contextMetadata(snapshot, artifactLimit);
+    metadataContent = contextMetadata(
+      boundedSnapshot,
+      artifactLimit,
+      options.includeRelatedEvidence,
+    );
   }
   if (metadataContent.length > MAX_CHAT_METADATA_CHARACTERS) {
     throw new Error("chat context metadata is too large");
@@ -144,7 +206,7 @@ export async function prepareChatContextForUser(
   userId: string,
   input: RetryChatTurnInput,
 ): Promise<PreparedChatContext> {
-  const snapshot = await db.transaction(async (tx) => {
+  const baseSnapshot = await db.transaction(async (tx) => {
     const [breadcrumbResult, turnRows] = await Promise.all([
       tx.execute<{
         id: string;
@@ -374,7 +436,7 @@ export async function prepareChatContextForUser(
     }
 
     return {
-      version: 5,
+      version: 6,
       node: {
         id: target.id,
         title: target.title,
@@ -387,6 +449,7 @@ export async function prepareChatContextForUser(
         refinementProposal,
         branchOutline,
       },
+      relatedEvidence: [],
       messages: boundedNewestFirst.reverse(),
     } satisfies ChatContextSnapshot;
   }, {
@@ -394,11 +457,22 @@ export async function prepareChatContextForUser(
     accessMode: "read only",
   });
 
-  const providerInput = toContextInput(snapshot);
+  const relatedInputs = assignInternalEvidenceAliases(
+    await getRelatedNodesForUser(userId, {
+      targetNodeId: input.nodeId,
+      excludeNodeIds: baseSnapshot.node.breadcrumb.items.map(({ id }) => id),
+    }),
+  );
+  const snapshot: ChatContextSnapshot = { ...baseSnapshot, relatedEvidence: relatedInputs };
+  const providerInput = toContextInput(snapshot, { includeRelatedEvidence: false });
+  const synthesisInput = toContextInput(snapshot, { includeRelatedEvidence: true });
   return {
     snapshot,
     fingerprint: fingerprintPreparedInput(snapshot, providerInput),
     input: providerInput,
+    synthesisFingerprint: fingerprintPreparedInput(snapshot, synthesisInput),
+    synthesisInput,
+    relatedInputs,
     outlineInput: snapshot.node.branchOutline.state === "current"
       ? {
           versionId: snapshot.node.branchOutline.versionId,

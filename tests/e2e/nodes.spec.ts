@@ -472,7 +472,8 @@ test("keeps archived delete warnings and error recovery accessible in a short vi
       );
     }
     const deleteTrigger = page.getByRole("button", { name: "Delete", exact: true });
-    await deleteTrigger.click();
+    await deleteTrigger.focus();
+    await deleteTrigger.press("Enter");
     const dialog = page.getByRole("dialog", { name: /Permanently delete Archived/ });
     await expect(dialog).toHaveAccessibleDescription(/This permanently deletes this thought/);
     await expect(dialog).toHaveAccessibleDescription(/This cannot be undone/);
@@ -494,7 +495,9 @@ test("keeps archived delete warnings and error recovery accessible in a short vi
     await expect(deleteTrigger).toBeFocused();
 
     await page.goto(`/?node=${deletableArchivedId}`);
-    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    const deletableTrigger = page.getByRole("button", { name: "Delete", exact: true });
+    await deletableTrigger.focus();
+    await deletableTrigger.press("Enter");
     await page.getByRole("button", { name: "Delete permanently" }).click();
     await expect(page).toHaveURL(`/?node=${activeRootId}`);
     if (testInfo.project.name === "mobile") {

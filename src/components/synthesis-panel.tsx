@@ -51,7 +51,7 @@ export function PublishedSynthesisArtifact({
         </div>
       ) : null}
       <div className="synthesis-document__content">
-        <SynthesisDocumentContent content={synthesis.content} />
+        <SynthesisDocumentContent content={synthesis.content} citations={synthesis.citations} />
       </div>
     </section>
   );
@@ -160,7 +160,7 @@ export function SynthesisProposalArtifact({
         </div>
       </div>
       <div className="synthesis-document__content">
-        <SynthesisDocumentContent content={proposal.content} />
+        <SynthesisDocumentContent content={proposal.content} citations={proposal.citations} />
       </div>
       <SynthesisDiff
         id={proposal.id}
@@ -218,7 +218,7 @@ export function SynthesisDecidedArtifact({
         <section aria-labelledby={titleId}>
           <h3 id={titleId}>Proposed synthesis</h3>
           <div className="synthesis-document__content">
-            <SynthesisDocumentContent content={decision.content} />
+            <SynthesisDocumentContent content={decision.content} citations={decision.citations} />
           </div>
           <SynthesisDiff
             id={decision.id}

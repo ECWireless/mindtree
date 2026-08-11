@@ -5,6 +5,14 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { Pool } from "pg";
 
 import { AuthorizationError } from "../../src/lib/auth/policy";
+import { OpenAIEmbeddingError } from "../../src/lib/server/openai-embeddings";
+
+const createOpenAIEmbeddingMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../../src/lib/server/openai-embeddings", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../src/lib/server/openai-embeddings")>(),
+  createOpenAIEmbedding: createOpenAIEmbeddingMock,
+}));
 
 const connectionString = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
 if (!connectionString) throw new Error("A PostgreSQL test database is required.");
@@ -157,5 +165,130 @@ describe("synthesis decision Server Actions", () => {
       .toEqual(expected);
     expect(await approveSynthesisProposal({ nodeId, proposalId: foreignProposalId }))
       .toEqual(expected);
+  });
+
+  it("keeps publication successful and retries a failed embedding on action replay", async () => {
+    const userId = await seedAuthorizedSession();
+    const nodeId = await insertNode(userId, 0);
+    const proposalId = await insertPendingProposal(userId, nodeId);
+    const previousApiKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "synthetic-openai-key";
+    createOpenAIEmbeddingMock.mockReset();
+    createOpenAIEmbeddingMock.mockRejectedValueOnce(
+      new OpenAIEmbeddingError("generation-failed"),
+    );
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      await expect(approveSynthesisProposal({ nodeId, proposalId })).resolves.toEqual({
+        ok: true,
+        nodeId,
+        proposalId,
+        status: "approved",
+      });
+      expect(warning).toHaveBeenCalledWith(
+        "Approved synthesis embedding refresh failed.",
+        {
+          nodeId,
+          synthesisVersionId: proposalId,
+          failureCode: "generation-failed",
+          retryable: true,
+        },
+      );
+      expect((await pool.query(
+        `select 1 from node_embeddings where user_id = $1 and node_id = $2`,
+        [userId, nodeId],
+      )).rowCount).toBe(0);
+
+      createOpenAIEmbeddingMock.mockResolvedValueOnce([
+        0.25,
+        ...Array.from({ length: 3_071 }, () => 0),
+      ]);
+      await expect(approveSynthesisProposal({ nodeId, proposalId })).resolves.toEqual({
+        ok: true,
+        nodeId,
+        proposalId,
+        status: "approved",
+      });
+      expect(createOpenAIEmbeddingMock).toHaveBeenCalledTimes(2);
+      expect((await pool.query(
+        `select source_synthesis_version_id
+         from node_embeddings where user_id = $1 and node_id = $2`,
+        [userId, nodeId],
+      )).rows).toEqual([{ source_synthesis_version_id: proposalId }]);
+    } finally {
+      createOpenAIEmbeddingMock.mockReset();
+      warning.mockRestore();
+      if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousApiKey;
+    }
+  });
+
+  it("reuses the current embedding across idempotent action retries", async () => {
+    const userId = await seedAuthorizedSession();
+    const nodeId = await insertNode(userId, 0);
+    const proposalId = await insertPendingProposal(userId, nodeId);
+    const previousApiKey = process.env.OPENAI_API_KEY;
+    const previousFixture = process.env.MINDTREE_TEST_CHAT_FIXTURE;
+    process.env.OPENAI_API_KEY = "synthetic-openai-key";
+    delete process.env.MINDTREE_TEST_CHAT_FIXTURE;
+    createOpenAIEmbeddingMock.mockReset();
+    createOpenAIEmbeddingMock.mockResolvedValue([
+      0.25,
+      ...Array.from({ length: 3_071 }, () => 0),
+    ]);
+    const expected = {
+      ok: true,
+      nodeId,
+      proposalId,
+      status: "approved",
+    } as const;
+
+    try {
+      await expect(approveSynthesisProposal({ nodeId, proposalId })).resolves.toEqual(expected);
+      await expect(approveSynthesisProposal({ nodeId, proposalId })).resolves.toEqual(expected);
+      expect(createOpenAIEmbeddingMock).toHaveBeenCalledTimes(1);
+      expect((await pool.query(
+        `select source_synthesis_version_id
+         from node_embeddings where user_id = $1 and node_id = $2`,
+        [userId, nodeId],
+      )).rows).toEqual([{ source_synthesis_version_id: proposalId }]);
+    } finally {
+      createOpenAIEmbeddingMock.mockReset();
+      if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousApiKey;
+      if (previousFixture === undefined) delete process.env.MINDTREE_TEST_CHAT_FIXTURE;
+      else process.env.MINDTREE_TEST_CHAT_FIXTURE = previousFixture;
+    }
+  });
+
+  it("never calls the embedding provider while the deterministic browser fixture is enabled", async () => {
+    const userId = await seedAuthorizedSession();
+    const nodeId = await insertNode(userId, 0);
+    const proposalId = await insertPendingProposal(userId, nodeId);
+    const previousApiKey = process.env.OPENAI_API_KEY;
+    const previousFixture = process.env.MINDTREE_TEST_CHAT_FIXTURE;
+    process.env.OPENAI_API_KEY = "synthetic-openai-key";
+    process.env.MINDTREE_TEST_CHAT_FIXTURE = "1";
+    createOpenAIEmbeddingMock.mockClear();
+
+    try {
+      await expect(approveSynthesisProposal({ nodeId, proposalId })).resolves.toEqual({
+        ok: true,
+        nodeId,
+        proposalId,
+        status: "approved",
+      });
+      expect(createOpenAIEmbeddingMock).not.toHaveBeenCalled();
+      expect((await pool.query(
+        `select 1 from node_embeddings where user_id = $1 and node_id = $2`,
+        [userId, nodeId],
+      )).rowCount).toBe(0);
+    } finally {
+      if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousApiKey;
+      if (previousFixture === undefined) delete process.env.MINDTREE_TEST_CHAT_FIXTURE;
+      else process.env.MINDTREE_TEST_CHAT_FIXTURE = previousFixture;
+    }
   });
 });

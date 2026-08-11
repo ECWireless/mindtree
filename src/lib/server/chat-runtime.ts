@@ -102,7 +102,10 @@ async function* streamDeterministicChatFixture(input: {
     providerResponseId,
     synthesisRequested: false,
     proposal: input.phase === "synthesis"
-      ? { content: `# ${topic}\n\nA concise synthetic synthesis proposal.` }
+      ? {
+          content: `# ${topic}\n\nA concise synthetic synthesis proposal.`,
+          citations: [],
+        }
       : null,
   };
 }

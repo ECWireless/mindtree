@@ -6,12 +6,15 @@ import { DrizzleError, DrizzleQueryError } from "drizzle-orm/errors";
 import { db } from "@/db/client";
 import {
   branchOutlineVersions,
+  citations,
+  nodeEmbeddings,
   nodes,
   synthesisInputs,
   synthesisVersions,
   user,
 } from "@/db/schema";
 import { OPENAI_SYNTHESIS_MODEL } from "@/lib/ai/openai-profiles";
+import type { InternalCitationView } from "@/lib/citations/contracts";
 import {
   synthesisProposalDraftSchema,
   type SynthesisDecisionInput,
@@ -20,11 +23,20 @@ import {
   type SynthesisWorkspace,
 } from "@/lib/synthesis/contracts";
 import {
+  InternalCitationValidationError,
+  normalizeInternalCitationMentions,
+  type InternalCitationEvidence,
+} from "@/lib/server/internal-citations";
+import {
   collectAncestorPathIds,
   markArtifactsStale,
   StalenessTreeError,
 } from "@/lib/server/staleness";
-import { fingerprintSynthesisOutlineInput } from "@/lib/server/synthesis-input-fingerprint";
+import { MAX_RELATED_NODE_RESULTS } from "@/lib/server/related-node-retrieval";
+import {
+  fingerprintSynthesisOutlineInput,
+  fingerprintSynthesisRelatedInput,
+} from "@/lib/server/synthesis-input-fingerprint";
 
 type SynthesisTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -39,6 +51,7 @@ export type PendingSynthesisProposalInput = {
     versionId: string;
     sourceStateFingerprint: string;
   } | null;
+  relatedInputs?: InternalCitationEvidence[];
   refinementProposalId?: string | null;
 };
 
@@ -134,6 +147,7 @@ async function lockProposal(
 
 function toSynthesisVersion(
   row: typeof synthesisVersions.$inferSelect,
+  citationViews: InternalCitationView[] = [],
 ): SynthesisVersion {
   return {
     id: row.id,
@@ -149,7 +163,265 @@ function toSynthesisVersion(
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     decidedAt: row.decidedAt?.toISOString() ?? null,
+    citations: citationViews,
   };
+}
+
+async function requireCurrentRelatedInputs(
+  tx: SynthesisTransaction,
+  userId: string,
+  targetNodeId: string,
+  relatedInputs: readonly InternalCitationEvidence[],
+) {
+  if (relatedInputs.length > MAX_RELATED_NODE_RESULTS) {
+    throw new SynthesisServiceError("invalid-proposal");
+  }
+  const seenAliases = new Set<string>();
+  const seenNodeIds = new Set<string>();
+  for (let position = 0; position < relatedInputs.length; position += 1) {
+    const related = relatedInputs[position]!;
+    if (
+      related.alias !== `E${position + 1}` ||
+      seenAliases.has(related.alias) ||
+      related.nodeId === targetNodeId ||
+      seenNodeIds.has(related.nodeId) ||
+      related.sourceStateFingerprint !== fingerprintSynthesisRelatedInput({
+        nodeId: related.nodeId,
+        synthesisVersionId: related.synthesisVersionId,
+      })
+    ) {
+      throw new SynthesisServiceError("invalid-proposal");
+    }
+    seenAliases.add(related.alias);
+    seenNodeIds.add(related.nodeId);
+  }
+  if (relatedInputs.length === 0) return;
+
+  const rows = await tx
+    .select({
+      nodeId: nodes.id,
+      parentId: nodes.parentId,
+      title: nodes.title,
+      archivedAt: nodes.archivedAt,
+      synthesisVersionId: synthesisVersions.id,
+      status: synthesisVersions.status,
+    })
+    .from(nodes)
+    .innerJoin(
+      synthesisVersions,
+      and(
+        eq(synthesisVersions.userId, nodes.userId),
+        eq(synthesisVersions.nodeId, nodes.id),
+        eq(synthesisVersions.id, nodes.publishedSynthesisVersionId),
+      ),
+    )
+    .where(and(
+      eq(nodes.userId, userId),
+      inArray(nodes.id, relatedInputs.map(({ nodeId }) => nodeId)),
+    ));
+  const byNodeId = new Map(rows.map((row) => [row.nodeId, row]));
+  for (const related of relatedInputs) {
+    const current = byNodeId.get(related.nodeId);
+    if (
+      !current ||
+      current.status !== "approved" ||
+      current.synthesisVersionId !== related.synthesisVersionId ||
+      current.title !== related.title ||
+      current.parentId !== related.parentId ||
+      (current.archivedAt !== null) !== related.archived
+    ) {
+      throw new SynthesisServiceError("stale-input");
+    }
+  }
+}
+
+async function getInternalCitationViewsForVersions(
+  tx: SynthesisTransaction,
+  userId: string,
+  versionIds: readonly string[],
+) {
+  if (versionIds.length === 0) return new Map<string, InternalCitationView[]>();
+  const rows = await tx
+    .select({
+      synthesisVersionId: citations.synthesisVersionId,
+      ordinal: citations.ordinal,
+      startUtf16: citations.startUtf16,
+      endUtf16: citations.endUtf16,
+      snapshotNodeId: citations.targetNodeIdSnapshot,
+      snapshotTitle: citations.targetTitleSnapshot,
+      snapshotParentId: citations.targetParentIdSnapshot,
+      snapshotSynthesisVersionId: citations.targetSynthesisVersionIdSnapshot,
+      deletedAt: citations.targetDeletedAt,
+      liveNodeId: citations.liveTargetNodeId,
+      liveSynthesisVersionId: citations.liveTargetSynthesisVersionId,
+      currentTitle: nodes.title,
+      currentParentId: nodes.parentId,
+      currentArchivedAt: nodes.archivedAt,
+      currentSynthesisVersionId: nodes.publishedSynthesisVersionId,
+    })
+    .from(citations)
+    .leftJoin(
+      nodes,
+      and(
+        eq(nodes.userId, citations.userId),
+        eq(nodes.id, citations.liveTargetNodeId),
+      ),
+    )
+    .where(and(
+      eq(citations.userId, userId),
+      eq(citations.kind, "internal"),
+      inArray(citations.synthesisVersionId, [...versionIds]),
+    ))
+    .orderBy(asc(citations.synthesisVersionId), asc(citations.ordinal));
+  const byVersionId = new Map<string, InternalCitationView[]>();
+  for (const row of rows) {
+    if (
+      row.synthesisVersionId === null ||
+      row.snapshotNodeId === null ||
+      row.snapshotTitle === null ||
+      row.snapshotSynthesisVersionId === null
+    ) {
+      throw new SynthesisServiceError("unavailable");
+    }
+    const target: InternalCitationView["target"] = row.liveNodeId === null
+      ? row.deletedAt === null
+        ? (() => { throw new SynthesisServiceError("unavailable"); })()
+        : { state: "unavailable", deletedAt: row.deletedAt.toISOString() }
+      : row.currentTitle === null ||
+          row.liveSynthesisVersionId === null ||
+          row.currentSynthesisVersionId === null
+        ? (() => { throw new SynthesisServiceError("unavailable"); })()
+        : {
+            state: "available",
+            nodeId: row.liveNodeId,
+            title: row.currentTitle,
+            synthesisVersionId: row.liveSynthesisVersionId,
+            renamed: row.currentTitle !== row.snapshotTitle,
+            moved: row.currentParentId !== row.snapshotParentId,
+            archived: row.currentArchivedAt !== null,
+            changedRevision:
+              row.currentSynthesisVersionId !== row.snapshotSynthesisVersionId,
+          };
+    const views = byVersionId.get(row.synthesisVersionId) ?? [];
+    views.push({
+      kind: "internal",
+      ordinal: row.ordinal,
+      startUtf16: row.startUtf16,
+      endUtf16: row.endUtf16,
+      snapshot: {
+        nodeId: row.snapshotNodeId,
+        title: row.snapshotTitle,
+        synthesisVersionId: row.snapshotSynthesisVersionId,
+      },
+      target,
+    });
+    byVersionId.set(row.synthesisVersionId, views);
+  }
+  return byVersionId;
+}
+
+async function requireRecordedRelatedInputsCurrent(
+  tx: SynthesisTransaction,
+  userId: string,
+  proposal: typeof synthesisVersions.$inferSelect,
+) {
+  const recorded = await tx
+    .select()
+    .from(synthesisInputs)
+    .where(and(
+      eq(synthesisInputs.userId, userId),
+      eq(synthesisInputs.nodeId, proposal.nodeId),
+      eq(synthesisInputs.synthesisVersionId, proposal.id),
+      eq(synthesisInputs.relation, "related"),
+    ))
+    .orderBy(asc(synthesisInputs.position))
+    .limit(MAX_RELATED_NODE_RESULTS + 1);
+  if (recorded.length > MAX_RELATED_NODE_RESULTS) {
+    throw new SynthesisServiceError("unavailable");
+  }
+  const sourceKeys = new Set<string>();
+  for (let position = 0; position < recorded.length; position += 1) {
+    const source = recorded[position]!;
+    if (
+      source.position !== position ||
+      source.sourceSynthesisVersionId === null ||
+      source.sourceBranchOutlineVersionId !== null ||
+      source.sourceNodeId === proposal.nodeId ||
+      source.sourceStateFingerprint !== fingerprintSynthesisRelatedInput({
+        nodeId: source.sourceNodeId,
+        synthesisVersionId: source.sourceSynthesisVersionId,
+      })
+    ) {
+      throw new SynthesisServiceError("unavailable");
+    }
+    sourceKeys.add(`${source.sourceNodeId}:${source.sourceSynthesisVersionId}`);
+  }
+  if (recorded.length > 0) {
+    const current = await tx
+      .select({
+        nodeId: nodes.id,
+        synthesisVersionId: synthesisVersions.id,
+        status: synthesisVersions.status,
+      })
+      .from(nodes)
+      .innerJoin(
+        synthesisVersions,
+        and(
+          eq(synthesisVersions.userId, nodes.userId),
+          eq(synthesisVersions.nodeId, nodes.id),
+          eq(synthesisVersions.id, nodes.publishedSynthesisVersionId),
+        ),
+      )
+      .where(and(
+        eq(nodes.userId, userId),
+        inArray(nodes.id, recorded.map(({ sourceNodeId }) => sourceNodeId)),
+      ));
+    const currentKeys = new Set(current
+      .filter(({ status }) => status === "approved")
+      .map(({ nodeId, synthesisVersionId }) => `${nodeId}:${synthesisVersionId}`));
+    if (
+      currentKeys.size !== sourceKeys.size ||
+      [...sourceKeys].some((key) => !currentKeys.has(key))
+    ) {
+      throw new SynthesisServiceError("stale-input");
+    }
+  }
+
+  const citationRows = await tx
+    .select({
+      ordinal: citations.ordinal,
+      startUtf16: citations.startUtf16,
+      endUtf16: citations.endUtf16,
+      targetNodeIdSnapshot: citations.targetNodeIdSnapshot,
+      targetSynthesisVersionIdSnapshot: citations.targetSynthesisVersionIdSnapshot,
+    })
+    .from(citations)
+    .where(and(
+      eq(citations.userId, userId),
+      eq(citations.ownerNodeId, proposal.nodeId),
+      eq(citations.synthesisVersionId, proposal.id),
+      eq(citations.kind, "internal"),
+    ))
+    .orderBy(asc(citations.ordinal));
+  let priorEnd = -1;
+  for (let index = 0; index < citationRows.length; index += 1) {
+    const citation = citationRows[index]!;
+    if (
+      citation.ordinal !== index + 1 ||
+      citation.startUtf16 < 0 ||
+      citation.endUtf16 <= citation.startUtf16 ||
+      citation.endUtf16 > proposal.content.length ||
+      citation.startUtf16 < priorEnd ||
+      citation.targetNodeIdSnapshot === null ||
+      citation.targetSynthesisVersionIdSnapshot === null ||
+      !sourceKeys.has(
+        `${citation.targetNodeIdSnapshot}:${citation.targetSynthesisVersionIdSnapshot}`,
+      )
+    ) {
+      throw new SynthesisServiceError("unavailable");
+    }
+    priorEnd = citation.endUtf16;
+  }
 }
 
 export async function insertPendingSynthesisProposal(
@@ -158,6 +430,7 @@ export async function insertPendingSynthesisProposal(
 ) {
   const draft = synthesisProposalDraftSchema.safeParse(input.draft);
   const outlineInput = input.outlineInput ?? null;
+  const relatedInputs = input.relatedInputs ?? [];
   if (
     !draft.success ||
     input.model !== OPENAI_SYNTHESIS_MODEL ||
@@ -171,6 +444,26 @@ export async function insertPendingSynthesisProposal(
           })))
   ) {
     throw new SynthesisServiceError("invalid-proposal");
+  }
+
+  await requireCurrentRelatedInputs(
+    tx,
+    input.userId,
+    input.nodeId,
+    relatedInputs,
+  );
+  let normalizedCitations: ReturnType<typeof normalizeInternalCitationMentions>;
+  try {
+    normalizedCitations = normalizeInternalCitationMentions({
+      content: draft.data.content,
+      mentions: draft.data.citations,
+      evidence: relatedInputs,
+    });
+  } catch (error) {
+    if (error instanceof InternalCitationValidationError) {
+      throw new SynthesisServiceError("invalid-proposal");
+    }
+    throw error;
   }
 
   const [outlineState] = await tx
@@ -248,7 +541,59 @@ export async function insertPendingSynthesisProposal(
       position: 0,
     });
   }
-  return toSynthesisVersion(created);
+  if (relatedInputs.length > 0) {
+    await tx.insert(synthesisInputs).values(relatedInputs.map((related, position) => ({
+      synthesisVersionId: created.id,
+      userId: input.userId,
+      nodeId: input.nodeId,
+      relation: "related" as const,
+      sourceNodeId: related.nodeId,
+      sourceSynthesisVersionId: related.synthesisVersionId,
+      sourceBranchOutlineVersionId: null,
+      sourceStateFingerprint: related.sourceStateFingerprint,
+      position,
+    })));
+  }
+  if (normalizedCitations.length > 0) {
+    await tx.insert(citations).values(normalizedCitations.map((citation) => ({
+      userId: input.userId,
+      ownerNodeId: input.nodeId,
+      synthesisVersionId: created.id,
+      assistantMessageId: null,
+      kind: "internal" as const,
+      ordinal: citation.ordinal,
+      startUtf16: citation.startUtf16,
+      endUtf16: citation.endUtf16,
+      liveTargetNodeId: citation.evidence.nodeId,
+      liveTargetSynthesisVersionId: citation.evidence.synthesisVersionId,
+      targetNodeIdSnapshot: citation.evidence.nodeId,
+      targetTitleSnapshot: citation.evidence.title,
+      targetParentIdSnapshot: citation.evidence.parentId,
+      targetSynthesisVersionIdSnapshot: citation.evidence.synthesisVersionId,
+    })));
+  }
+  const citationViews: InternalCitationView[] = normalizedCitations.map((citation) => ({
+    kind: "internal",
+    ordinal: citation.ordinal,
+    startUtf16: citation.startUtf16,
+    endUtf16: citation.endUtf16,
+    snapshot: {
+      nodeId: citation.evidence.nodeId,
+      title: citation.evidence.title,
+      synthesisVersionId: citation.evidence.synthesisVersionId,
+    },
+    target: {
+      state: "available",
+      nodeId: citation.evidence.nodeId,
+      title: citation.evidence.title,
+      synthesisVersionId: citation.evidence.synthesisVersionId,
+      renamed: false,
+      moved: false,
+      archived: citation.evidence.archived,
+      changedRevision: false,
+    },
+  }));
+  return toSynthesisVersion(created, citationViews);
 }
 
 export async function approveSynthesisProposalForUser(
@@ -315,6 +660,7 @@ export async function approveSynthesisProposalForUser(
           throw new SynthesisServiceError("stale-input");
         }
       }
+      await requireRecordedRelatedInputsCurrent(tx, userId, proposal);
       if (node.publishedSynthesisVersionId !== null) {
         const [published] = await tx
           .select({ status: synthesisVersions.status })
@@ -331,6 +677,22 @@ export async function approveSynthesisProposalForUser(
         }
       }
 
+      const citingNodeRows = await tx
+        .select({ nodeId: citations.ownerNodeId })
+        .from(citations)
+        .innerJoin(
+          nodes,
+          and(
+            eq(nodes.userId, citations.userId),
+            eq(nodes.id, citations.ownerNodeId),
+            eq(nodes.publishedSynthesisVersionId, citations.synthesisVersionId),
+          ),
+        )
+        .where(and(
+          eq(citations.userId, userId),
+          eq(citations.kind, "internal"),
+          eq(citations.liveTargetNodeId, node.id),
+        ));
       const decidedAt = new Date();
       const [approved] = await tx
         .update(synthesisVersions)
@@ -338,6 +700,12 @@ export async function approveSynthesisProposalForUser(
         .where(eq(synthesisVersions.id, proposal.id))
         .returning();
       if (!approved) throw new SynthesisServiceError("unavailable");
+      await tx
+        .delete(nodeEmbeddings)
+        .where(and(
+          eq(nodeEmbeddings.userId, userId),
+          eq(nodeEmbeddings.nodeId, input.nodeId),
+        ));
       await tx
         .update(nodes)
         .set({
@@ -356,7 +724,10 @@ export async function approveSynthesisProposalForUser(
       });
       await markArtifactsStale(tx, {
         userId,
-        summaryNodeIds: ancestorIds,
+        summaryNodeIds: [
+          ...ancestorIds,
+          ...citingNodeRows.map(({ nodeId }) => nodeId),
+        ],
         outlineNodeIds: ancestorIds,
         outlineReason: "branch-content-changed",
         at: decidedAt,
@@ -504,10 +875,22 @@ export async function getSynthesisWorkspaceForUser(
     const decidedBaseContent = new Map(
       decidedBases.map((version) => [version.id, version.content]),
     );
+    const citationViews = await getInternalCitationViewsForVersions(tx, userId, [
+      ...(published ? [published.id] : []),
+      ...(pendingVersions[0] ? [pendingVersions[0].id] : []),
+      ...decidedVersions.map(({ id }) => id),
+    ]);
     return {
-      published: published ? toSynthesisVersion(published) : null,
+      published: published
+        ? toSynthesisVersion(published, citationViews.get(published.id) ?? [])
+        : null,
       staleAt: node.synthesisStaleAt?.toISOString() ?? null,
-      pending: pendingVersions[0] ? toSynthesisVersion(pendingVersions[0]) : null,
+      pending: pendingVersions[0]
+        ? toSynthesisVersion(
+            pendingVersions[0],
+            citationViews.get(pendingVersions[0].id) ?? [],
+          )
+        : null,
       history: decidedVersions.map((version) => {
         if (version.status === "pending" || version.decidedAt === null) {
           throw new SynthesisServiceError("unavailable");
@@ -525,6 +908,7 @@ export async function getSynthesisWorkspaceForUser(
           content: version.content,
           baseContent: baseContent ?? null,
           decidedAt: version.decidedAt.toISOString(),
+          citations: citationViews.get(version.id) ?? [],
         };
       }),
     };

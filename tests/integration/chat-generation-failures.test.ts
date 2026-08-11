@@ -98,7 +98,10 @@ vi.mock("@/lib/server/chat-runtime", async () => {
           providerResponseId,
           synthesisRequested: false,
           proposal: scenario === "proposal-success"
-            ? { content: "# Synthetic proposal\n\nA bounded synthesis draft." }
+            ? {
+                content: "# Synthetic proposal\n\nA bounded synthesis draft.",
+                citations: [],
+              }
             : null,
         };
       })();

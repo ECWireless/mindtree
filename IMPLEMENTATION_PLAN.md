@@ -145,7 +145,7 @@ Every phase that touches the relevant area preserves these rules:
 6. Generated content cannot move the node's published synthesis pointer.
 7. Approval checks its base version and exact source revisions inside the
    transaction.
-8. Internal citations are limited to supplied approved evidence; external
+8. Internal-link annotations are limited to supplied approved evidence; external
    citations are limited to validated web-search annotations.
 9. Web search is authorized for one turn at a time and is off by default.
 10. Branch Outlines, child summaries, related summaries, chats, model output,
@@ -791,17 +791,19 @@ manual approval as the only Summary-publication path.
 
 ---
 
-## Phase 9 — Internal citations and semantic related-node retrieval
+## Phase 9 — Internal links and semantic related-node retrieval
 
 ### Goal
 
-Let proposals discover and cite relevant approved nodes beyond direct children
-without allowing fabricated or cross-owner references.
+Let proposals discover and link relevant approved nodes across the owner's tree,
+including relevant direct children, without allowing fabricated or cross-owner
+references.
 
 ### User-visible outcome
 
-- Syntheses can contain clickable citations to exact MindTree evidence nodes.
-- The owner can inspect the cited node and see when its cited revision is no
+- Syntheses can contain underlined wiki-style links to exact MindTree evidence
+  nodes without numbered internal citation markers.
+- The owner can follow the linked node and detect when its linked revision is no
   longer current.
 
 ### Deliverables
@@ -812,19 +814,22 @@ without allowing fabricated or cross-owner references.
 - Post-approval embedding generation that does not roll back an already
   approved synthesis when embedding creation fails.
 - Bounded exact cosine-similarity retrieval across the owner's current approved
-  syntheses, excluding and deduplicating deterministic context nodes.
-- `citations` schema for internal citations with nullable live target
-  references, exact cited-version linkage while available, immutable
+  syntheses, excluding the target and its ancestors, deduplicating explicit
+  deterministic exclusions, and keeping direct children eligible.
+- `citations` schema for internal-link annotations with nullable live target
+  references, exact linked-version linkage while available, immutable
   node/title/revision snapshot fields, stable ordinal, and bounded text
   location.
-- Server-created evidence aliases passed to the model; structured output cites
-  aliases rather than arbitrary database UUIDs.
+- Server-created evidence aliases passed to the model; structured output maps a
+  short exact phrase to an alias rather than accepting arbitrary database UUIDs
+  or model-authored node URLs.
 - Validation mapping aliases back to owner-scoped supplied evidence only.
-- Application-owned citation rendering and navigation to `?node=<id>`.
+- Application-owned underlined internal-link rendering and navigation to
+  `?node=<id>` with no numbered marker or internal References block.
 - Unavailable, renamed, moved, archived, and changed-reference presentation;
   explicit deletion clears live targets but preserves citation snapshot
   metadata.
-- Stale marking for current syntheses affected by relevant renamed/cited nodes.
+- Stale marking for current syntheses affected by relevant renamed/linked nodes.
 
 ### Migration and operational boundary
 
@@ -837,27 +842,32 @@ without allowing fabricated or cross-owner references.
 
 1. `feat: add approved-synthesis embeddings`
 2. `feat: add owner-scoped related-node retrieval`
-3. `feat: add validated internal synthesis citations`
+3. `feat: add validated internal synthesis link annotations`
+4. `feat: render internal references as wiki links`
 
 ### Acceptance
 
 - Only approved current summaries are embedded and retrieved.
 - Retrieval cannot cross owners.
-- Unknown, unsupplied, draft, rejected, or mismatched citation aliases reject
+- A relevant direct child with a current approved Summary can be retrieved and
+  linked independently of whether a current Branch Outline is present.
+- Unknown, unsupplied, draft, rejected, or mismatched evidence aliases reject
   the proposal safely.
-- Citation links open the target node while retaining exact revision metadata.
+- Linked phrases open the target node while retaining exact revision metadata.
+- Internal links never use numbered markers; changed or unavailable reference
+  states remain distinguishable and accessible in place.
 - Embedding failure leaves publication intact and retrieval gracefully
   degraded.
-- Deleting a cited node leaves an explicit unavailable-reference state in
-  historical citing syntheses rather than breaking reads.
+- Deleting a linked node leaves an explicit unavailable-reference state in
+  historical link-bearing syntheses rather than breaking reads.
 
 ### Verification
 
-- Embedding shape, retrieval ranking, alias mapping, citation validation, and
-  References ordering unit tests.
+- Embedding shape, retrieval ranking, alias mapping, internal-link validation,
+  and annotation ordering unit tests.
 - PostgreSQL vector ownership and lifecycle integration tests.
 - Deterministic embedding and synthesis fixtures; no paid calls in normal tests.
-- Browser navigation and changed/unavailable citation states.
+- Browser navigation and changed/unavailable internal-link states.
 - Two reviewers: technical/data and AI-security/privacy.
 - One approved synthetic live embedding smoke after deterministic gates.
 
@@ -873,7 +883,8 @@ an approval-required synthesis proposal.
 ### User-visible outcome
 
 - The owner enables **Use web sources** for one message.
-- The assistant visibly researches and returns clickable inline citations.
+- The assistant visibly researches and returns numbered clickable inline
+  citations.
 - A proposed synthesis contains only validated cited external claims and a
   deduplicated References section.
 
@@ -886,7 +897,8 @@ an approval-required synthesis proposal.
 - Normalized handling of search-call state and `url_citation` annotations.
 - External citation storage in the shared `citations` boundary with normalized
   HTTP(S) URL, title, ordinal, and text-location metadata.
-- Visible/clickable inline citation rendering in chat and synthesis.
+- Visible/clickable numbered inline citation rendering in chat and synthesis;
+  numbered markers remain exclusive to external sources.
 - References rendered from stored citation rows in first-use order with URL
   deduplication.
 - Validation that rejects or de-links model-authored URLs lacking a returned
@@ -905,8 +917,8 @@ an approval-required synthesis proposal.
 - Web search is never enabled from model initiative or prior-turn state.
 - The control authorizes exactly one submitted turn.
 - Every rendered external synthesis link traces to a returned web annotation.
-- Inline citations are visible, clickable, accessible, and consistent with the
-  References section.
+- Numbered inline citations are visible, clickable, accessible, and consistent
+  with the References section; internal node links remain unnumbered.
 - A web-backed proposal still requires explicit approval and source-version
   checks.
 - Retry does not issue duplicate persisted turns or publish content.
@@ -968,7 +980,7 @@ At minimum, synthetic cases cover:
 5. A Summary proposal using the current Branch Outline.
 6. Malicious instruction text inside a child Summary or outline.
 7. A stale or replaced Branch Outline preventing Summary approval.
-8. Related-node discovery and exact internal citation.
+8. Related-node discovery and exact internal-link navigation.
 9. Requested web research with supported external claims.
 10. Web result containing adversarial instructions.
 11. No-web turn that must not search externally.
@@ -1034,8 +1046,8 @@ approved knowledge through one read-only route.
   linearization point; movement and deletion appear wholly before or after that
   snapshot.
 - Explicit agent response contracts for nodes, current approved syntheses,
-  scope-filtered internal citations, and approved external References.
-- Exact discriminated internal citation representations for `available`,
+  scope-filtered internal-link annotations, and approved external References.
+- Exact discriminated internal-link representations for `available`,
   `redacted`, and `unavailable`, with UTF-16 content offsets; redacted and
   unavailable states reveal no target snapshots or identity fields.
 - `GET /api/agent/v1/tree` as the only agent route, with JSON, force-dynamic,
@@ -1091,7 +1103,8 @@ approved knowledge through one read-only route.
 - A moved-out descendant disappears and a moved-in node appears without leaking
   the scope root's actual parent or siblings.
 - Only current approved syntheses and published References appear.
-- Out-of-scope internal citations are redacted without becoming a scope oracle.
+- Out-of-scope internal-link annotations are redacted without becoming a scope
+  oracle.
 - Approved prose is returned verbatim, with the documented warning that
   structured record isolation is not semantic DLP over owner-approved text.
 - No API request can mutate product or credential data.
@@ -1286,7 +1299,7 @@ temporary plan, and prepare—but do not automatically create—the first tag.
    - proposal, diff, refinement, rejection, and approval;
    - Branch Outline generation/regeneration, child approval, stale ancestors,
      and deliberate Summary refresh through Chat;
-   - related-node internal citation navigation;
+   - related-node internal-link navigation;
    - explicitly enabled web research, inline citations, and References;
    - archive, show archived, unarchive, and confirmed deletion;
    - agent-key creation, one-time copy, scoped subtree read, citation

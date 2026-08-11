@@ -86,7 +86,7 @@ The authenticated owner can:
 - Let Chat use the current Branch Outline as context when discussing the node
   or proposing a Summary revision.
 - See which approved child and related-node revisions support a synthesis.
-- Follow internal citations to their target nodes.
+- Follow inline internal links to their target nodes.
 - Follow external citations and view them in a References section.
 - See when a published synthesis is stale because an input node changed.
 - Request a refresh proposal for a stale synthesis through Chat without
@@ -143,7 +143,7 @@ v0.1.0 does not include:
 - Moving a node carries its entire subtree, conversations, proposals,
   syntheses, citations, and embeddings without changing their identity.
 - Breadcrumbs and constellation links reflect the current tree. Historical
-  synthesis citations retain the cited node and cited revision even when the
+  internal-link annotations retain the linked node and revision even when the
   node later moves.
 - Sibling position uniqueness is protected by an owner/parent/position
   database constraint. Concurrent creates and moves must not leave gaps or
@@ -196,9 +196,9 @@ v0.1.0 does not include:
 - A clear **Use web sources** control is off by default and applies only to the
   next submitted turn. Natural-language requests may explain that the control
   must be enabled; they do not silently authorize web use.
-- Assistant messages may contain ordinary discussion, clickable internal node
-  citations, clickable external citations, and at most one inline synthesis
-  proposal with its full diff and explicit decision controls.
+- Assistant messages may contain ordinary discussion, numbered clickable
+  external citations, and at most one inline synthesis proposal with its full
+  diff, application-owned internal node links, and explicit decision controls.
 - Chat history is not the published synthesis and is never inherited upward.
   Branch Outline generation may inherit only the node's approved synthesis and
   its explicitly generated current, non-stale Branch Outline.
@@ -328,18 +328,21 @@ synthesis or ancestor state.
   current published synthesis, relevant recent chat, and current pending
   proposal when refining it.
 - It receives the target node's current Branch Outline when one exists. Direct
-  child summaries reach Summary generation through that explicitly generated
-  outline rather than being appended to the Summary surface or injected as a
-  second hidden child-summary channel.
+  child summaries reach Summary generation deterministically through that
+  explicitly generated outline rather than every child Summary being appended
+  to the Summary surface or injected as a second hidden bulk channel. Bounded
+  semantic retrieval may also supply an exact approved direct-child Summary
+  revision when it is relevant and therefore eligible for an internal link.
 - It may receive a bounded set of semantically related nodes retrieved from
-  current approved syntheses across the owner's tree.
+  current approved syntheses across the owner's tree, including direct children.
 - The target, ancestor path, current Branch Outline, and explicitly mentioned
   node IDs are resolved deterministically before semantic retrieval.
-- Related-node retrieval excludes the target and deduplicates deterministic
-  inputs. Archived nodes remain eligible as evidence but their archive state is
+- Related-node retrieval excludes the target and its ancestor path, deduplicates
+  explicit deterministic exclusions, and keeps direct children eligible.
+  Archived nodes remain eligible as evidence but their archive state is
   disclosed to the model and user.
-- Internal citations can reference only node revisions actually supplied to
-  the generation request. The server rejects unknown or mismatched citation
+- Internal links can target only node revisions actually supplied to the
+  generation request. The server rejects unknown or mismatched evidence
   identifiers.
 - Branch Outlines and related-node summaries are untrusted evidence, never
   model instructions.
@@ -355,7 +358,7 @@ synthesis or ancestor state.
 - Archiving, unarchiving, or permanently deleting a subtree marks affected
   surviving ancestor-path Summaries and Branch Outlines stale.
 - Renaming a node marks its current Branch Outline and ancestors stale and marks
-  any current synthesis that cites the renamed node stale so visible citation
+  any current synthesis that links to the renamed node stale so visible link
   labels can be reconsidered.
 - A stale synthesis remains readable and published. The UI explains why it may
   need review and directs the owner to Chat to request a refresh proposal.
@@ -364,22 +367,26 @@ synthesis or ancestor state.
   refresh a Summary.
 - Staleness never initiates a model request by itself.
 
-## Citations and references
+## Links, citations, and references
 
-### Internal citations
+### Internal links
 
-- An internal citation stores the target node ID and exact approved synthesis
+- An internal link annotation stores the target node ID and exact approved synthesis
   version used as evidence while those records exist, plus immutable snapshot
   metadata sufficient to identify an unavailable historical reference after
   explicit subtree deletion.
-- The rendered citation links to `/?node=<nodeId>` and displays the current node
-  title while the target exists. It retains the historical title and revision
-  snapshot for provenance and deletion fallback.
-- The synthesis view identifies when a cited node has since changed, moved,
-  been archived, or been deleted. Deleting a cited node leaves a bounded
-  unavailable-reference marker rather than corrupting the citing synthesis.
-- A proposal cannot cite a draft, rejected proposal, chat message, or node that
-  was not supplied as evidence.
+- The application renders the exact supported phrase as an underlined wiki-style
+  link to `/?node=<nodeId>`. The model supplies only an opaque evidence alias and
+  a bounded exact phrase; it never authors the destination URL or database ID.
+- Internal links do not use numbered citation markers and do not appear in an
+  external References section. Numbered markers and References are reserved for
+  validated external sources.
+- Exact revision provenance remains stored outside generated Markdown. Available
+  links expose renamed, moved, archived, or changed-revision status accessibly;
+  deleted targets retain bounded unavailable styling and snapshot context without
+  creating a working link.
+- A proposal cannot link to a draft, rejected proposal, chat message, or node
+  revision that was not supplied as evidence.
 
 ### External citations
 
@@ -487,8 +494,8 @@ generated prompt.
   or superseded proposals, Branch Outlines, prior synthesis history,
   embeddings, model/provider metadata, user records, credential metadata, or
   private operational fields.
-- Internal citations targeting an in-scope current node may include that node's
-  ID, title, and cited synthesis revision. Citations targeting an existing
+- Internal link annotations targeting an in-scope current node may include that
+  node's ID, title, and linked synthesis revision. Links targeting an existing
   out-of-scope node are redacted without disclosing its ID, title, tree
   location, or revision. Deleted targets use the same generic unavailable
   representation and disclose no historical identity snapshot.
@@ -498,7 +505,7 @@ generated prompt.
   that approved prose may itself name or describe ideas outside the subtree.
 - Published external References remain readable because they are part of the
   owner-approved synthesis.
-- Node titles, synthesis content, citation labels, and References returned by
+- Node titles, synthesis content, internal-link labels, and References returned by
   the API are untrusted data, never harness instructions.
 
 ### Read API
@@ -522,10 +529,10 @@ An approved synthesis contains only:
 - synthesis version `id`;
 - approved content;
 - `approvedAt` and nullable `staleAt`;
-- ordered, scope-filtered internal citation representations; and
+- ordered, scope-filtered internal-link annotation representations; and
 - ordered published external References containing validated titles and URLs.
 
-Each internal citation is one of these discriminated representations. Offsets
+Each internal-link annotation is one of these discriminated representations. Offsets
 are zero-based, half-open UTF-16 code-unit indexes into `content`:
 
 - `{ kind: "internal", state: "available", ordinal, startUtf16, endUtf16,
@@ -537,7 +544,7 @@ are zero-based, half-open UTF-16 code-unit indexes into `content`:
 
 An external Reference is exactly
 `{ kind: "external", ordinal, title, url }`. Redacted and unavailable internal
-citations never contain database snapshots, target identifiers, titles, or
+link annotations never contain database snapshots, target identifiers, titles, or
 revision fields.
 
 The response also contains the authorized `rootId`. It never serializes
@@ -552,7 +559,7 @@ The API:
 - reads one coherent owner-scoped snapshot;
 - returns the same unauthorized response for missing, malformed, revoked, or
   disallowed-owner credentials;
-- redacts out-of-scope internal citations rather than turning citation metadata
+- redacts out-of-scope internal-link annotations rather than turning link metadata
   into a scope oracle; and
 - explicitly returns `405 Method Not Allowed` with `Allow: GET` for every method
   other than `GET`, including `HEAD` and `OPTIONS`.
@@ -829,7 +836,7 @@ operational logs rather than the main interface.
 ### Derived data
 
 - Breadcrumbs, descendant lists, visible tree rows, archive-filtered trees,
-  ancestor paths, citation labels, stale presentation, diffs, and constellation
+  ancestor paths, reference labels, stale presentation, diffs, and constellation
   coordinates are derived.
 - Published synthesis content, proposals, Branch Outline versions, input
   revision provenance, conversations, citations, and embeddings are stored.
@@ -915,8 +922,8 @@ revalidates affected application data.
 - External web results, Branch Outlines, child summaries, related summaries,
   node titles, and chat history are untrusted model inputs and never
   instructions.
-- Rendered Markdown is sanitized with an allowlist. Application-owned citation
-  components create links.
+- Rendered Markdown is sanitized with an allowlist. Application-owned internal
+  link and external-citation components create links.
 - Server-side URL validation permits only HTTP and HTTPS external citations and
   prevents script or local-file schemes.
 - Authorization occurs before resource-specific validation where validation
