@@ -243,7 +243,7 @@ describe("owner-scoped related-node retrieval", () => {
     expect(related.map(({ nodeId }) => nodeId)).toEqual([lowId.nodeId, highId.nodeId]);
   });
 
-  it("automatically excludes target ancestors and direct children without caller exclusions", async () => {
+  it("automatically excludes target ancestors while keeping direct children eligible", async () => {
     const userId = await insertUser();
     const ancestor = await insertEmbeddedApprovedNode({
       userId,
@@ -272,9 +272,16 @@ describe("owner-scoped related-node retrieval", () => {
       targetNodeId: target.nodeId,
     });
 
-    expect(related.map(({ nodeId }) => nodeId)).toEqual([candidate.nodeId]);
+    expect(related.map(({ nodeId }) => nodeId)).toEqual([
+      directChild.nodeId,
+      candidate.nodeId,
+    ]);
     expect(related.map(({ nodeId }) => nodeId)).not.toContain(ancestor.nodeId);
-    expect(related.map(({ nodeId }) => nodeId)).not.toContain(directChild.nodeId);
+    expect(related[0]).toMatchObject({
+      nodeId: directChild.nodeId,
+      parentId: target.nodeId,
+      synthesisVersionId: directChild.synthesisVersionId,
+    });
   });
 
   it("keeps related IDs internal while exposing bounded aliases only to synthesis", async () => {
@@ -286,6 +293,7 @@ describe("owner-scoped related-node retrieval", () => {
     });
     const evidence = await insertEmbeddedApprovedNode({
       userId,
+      parentId: target.nodeId,
       title: "Context evidence",
       vector: embedding(1, 0),
       content: "x".repeat(5_000),

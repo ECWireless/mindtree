@@ -328,15 +328,18 @@ synthesis or ancestor state.
   current published synthesis, relevant recent chat, and current pending
   proposal when refining it.
 - It receives the target node's current Branch Outline when one exists. Direct
-  child summaries reach Summary generation through that explicitly generated
-  outline rather than being appended to the Summary surface or injected as a
-  second hidden child-summary channel.
+  child summaries reach Summary generation deterministically through that
+  explicitly generated outline rather than every child Summary being appended
+  to the Summary surface or injected as a second hidden bulk channel. Bounded
+  semantic retrieval may also supply an exact approved direct-child Summary
+  revision when it is relevant and therefore eligible for an internal citation.
 - It may receive a bounded set of semantically related nodes retrieved from
-  current approved syntheses across the owner's tree.
+  current approved syntheses across the owner's tree, including direct children.
 - The target, ancestor path, current Branch Outline, and explicitly mentioned
   node IDs are resolved deterministically before semantic retrieval.
-- Related-node retrieval excludes the target and deduplicates deterministic
-  inputs. Archived nodes remain eligible as evidence but their archive state is
+- Related-node retrieval excludes the target and its ancestor path, deduplicates
+  explicit deterministic exclusions, and keeps direct children eligible.
+  Archived nodes remain eligible as evidence but their archive state is
   disclosed to the model and user.
 - Internal citations can reference only node revisions actually supplied to
   the generation request. The server rejects unknown or mismatched citation

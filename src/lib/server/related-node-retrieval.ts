@@ -127,7 +127,6 @@ export async function getRelatedNodesForUser(
         ${nodeEmbeddings.sourceSynthesisVersionId}
       and candidate_version.status = 'approved'
     where ${nodeEmbeddings.nodeId} not in (${excludedNodeList})
-      and candidate_node.parent_id is distinct from ${input.targetNodeId}
       and not exists (
         select 1 from target_ancestor_ids
         where target_ancestor_ids.id = ${nodeEmbeddings.nodeId}

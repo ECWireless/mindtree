@@ -160,6 +160,49 @@ afterAll(async () => {
 });
 
 describe("validated internal synthesis citations", () => {
+  it("accepts a supplied approved direct child without Branch Outline provenance", async () => {
+    const userId = await insertUser();
+    const targetNodeId = await insertNode({ userId, title: "Parent thought" });
+    const childNodeId = await insertNode({
+      userId,
+      parentId: targetNodeId,
+      title: "Perceptron",
+    });
+    const childVersionId = await insertApprovedSynthesis(
+      userId,
+      childNodeId,
+      "Perceptrons are linear binary classifiers.",
+    );
+    const content = "Perceptrons are a foundational linear model.";
+
+    const proposal = await insertProposal({
+      userId,
+      nodeId: targetNodeId,
+      content,
+      related: {
+        nodeId: childNodeId,
+        parentId: targetNodeId,
+        title: "Perceptron",
+        synthesisVersionId: childVersionId,
+      },
+      citedText: "Perceptrons are a foundational linear model",
+    });
+
+    expect(proposal.citations).toEqual([
+      expect.objectContaining({
+        snapshot: {
+          nodeId: childNodeId,
+          title: "Perceptron",
+          synthesisVersionId: childVersionId,
+        },
+      }),
+    ]);
+    await expect(approveSynthesisProposalForUser(userId, {
+      nodeId: targetNodeId,
+      proposalId: proposal.id,
+    })).resolves.toMatchObject({ id: proposal.id, status: "approved" });
+  });
+
   it("persists exact evidence snapshots and presents renamed, moved, archived, and changed states", async () => {
     const userId = await insertUser();
     const firstParentId = await insertNode({ userId, title: "First branch" });

@@ -795,8 +795,9 @@ manual approval as the only Summary-publication path.
 
 ### Goal
 
-Let proposals discover and cite relevant approved nodes beyond direct children
-without allowing fabricated or cross-owner references.
+Let proposals discover and cite relevant approved nodes across the owner's tree,
+including relevant direct children, without allowing fabricated or cross-owner
+references.
 
 ### User-visible outcome
 
@@ -812,7 +813,8 @@ without allowing fabricated or cross-owner references.
 - Post-approval embedding generation that does not roll back an already
   approved synthesis when embedding creation fails.
 - Bounded exact cosine-similarity retrieval across the owner's current approved
-  syntheses, excluding and deduplicating deterministic context nodes.
+  syntheses, excluding the target and its ancestors, deduplicating explicit
+  deterministic exclusions, and keeping direct children eligible.
 - `citations` schema for internal citations with nullable live target
   references, exact cited-version linkage while available, immutable
   node/title/revision snapshot fields, stable ordinal, and bounded text
@@ -843,6 +845,8 @@ without allowing fabricated or cross-owner references.
 
 - Only approved current summaries are embedded and retrieved.
 - Retrieval cannot cross owners.
+- A relevant direct child with a current approved Summary can be retrieved and
+  cited independently of whether a current Branch Outline is present.
 - Unknown, unsupplied, draft, rejected, or mismatched citation aliases reject
   the proposal safely.
 - Citation links open the target node while retaining exact revision metadata.
