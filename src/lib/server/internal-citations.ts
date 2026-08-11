@@ -25,6 +25,7 @@ export class InternalCitationValidationError extends Error {
     | "ambiguous-span"
     | "duplicate-evidence-alias"
     | "overlapping-span"
+    | "unsafe-link-span"
     | "unknown-evidence-alias") {
     super(reason);
     this.name = "InternalCitationValidationError";
@@ -61,6 +62,13 @@ export function normalizeInternalCitationMentions(input: {
       input.content.indexOf(mention.citedText, startUtf16 + 1) >= 0
     ) {
       throw new InternalCitationValidationError("ambiguous-span");
+    }
+    if (
+      startUtf16 > 0 &&
+      (input.content[startUtf16 - 1] === "!" ||
+        input.content[startUtf16 - 1] === "\\")
+    ) {
+      throw new InternalCitationValidationError("unsafe-link-span");
     }
     return {
       startUtf16,

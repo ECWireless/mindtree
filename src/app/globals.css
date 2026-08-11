@@ -1686,60 +1686,58 @@ button:not(:disabled) {
   text-transform: none;
 }
 
-.internal-citation-marker {
-  margin-inline-start: 0.12rem;
-  font-size: 0.72em;
-  vertical-align: super;
-}
-
-.internal-citation-marker a {
+.internal-node-link {
+  border-radius: 0.2rem;
   color: var(--color-blue-bright);
-  font-weight: 750;
-  text-decoration: none;
-}
-
-.internal-citation-marker a:hover,
-.internal-citation-marker a:focus-visible {
+  font-weight: inherit;
   text-decoration: underline;
+  text-decoration-thickness: 0.07em;
+  text-underline-offset: 0.16em;
 }
 
-.internal-citation-marker--unavailable {
+.internal-node-link:hover,
+.internal-node-link:focus-visible {
+  background: rgb(77 163 220 / 14%);
+}
+
+.internal-node-link--changed {
+  text-decoration-style: dotted;
+}
+
+.internal-node-link--unavailable {
   color: var(--color-muted);
+  cursor: help;
+  text-decoration-style: wavy;
 }
 
-.internal-citations {
-  margin-top: 1.2rem;
-  border-top: 1px solid rgb(154 166 178 / 20%);
-  padding-top: 0.85rem;
+.internal-node-link-status {
+  font-size: 0.78em;
+  font-style: normal;
 }
 
-.internal-citations h4 {
-  margin: 0 0 0.55rem;
-  font-size: 0.78rem;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.internal-citations ol {
-  display: grid;
-  gap: 0.5rem;
+.internal-node-tooltip {
+  position: fixed;
+  z-index: 30;
+  inset: auto;
+  width: max-content;
+  max-width: min(18rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  visibility: hidden;
+  border: 1px solid rgb(154 166 178 / 30%);
+  border-radius: 0.35rem;
   margin: 0;
-  padding-inline-start: 1.35rem;
-}
-
-.internal-citations li {
-  padding-inline-start: 0.2rem;
-}
-
-.internal-citations li > span {
-  display: block;
-  color: var(--color-muted);
-  font-size: 0.78rem;
-}
-
-.internal-citations a {
-  color: var(--color-blue-bright);
-  font-weight: 700;
+  padding: 0.35rem 0.5rem;
+  background: #111820;
+  color: var(--color-ink);
+  box-shadow: 0 0.5rem 1.25rem rgb(0 0 0 / 45%);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.2;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  text-align: center;
+  white-space: normal;
 }
 
 .synthesis-proposal {

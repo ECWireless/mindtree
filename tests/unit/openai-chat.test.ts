@@ -262,6 +262,12 @@ describe("OpenAI Responses chat stream", () => {
       }],
     });
     expect(request.instructions).toContain("advisory generated content");
+    expect(request.instructions).toContain("wiki-style node links");
+    expect(request.instructions).toContain("without surrounding whitespace");
+    expect(request.instructions).toContain("not numbered source citations");
+    expect(request.instructions).toContain(
+      "Numbered citation markers and References are reserved for validated external sources",
+    );
     expect(request.instructions).not.toContain("request_synthesis");
   });
 
@@ -358,6 +364,20 @@ describe("OpenAI Responses chat stream", () => {
       [{ ...proposalCall, arguments: "not-json" }],
       [{ ...proposalCall, arguments: JSON.stringify({ content: "[unsafe](https://example.test)" }) }],
       [{ ...proposalCall, arguments: JSON.stringify({ content: "Valid", unexpected: true }) }],
+      [{
+        ...proposalCall,
+        arguments: JSON.stringify({
+          content: "Valid proposal",
+          citations: [{ evidenceAlias: "E1", citedText: "Valid\nproposal" }],
+        }),
+      }],
+      [{
+        ...proposalCall,
+        arguments: JSON.stringify({
+          content: "**Valid proposal**",
+          citations: [{ evidenceAlias: "E1", citedText: "**Valid proposal**" }],
+        }),
+      }],
       [{
         ...proposalCall,
         arguments: JSON.stringify({

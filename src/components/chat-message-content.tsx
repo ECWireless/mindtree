@@ -1,3 +1,14 @@
+"use client";
+
+import {
+  useCallback,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import ReactMarkdown from "react-markdown";
 
 import type { InternalCitationView } from "@/lib/citations/contracts";
@@ -18,37 +29,286 @@ export function ChatMessageContent({ content }: { content: string }) {
   );
 }
 
-const citationMarkerPrefix = "#mindtree-citation-";
+const internalLinkPrefix = "#mindtree-internal-link-";
 
-export function addInternalCitationMarkers(
+type MarkdownAstNode = {
+  type?: string;
+  value?: string;
+  url?: string;
+  children?: MarkdownAstNode[];
+  position?: {
+    start?: { offset?: number };
+    end?: { offset?: number };
+  };
+};
+
+function createInternalLinkPlugin(
   content: string,
   citations: readonly InternalCitationView[],
 ) {
-  let marked = content;
-  for (const citation of [...citations].sort((left, right) =>
-    right.endUtf16 - left.endUtf16 || right.ordinal - left.ordinal
-  )) {
-    if (
-      citation.startUtf16 < 0 ||
-      citation.endUtf16 <= citation.startUtf16 ||
-      citation.endUtf16 > content.length
-    ) {
-      continue;
-    }
-    marked = `${marked.slice(0, citation.endUtf16)}[${citation.ordinal}](${citationMarkerPrefix}${citation.ordinal})${marked.slice(citation.endUtf16)}`;
-  }
-  return marked;
+  const ordered = [...citations].sort((left, right) =>
+    left.startUtf16 - right.startUtf16 || left.ordinal - right.ordinal
+  );
+
+  return function internalLinkPlugin() {
+    return (tree: unknown) => {
+      const visit = (node: MarkdownAstNode) => {
+        if (
+          node.type === "link" ||
+          node.type === "linkReference" ||
+          node.type === "image" ||
+          node.type === "imageReference" ||
+          node.type === "code" ||
+          node.type === "inlineCode"
+        ) {
+          return;
+        }
+        if (!node.children) return;
+
+        for (let index = 0; index < node.children.length; index += 1) {
+          const child = node.children[index]!;
+          const start = child.position?.start?.offset;
+          const end = child.position?.end?.offset;
+          if (
+            child.type !== "text" ||
+            typeof child.value !== "string" ||
+            typeof start !== "number" ||
+            typeof end !== "number" ||
+            content.slice(start, end) !== child.value
+          ) {
+            visit(child);
+            continue;
+          }
+
+          const withinTextNode = ordered.filter((citation) =>
+            citation.startUtf16 >= start &&
+            citation.endUtf16 <= end &&
+            citation.endUtf16 > citation.startUtf16 &&
+            content.slice(citation.startUtf16, citation.endUtf16) ===
+              child.value!.slice(citation.startUtf16 - start, citation.endUtf16 - start)
+          );
+          if (withinTextNode.length === 0) continue;
+
+          const replacement: MarkdownAstNode[] = [];
+          let cursor = 0;
+          for (const citation of withinTextNode) {
+            const linkStart = citation.startUtf16 - start;
+            const linkEnd = citation.endUtf16 - start;
+            if (linkStart < cursor) continue;
+            if (linkStart > cursor) {
+              replacement.push({ type: "text", value: child.value.slice(cursor, linkStart) });
+            }
+            replacement.push({
+              type: "link",
+              url: `${internalLinkPrefix}${citation.ordinal}`,
+              children: [{ type: "text", value: child.value.slice(linkStart, linkEnd) }],
+            });
+            cursor = linkEnd;
+          }
+          if (cursor < child.value.length) {
+            replacement.push({ type: "text", value: child.value.slice(cursor) });
+          }
+          node.children.splice(index, 1, ...replacement);
+          index += replacement.length - 1;
+        }
+      };
+
+      visit(tree as MarkdownAstNode);
+    };
+  };
 }
 
-function citationStateLabel(citation: InternalCitationView) {
+function internalLinkStateLabel(citation: InternalCitationView) {
   if (citation.target.state === "unavailable") return "Unavailable";
   const states = [
     citation.target.renamed ? `Renamed from ${citation.snapshot.title}` : null,
-    citation.target.moved ? "Moved since cited" : null,
+    citation.target.moved ? "Moved since linked" : null,
     citation.target.archived ? "Archived" : null,
-    citation.target.changedRevision ? "Summary changed since cited" : null,
+    citation.target.changedRevision ? "Summary changed since linked" : null,
   ].filter((state): state is string => state !== null);
-  return states.length > 0 ? states.join(" · ") : "Exact cited revision";
+  return states.length > 0 ? states.join(" · ") : "Exact linked revision";
+}
+
+function internalLinkNeedsAttention(citation: InternalCitationView) {
+  return citation.target.state === "unavailable" ||
+    citation.target.renamed ||
+    citation.target.moved ||
+    citation.target.archived ||
+    citation.target.changedRevision;
+}
+
+const tooltipViewportMargin = 16;
+const tooltipTargetGap = 7;
+
+type TooltipRect = {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+  width: number;
+  height: number;
+};
+
+export function calculateInternalTooltipPosition(input: {
+  target: TooltipRect;
+  tooltip: Pick<TooltipRect, "width" | "height">;
+  viewportWidth: number;
+  viewportHeight: number;
+}) {
+  const minimumLeft = tooltipViewportMargin + input.tooltip.width / 2;
+  const maximumLeft = input.viewportWidth - tooltipViewportMargin - input.tooltip.width / 2;
+  const targetCenter = input.target.left + input.target.width / 2;
+  const left = maximumLeft < minimumLeft
+    ? input.viewportWidth / 2
+    : Math.min(maximumLeft, Math.max(minimumLeft, targetCenter));
+  const roomAbove = input.target.top - tooltipViewportMargin;
+  const roomBelow = input.viewportHeight - input.target.bottom - tooltipViewportMargin;
+  const placeAbove = roomAbove >= input.tooltip.height + tooltipTargetGap || roomAbove >= roomBelow;
+  const desiredTop = placeAbove
+    ? input.target.top - tooltipTargetGap - input.tooltip.height
+    : input.target.bottom + tooltipTargetGap;
+  const maximumTop = Math.max(
+    tooltipViewportMargin,
+    input.viewportHeight - tooltipViewportMargin - input.tooltip.height,
+  );
+  return {
+    left,
+    placement: placeAbove ? "above" as const : "below" as const,
+    top: Math.min(maximumTop, Math.max(tooltipViewportMargin, desiredTop)),
+  };
+}
+
+function InternalNodeTooltipTarget({
+  children,
+  citation,
+  description,
+  descriptionId,
+  linkedPhrase,
+}: {
+  children: ReactNode;
+  citation: InternalCitationView;
+  description: string;
+  descriptionId: string;
+  linkedPhrase: string;
+}) {
+  const targetRef = useRef<HTMLElement | null>(null);
+  const tooltipRef = useRef<HTMLSpanElement | null>(null);
+  const dismissedRef = useRef(false);
+  const focusedRef = useRef(false);
+  const hoveredRef = useRef(false);
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<ReturnType<
+    typeof calculateInternalTooltipPosition
+  > | null>(null);
+
+  const updatePosition = useCallback(() => {
+    const target = targetRef.current;
+    const tooltip = tooltipRef.current;
+    if (!target || !tooltip) return;
+    setPosition(calculateInternalTooltipPosition({
+      target: target.getBoundingClientRect(),
+      tooltip: tooltip.getBoundingClientRect(),
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    }));
+  }, []);
+
+  useLayoutEffect(() => {
+    const tooltip = tooltipRef.current;
+    if (!open || !tooltip) return;
+    tooltip.showPopover();
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+      if (tooltip.matches(":popover-open")) tooltip.hidePopover();
+    };
+  }, [open, updatePosition]);
+
+  const interactionProps = {
+    onBlur: () => {
+      focusedRef.current = false;
+      if (!hoveredRef.current) dismissedRef.current = false;
+      setOpen(hoveredRef.current && !dismissedRef.current);
+    },
+    onFocus: () => {
+      if (!hoveredRef.current) dismissedRef.current = false;
+      focusedRef.current = true;
+      setPosition(null);
+      setOpen(!dismissedRef.current);
+    },
+    onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
+      if (event.key !== "Escape") return;
+      dismissedRef.current = true;
+      setOpen(false);
+      event.stopPropagation();
+    },
+    onMouseEnter: () => {
+      if (!focusedRef.current) dismissedRef.current = false;
+      hoveredRef.current = true;
+      setPosition(null);
+      setOpen(!dismissedRef.current);
+    },
+    onMouseLeave: () => {
+      hoveredRef.current = false;
+      if (!focusedRef.current) dismissedRef.current = false;
+      setOpen(focusedRef.current && !dismissedRef.current);
+    },
+  };
+  const tooltip = (
+    <span
+      aria-hidden="true"
+      className="internal-node-tooltip"
+      popover="manual"
+      ref={tooltipRef}
+      style={position ? {
+        left: position.left,
+        top: position.top,
+        transform: "translateX(-50%)",
+        visibility: "visible",
+      } : undefined}
+    >
+      {description}
+    </span>
+  );
+
+  return citation.target.state === "available" ? (
+    <>
+      <a
+        {...interactionProps}
+        aria-describedby={descriptionId}
+        aria-label={linkedPhrase}
+        className={internalLinkNeedsAttention(citation)
+          ? "internal-node-link internal-node-link--changed"
+          : "internal-node-link"}
+        href={`/?node=${encodeURIComponent(citation.target.nodeId)}`}
+        ref={(element) => { targetRef.current = element; }}
+      >
+        {children}
+      </a>
+      <span className="sr-only" id={descriptionId}>. {description}</span>
+      {tooltip}
+    </>
+  ) : (
+    <>
+      <span
+        {...interactionProps}
+        aria-describedby={descriptionId}
+        aria-label={`${linkedPhrase} (unavailable)`}
+        className="internal-node-link internal-node-link--unavailable"
+        ref={(element) => { targetRef.current = element; }}
+        role="note"
+        tabIndex={0}
+      >
+        {children}
+        <span aria-hidden="true" className="internal-node-link-status"> (unavailable)</span>
+        <span className="sr-only" id={descriptionId}>. {description}</span>
+      </span>
+      {tooltip}
+    </>
+  );
 }
 
 export function SynthesisDocumentContent({
@@ -59,34 +319,34 @@ export function SynthesisDocumentContent({
   citations?: readonly InternalCitationView[];
 }) {
   const byOrdinal = new Map(citations.map((citation) => [citation.ordinal, citation]));
+  const descriptionPrefix = useId();
   return (
     <>
       <ReactMarkdown
         allowedElements={allowedElements}
+        remarkPlugins={[createInternalLinkPlugin(content, citations)]}
         skipHtml
         components={{
           a: ({ children, href }) => {
-            const ordinal = href?.startsWith(citationMarkerPrefix)
-              ? Number(href.slice(citationMarkerPrefix.length))
+            const ordinal = href?.startsWith(internalLinkPrefix)
+              ? Number(href.slice(internalLinkPrefix.length))
               : Number.NaN;
             const citation = Number.isInteger(ordinal) ? byOrdinal.get(ordinal) : undefined;
             if (!citation) return <>{children}</>;
-            const label = citation.target.state === "available"
-              ? `Citation ${citation.ordinal}: ${citation.target.title}. ${citationStateLabel(citation)}`
-              : `Citation ${citation.ordinal}: unavailable thought, formerly ${citation.snapshot.title}`;
-            return citation.target.state === "available" ? (
-              <sup className="internal-citation-marker">
-                <a
-                  aria-label={label}
-                  href={`/?node=${encodeURIComponent(citation.target.nodeId)}`}
-                >
-                  {children}
-                </a>
-              </sup>
-            ) : (
-              <sup className="internal-citation-marker internal-citation-marker--unavailable" aria-label={label}>
+            const description = citation.target.state === "available"
+              ? `Linked thought: ${citation.target.title}. ${internalLinkStateLabel(citation)}. Linked revision ${citation.snapshot.synthesisVersionId.slice(0, 8)}`
+              : `Unavailable linked thought, formerly ${citation.snapshot.title}`;
+            const descriptionId = `${descriptionPrefix}-internal-link-${citation.ordinal}`;
+            const linkedPhrase = content.slice(citation.startUtf16, citation.endUtf16);
+            return (
+              <InternalNodeTooltipTarget
+                citation={citation}
+                description={description}
+                descriptionId={descriptionId}
+                linkedPhrase={linkedPhrase}
+              >
                 {children}
-              </sup>
+              </InternalNodeTooltipTarget>
             );
           },
           h1: ({ children }) => <h4>{children}</h4>,
@@ -97,28 +357,8 @@ export function SynthesisDocumentContent({
           h6: ({ children }) => <h6>{children}</h6>,
         }}
       >
-        {addInternalCitationMarkers(content, citations)}
+        {content}
       </ReactMarkdown>
-      {citations.length > 0 ? (
-        <section className="internal-citations" aria-label="Cited thoughts">
-          <h4>Cited thoughts</h4>
-          <ol>
-            {citations.map((citation) => (
-              <li key={citation.ordinal} value={citation.ordinal}>
-                {citation.target.state === "available" ? (
-                  <a href={`/?node=${encodeURIComponent(citation.target.nodeId)}`}>
-                    {citation.target.title}
-                  </a>
-                ) : (
-                  <span>Unavailable thought — formerly {citation.snapshot.title}</span>
-                )}
-                <span>{citationStateLabel(citation)}</span>
-                <span>Revision {citation.snapshot.synthesisVersionId.slice(0, 8)}</span>
-              </li>
-            ))}
-          </ol>
-        </section>
-      ) : null}
     </>
   );
 }

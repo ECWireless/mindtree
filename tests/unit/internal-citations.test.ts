@@ -3,6 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import {
+  internalCitationMentionSchema,
+  MAX_CITED_TEXT_LENGTH,
+} from "../../src/lib/citations/contracts";
+
+import {
   assignInternalEvidenceAliases,
   InternalCitationValidationError,
   normalizeInternalCitationMentions,
@@ -19,7 +24,34 @@ const evidenceBase: Omit<InternalCitationEvidence, "alias"> = {
   sourceStateFingerprint: "a".repeat(64),
 };
 
-describe("internal citation normalization", () => {
+describe("internal link normalization", () => {
+  it("accepts only bounded single-line plain-text link phrases", () => {
+    expect(internalCitationMentionSchema.safeParse({
+      evidenceAlias: "E1",
+      citedText: "Perceptron",
+    }).success).toBe(true);
+    for (const citedText of [
+      "Perceptron\nNeural network",
+      "Perceptron\\node",
+      "**Perceptron**",
+      "_Perceptron_",
+      "`Perceptron`",
+      " Perceptron",
+      "Perceptron ",
+      "# Heading",
+      "- List item",
+      "+ List item",
+      "> Quotation",
+      "1. List item",
+      "x".repeat(MAX_CITED_TEXT_LENGTH + 1),
+    ]) {
+      expect(internalCitationMentionSchema.safeParse({
+        evidenceAlias: "E1",
+        citedText,
+      }).success).toBe(false);
+    }
+  });
+
   it("assigns opaque stable aliases without exposing IDs", () => {
     expect(assignInternalEvidenceAliases([
       evidenceBase,
@@ -66,6 +98,12 @@ describe("internal citation normalization", () => {
       content: "Repeated claim and Repeated claim",
       mentions: [{ evidenceAlias: "E1", citedText: "Repeated claim" }],
       reason: "ambiguous-span",
+    },
+    {
+      name: "Markdown-unsafe link contexts",
+      content: "!Linked phrase",
+      mentions: [{ evidenceAlias: "E1", citedText: "Linked phrase" }],
+      reason: "unsafe-link-span",
     },
     {
       name: "overlapping spans",

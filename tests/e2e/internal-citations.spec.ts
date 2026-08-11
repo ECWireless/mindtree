@@ -20,7 +20,7 @@ function fingerprintRelatedInput(input: {
 
 test.afterAll(async () => pool.end());
 
-test("navigates internal citations and presents changed or unavailable evidence", async ({
+test("navigates internal links and presents changed or unavailable evidence", async ({
   context,
   page,
 }) => {
@@ -146,19 +146,34 @@ test("navigates internal citations and presents changed or unavailable evidence"
     await page.goto(`/?node=${targetNodeId}`);
 
     const summary = page.getByRole("region", { name: "Summary" });
-    const citedThoughts = summary.getByRole("region", { name: "Cited thoughts" });
-    const inlineCitation = summary.getByRole("link", {
-      name: "Citation 1: Source thought. Exact cited revision",
+    const internalLink = summary.getByRole("link", {
+      name: citedText,
     });
-    await expect(inlineCitation).toBeVisible();
-    await expect(citedThoughts.getByRole("link", { name: "Source thought" })).toBeVisible();
-    await expect(citedThoughts.getByText("Exact cited revision", { exact: true })).toBeVisible();
-    await expect(citedThoughts.getByText(
-      `Revision ${sourceVersionId.slice(0, 8)}`,
-      { exact: true },
-    )).toBeVisible();
+    await expect(internalLink).toBeVisible();
+    await expect(internalLink).toHaveText(citedText);
+    await expect(internalLink).toHaveAccessibleName(citedText);
+    await expect(internalLink).toHaveClass("internal-node-link");
+    await internalLink.hover();
+    const tooltip = page.locator(".internal-node-tooltip:popover-open");
+    await expect(tooltip).toBeVisible();
+    await expect(tooltip).toHaveText(
+      `Linked thought: Source thought. Exact linked revision. Linked revision ${sourceVersionId.slice(0, 8)}`,
+    );
+    const tooltipBounds = await tooltip.boundingBox();
+    expect(tooltipBounds).not.toBeNull();
+    expect(tooltipBounds!.x).toBeGreaterThanOrEqual(15);
+    expect(tooltipBounds!.x + tooltipBounds!.width)
+      .toBeLessThanOrEqual((page.viewportSize()?.width ?? 0) - 15);
+    expect(tooltipBounds!.y).toBeGreaterThanOrEqual(15);
+    expect(tooltipBounds!.y + tooltipBounds!.height)
+      .toBeLessThanOrEqual((page.viewportSize()?.height ?? 0) - 15);
+    await expect(summary.locator(".sr-only").filter({
+      hasText: `Linked thought: Source thought. Exact linked revision. Linked revision ${sourceVersionId.slice(0, 8)}`,
+    })).toHaveCount(1);
+    await expect(summary.getByText("Cited thoughts", { exact: false })).toHaveCount(0);
+    await expect(summary.getByText("[1]", { exact: true })).toHaveCount(0);
 
-    await inlineCitation.click();
+    await internalLink.click();
     await expect(page).toHaveURL(new RegExp(`\\?node=${sourceNodeId}$`));
     await expect(page.getByRole("heading", { level: 1, name: "Source thought" })).toBeVisible();
 
@@ -211,12 +226,14 @@ test("navigates internal citations and presents changed or unavailable evidence"
       [seeded.userId, targetNodeId],
     );
     await page.goto(`/?node=${targetNodeId}`);
-    const changedCitations = page.getByRole("region", { name: "Cited thoughts" });
-    await expect(changedCitations.getByRole("link", { name: "Renamed source" })).toBeVisible();
-    await expect(changedCitations.getByText(
-      "Renamed from Source thought · Moved since cited · Archived · Summary changed since cited",
-      { exact: true },
-    )).toBeVisible();
+    const changedLink = summary.getByRole("link", {
+      name: citedText,
+    });
+    await expect(changedLink).toBeVisible();
+    await expect(changedLink).toHaveText(citedText);
+    await expect(changedLink).toHaveClass(
+      "internal-node-link internal-node-link--changed",
+    );
     await expect(page.getByText("Update available", { exact: true })).toBeVisible();
 
     await pool.query(
@@ -225,14 +242,23 @@ test("navigates internal citations and presents changed or unavailable evidence"
     );
     await page.reload();
 
-    const unavailableCitations = page.getByRole("region", { name: "Cited thoughts" });
-    await expect(unavailableCitations.getByText(
-      "Unavailable thought — formerly Source thought",
-      { exact: true },
-    )).toBeVisible();
-    await expect(unavailableCitations.getByText("Unavailable", { exact: true })).toBeVisible();
-    await expect(unavailableCitations.getByRole("link")).toHaveCount(0);
-    await expect(summary.getByRole("link", { name: /Citation 1:/ })).toHaveCount(0);
+    const unavailableLink = summary.locator(".internal-node-link--unavailable");
+    await expect(unavailableLink).toBeVisible();
+    await expect(unavailableLink).toHaveText(`${citedText} (unavailable). Unavailable linked thought, formerly Source thought`);
+    await expect(unavailableLink).toHaveAccessibleName(`${citedText} (unavailable)`);
+    await unavailableLink.focus();
+    const unavailableTooltip = page.locator(".internal-node-tooltip:popover-open");
+    await expect(unavailableTooltip).toBeVisible();
+    await expect(unavailableTooltip).toHaveText(
+      "Unavailable linked thought, formerly Source thought",
+    );
+    await page.keyboard.press("Escape");
+    await expect(unavailableLink).toBeFocused();
+    await expect(page.locator(".internal-node-tooltip:popover-open")).toHaveCount(0);
+    await expect(unavailableLink).toHaveClass(
+      "internal-node-link internal-node-link--unavailable",
+    );
+    await expect(summary.getByRole("link", { name: citedText })).toHaveCount(0);
 
     const dimensions = await page.evaluate(() => ({
       clientWidth: document.documentElement.clientWidth,
