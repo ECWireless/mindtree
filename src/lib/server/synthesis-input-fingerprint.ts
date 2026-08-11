@@ -10,3 +10,12 @@ export function fingerprintSynthesisOutlineInput(input: {
     .update(JSON.stringify({ version: 1, ...input }), "utf8")
     .digest("hex");
 }
+
+export function fingerprintSynthesisRelatedInput(input: {
+  nodeId: string;
+  synthesisVersionId: string;
+}) {
+  return createHash("sha256")
+    .update(JSON.stringify({ version: 1, ...input }), "utf8")
+    .digest("hex");
+}
