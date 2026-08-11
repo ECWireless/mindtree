@@ -14,6 +14,7 @@ import {
   uniqueIndex,
   uuid,
   varchar,
+  vector,
 } from "drizzle-orm/pg-core";
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).defaultNow().notNull();
@@ -114,6 +115,11 @@ export const nodes = pgTable(
   },
   (table) => [
     unique("nodes_user_id_id_unique").on(table.userId, table.id),
+    unique("nodes_user_id_id_published_unique").on(
+      table.userId,
+      table.id,
+      table.publishedSynthesisVersionId,
+    ),
     unique("nodes_sibling_position_unique")
       .on(table.userId, table.parentId, table.position)
       .nullsNotDistinct(),
@@ -584,6 +590,55 @@ export const synthesisInputs = pgTable(
   ],
 );
 
+export const nodeEmbeddings = pgTable(
+  "node_embeddings",
+  {
+    userId: text("user_id").notNull(),
+    nodeId: uuid("node_id").notNull(),
+    sourceSynthesisVersionId: uuid("source_synthesis_version_id").notNull(),
+    model: varchar("model", { length: 100 }).notNull(),
+    dimensions: integer("dimensions").notNull(),
+    embedding: vector("embedding", {
+      dimensions: 3_072,
+    }).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    primaryKey({
+      name: "node_embeddings_pkey",
+      columns: [table.userId, table.nodeId],
+    }),
+    foreignKey({
+      name: "node_embeddings_node_owner_fk",
+      columns: [table.userId, table.nodeId],
+      foreignColumns: [nodes.userId, nodes.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "node_embeddings_source_owner_fk",
+      columns: [table.userId, table.nodeId, table.sourceSynthesisVersionId],
+      foreignColumns: [
+        synthesisVersions.userId,
+        synthesisVersions.nodeId,
+        synthesisVersions.id,
+      ],
+    }),
+    foreignKey({
+      name: "node_embeddings_current_owner_fk",
+      columns: [table.userId, table.nodeId, table.sourceSynthesisVersionId],
+      foreignColumns: [
+        nodes.userId,
+        nodes.id,
+        nodes.publishedSynthesisVersionId,
+      ],
+    }).onDelete("cascade"),
+    check(
+      "node_embeddings_profile_check",
+      sql`${table.model} = 'text-embedding-3-large' and ${table.dimensions} = 3072`,
+    ),
+  ],
+);
+
 export const authSchema = {
   user,
   session,
@@ -597,6 +652,7 @@ export const schema = {
   chatMessages,
   synthesisVersions,
   synthesisInputs,
+  nodeEmbeddings,
   branchOutlineVersions,
   branchOutlineInputs,
 };

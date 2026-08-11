@@ -57,6 +57,13 @@
       "when": 1785956310519,
       "tag": "0007_slow_thunderball",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1786407825784,
+      "tag": "0008_lovely_hammerhead",
+      "breakpoints": true
     }
   ]
 }

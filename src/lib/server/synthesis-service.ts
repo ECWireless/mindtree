@@ -6,6 +6,7 @@ import { DrizzleError, DrizzleQueryError } from "drizzle-orm/errors";
 import { db } from "@/db/client";
 import {
   branchOutlineVersions,
+  nodeEmbeddings,
   nodes,
   synthesisInputs,
   synthesisVersions,
@@ -338,6 +339,12 @@ export async function approveSynthesisProposalForUser(
         .where(eq(synthesisVersions.id, proposal.id))
         .returning();
       if (!approved) throw new SynthesisServiceError("unavailable");
+      await tx
+        .delete(nodeEmbeddings)
+        .where(and(
+          eq(nodeEmbeddings.userId, userId),
+          eq(nodeEmbeddings.nodeId, input.nodeId),
+        ));
       await tx
         .update(nodes)
         .set({

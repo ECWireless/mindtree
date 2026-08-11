@@ -2,6 +2,9 @@ import "server-only";
 
 export const OPENAI_CHAT_MODEL = "gpt-5.6-sol" as const;
 export const OPENAI_SYNTHESIS_MODEL = OPENAI_CHAT_MODEL;
+export const OPENAI_EMBEDDING_MODEL = "text-embedding-3-large" as const;
+export const OPENAI_EMBEDDING_DIMENSIONS = 3_072;
+export const OPENAI_EMBEDDING_TIMEOUT_MS = 30_000;
 export const OPENAI_CHAT_REASONING = {
   context: "current_turn",
   effort: "high",

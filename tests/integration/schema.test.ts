@@ -33,6 +33,7 @@ describe("initial authentication schema", () => {
       "branch_outline_inputs",
       "branch_outline_versions",
       "chat_messages",
+      "node_embeddings",
       "nodes",
       "session",
       "synthesis_inputs",
@@ -40,6 +41,68 @@ describe("initial authentication schema", () => {
       "user",
       "verification",
     ]);
+  });
+
+  it("defines pgvector-backed owner-scoped current Summary embeddings", async () => {
+    const extension = await client.query<{ extversion: string }>(
+      `select extversion from pg_extension where extname = 'vector'`,
+    );
+    expect(extension.rows).toEqual([{ extversion: expect.stringMatching(/^\d+\.\d+\.\d+$/) }]);
+
+    const embeddingColumn = await client.query<{ data_type: string }>(
+      `select format_type(atttypid, atttypmod) as data_type
+       from pg_attribute
+       where attrelid = 'node_embeddings'::regclass and attname = 'embedding'`,
+    );
+    expect(embeddingColumn.rows).toEqual([{ data_type: "vector(3072)" }]);
+
+    const constraints = await client.query<{ conname: string; definition: string }>(
+      `select conname, pg_get_constraintdef(oid) as definition
+       from pg_constraint
+       where conname like 'node_embeddings_%'
+       order by conname`,
+    );
+    expect(constraints.rows.map(({ conname }) => conname)).toEqual([
+      "node_embeddings_current_owner_fk",
+      "node_embeddings_node_owner_fk",
+      "node_embeddings_pkey",
+      "node_embeddings_profile_check",
+      "node_embeddings_source_owner_fk",
+    ]);
+    expect(
+      constraints.rows.find(({ conname }) => conname === "node_embeddings_node_owner_fk")
+        ?.definition,
+    ).toContain(
+      "FOREIGN KEY (user_id, node_id) REFERENCES nodes(user_id, id) ON DELETE CASCADE",
+    );
+    expect(
+      constraints.rows.find(({ conname }) => conname === "node_embeddings_current_owner_fk")
+        ?.definition,
+    ).toContain(
+      "FOREIGN KEY (user_id, node_id, source_synthesis_version_id) REFERENCES nodes(user_id, id, published_synthesis_version_id) ON DELETE CASCADE",
+    );
+    expect(
+      constraints.rows.find(({ conname }) => conname === "node_embeddings_source_owner_fk")
+        ?.definition,
+    ).toContain(
+      "FOREIGN KEY (user_id, node_id, source_synthesis_version_id) REFERENCES synthesis_versions(user_id, node_id, id)",
+    );
+    expect(
+      constraints.rows.find(({ conname }) => conname === "node_embeddings_profile_check")
+        ?.definition,
+    ).toContain("'text-embedding-3-large'::text");
+    expect(
+      constraints.rows.find(({ conname }) => conname === "node_embeddings_profile_check")
+        ?.definition,
+    ).toContain("dimensions = 3072");
+
+    const triggers = await client.query<{ tgname: string }>(
+      `select tgname from pg_trigger
+       where tgrelid = 'node_embeddings'::regclass and not tgisinternal`,
+    );
+    expect(triggers.rows).toEqual([{
+      tgname: "node_embeddings_approved_source_trigger",
+    }]);
   });
 
   it("defines the owner-scoped persistent chat ledger constraints", async () => {
@@ -245,6 +308,7 @@ describe("initial authentication schema", () => {
          'nodes_parent_owner_fk',
          'nodes_sibling_position_unique',
          'nodes_published_synthesis_owner_fk',
+         'nodes_user_id_id_published_unique',
          'nodes_current_branch_outline_owner_fk',
          'nodes_branch_outline_stale_state_check',
          'nodes_branch_outline_stale_reason_check',
@@ -265,6 +329,7 @@ describe("initial authentication schema", () => {
       "nodes_published_synthesis_owner_fk",
       "nodes_sibling_position_unique",
       "nodes_title_trimmed_length_check",
+      "nodes_user_id_id_published_unique",
     ]);
     expect(
       constraints.rows.find(({ conname }) => conname === "nodes_sibling_position_unique"),
