@@ -71,6 +71,13 @@
       "when": 1786412873390,
       "tag": "0009_ambitious_shinobi_shaw",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1786467779893,
+      "tag": "0010_phase9_compatibility_guards",
+      "breakpoints": true
     }
   ]
 }

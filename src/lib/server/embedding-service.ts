@@ -23,7 +23,7 @@ type EmbeddingTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export type EmbeddingRefreshResult =
   | { status: "refreshed" }
-  | { status: "skipped"; reason: "not-current" }
+  | { status: "skipped"; reason: "already-current" | "not-current" }
   | {
       status: "failed";
       reason: OpenAIEmbeddingFailureCode | "storage-unavailable";
@@ -44,11 +44,12 @@ function getPostgreSqlFailure(error: unknown): PostgreSqlFailure | null {
 }
 
 async function getCurrentApprovedContent(
+  tx: EmbeddingTransaction,
   userId: string,
   nodeId: string,
   synthesisVersionId: string,
 ) {
-  const [current] = await db
+  const [current] = await tx
     .select({ content: synthesisVersions.content })
     .from(nodes)
     .innerJoin(
@@ -66,6 +67,23 @@ async function getCurrentApprovedContent(
       eq(synthesisVersions.status, "approved"),
     ));
   return current?.content ?? null;
+}
+
+async function hasCurrentEmbedding(
+  tx: EmbeddingTransaction,
+  userId: string,
+  nodeId: string,
+  synthesisVersionId: string,
+) {
+  const [current] = await tx
+    .select({ sourceSynthesisVersionId: nodeEmbeddings.sourceSynthesisVersionId })
+    .from(nodeEmbeddings)
+    .where(and(
+      eq(nodeEmbeddings.userId, userId),
+      eq(nodeEmbeddings.nodeId, nodeId),
+      eq(nodeEmbeddings.sourceSynthesisVersionId, synthesisVersionId),
+    ));
+  return current !== undefined;
 }
 
 async function lockCurrentApprovedVersion(
@@ -102,23 +120,39 @@ export async function refreshApprovedSynthesisEmbeddingForUser(
   },
 ): Promise<EmbeddingRefreshResult> {
   try {
-    const content = await getCurrentApprovedContent(
-      userId,
-      input.nodeId,
-      input.synthesisVersionId,
-    );
-    if (content === null) return { status: "skipped", reason: "not-current" };
-
-    const embedding = await input.embed(content);
-    if (
-      embedding.length !== OPENAI_EMBEDDING_DIMENSIONS ||
-      !embedding.every(Number.isFinite) ||
-      !embedding.some((value) => value !== 0)
-    ) {
-      return { status: "failed", reason: "response-invalid" };
-    }
-
     return await db.transaction(async (tx) => {
+      await tx.execute(sql`
+        select pg_advisory_xact_lock(
+          hashtextextended(${`${userId}:${input.nodeId}`}, 0)
+        )
+      `);
+      const content = await getCurrentApprovedContent(
+        tx,
+        userId,
+        input.nodeId,
+        input.synthesisVersionId,
+      );
+      if (content === null) {
+        return { status: "skipped", reason: "not-current" } as const;
+      }
+      if (await hasCurrentEmbedding(
+        tx,
+        userId,
+        input.nodeId,
+        input.synthesisVersionId,
+      )) {
+        return { status: "skipped", reason: "already-current" } as const;
+      }
+
+      const embedding = await input.embed(content);
+      if (
+        embedding.length !== OPENAI_EMBEDDING_DIMENSIONS ||
+        !embedding.every(Number.isFinite) ||
+        !embedding.some((value) => value !== 0)
+      ) {
+        return { status: "failed", reason: "response-invalid" } as const;
+      }
+
       if (!await lockCurrentApprovedVersion(
         tx,
         userId,

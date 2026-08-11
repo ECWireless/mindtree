@@ -539,11 +539,13 @@ describe("initial authentication schema", () => {
 
     const triggers = await client.query<{ tgname: string }>(
       `select tgname from pg_trigger
-       where tgrelid = 'synthesis_versions'::regclass and not tgisinternal`,
+       where tgrelid = 'synthesis_versions'::regclass and not tgisinternal
+       order by tgname`,
     );
-    expect(triggers.rows).toEqual([{
-      tgname: "synthesis_versions_immutable_transition_trigger",
-    }]);
+    expect(triggers.rows).toEqual([
+      { tgname: "synthesis_versions_immutable_transition_trigger" },
+      { tgname: "synthesis_versions_related_inputs_current_trigger" },
+    ]);
   });
 
   it("enforces owner- and node-scoped synthesis provenance links", async () => {

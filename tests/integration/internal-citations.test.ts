@@ -502,4 +502,79 @@ describe("validated internal synthesis citations", () => {
     })).rejects.toEqual(new SynthesisServiceError("stale-input"));
     expect((await getSynthesisWorkspaceForUser(userId, targetNodeId)).published).toBeNull();
   });
+
+  it("guards exact related evidence for legacy direct approval updates", async () => {
+    const userId = await insertUser();
+    const sourceNodeId = await insertNode({ userId, title: "Legacy source" });
+    const validTargetNodeId = await insertNode({ userId, title: "Valid legacy target" });
+    const staleTargetNodeId = await insertNode({ userId, title: "Stale legacy target" });
+    const sourceVersionId = await insertApprovedSynthesis(
+      userId,
+      sourceNodeId,
+      "First legacy source revision",
+    );
+    const validProposal = await insertProposal({
+      userId,
+      nodeId: validTargetNodeId,
+      content: "Current evidence supports this legacy approval.",
+      related: {
+        nodeId: sourceNodeId,
+        parentId: null,
+        title: "Legacy source",
+        synthesisVersionId: sourceVersionId,
+      },
+      citedText: "Current evidence supports this legacy approval",
+    });
+    const staleProposal = await insertProposal({
+      userId,
+      nodeId: staleTargetNodeId,
+      content: "Soon-stale evidence supports this legacy approval.",
+      related: {
+        nodeId: sourceNodeId,
+        parentId: null,
+        title: "Legacy source",
+        synthesisVersionId: sourceVersionId,
+      },
+      citedText: "Soon-stale evidence supports this legacy approval",
+    });
+
+    const legacyClient = await pool.connect();
+    try {
+      await legacyClient.query("begin");
+      await legacyClient.query(
+        `update synthesis_versions
+         set status = 'approved', decided_at = now(), updated_at = now()
+         where user_id = $1 and node_id = $2 and id = $3`,
+        [userId, validTargetNodeId, validProposal.id],
+      );
+      await legacyClient.query(
+        `update nodes set published_synthesis_version_id = $1
+         where user_id = $2 and id = $3`,
+        [validProposal.id, userId, validTargetNodeId],
+      );
+      await legacyClient.query("commit");
+    } catch (error) {
+      await legacyClient.query("rollback");
+      throw error;
+    } finally {
+      legacyClient.release();
+    }
+
+    await insertApprovedSynthesis(
+      userId,
+      sourceNodeId,
+      "Second legacy source revision",
+    );
+    await expect(pool.query(
+      `update synthesis_versions
+       set status = 'approved', decided_at = now(), updated_at = now()
+       where user_id = $1 and node_id = $2 and id = $3`,
+      [userId, staleTargetNodeId, staleProposal.id],
+    )).rejects.toMatchObject({
+      code: "23514",
+      constraint: "synthesis_versions_related_inputs_current_check",
+    });
+    expect((await getSynthesisWorkspaceForUser(userId, staleTargetNodeId)).published)
+      .toBeNull();
+  });
 });

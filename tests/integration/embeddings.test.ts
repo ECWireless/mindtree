@@ -149,6 +149,48 @@ describe("approved synthesis embedding lifecycle", () => {
     })]);
   });
 
+  it("serializes concurrent refreshes before provider use", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId);
+    const synthesisVersionId = await insertSynthesis({
+      userId,
+      nodeId,
+      content: "Concurrently refreshed synthetic Summary",
+      status: "approved",
+    });
+    let providerEntered!: () => void;
+    let releaseProvider!: (value: number[]) => void;
+    const providerStarted = new Promise<void>((resolve) => {
+      providerEntered = resolve;
+    });
+    const providerResult = new Promise<number[]>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const embed = vi.fn(async () => {
+      providerEntered();
+      return providerResult;
+    });
+
+    const first = refreshApprovedSynthesisEmbeddingForUser(userId, {
+      nodeId,
+      synthesisVersionId,
+      embed,
+    });
+    await providerStarted;
+    const second = refreshApprovedSynthesisEmbeddingForUser(userId, {
+      nodeId,
+      synthesisVersionId,
+      embed,
+    });
+    releaseProvider(embedding());
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { status: "refreshed" },
+      { status: "skipped", reason: "already-current" },
+    ]);
+    expect(embed).toHaveBeenCalledTimes(1);
+  });
+
   it("skips missing, foreign, pending, and no-longer-current versions before provider use", async () => {
     const ownerId = await insertUser();
     const foreignOwnerId = await insertUser();
@@ -268,6 +310,61 @@ describe("approved synthesis embedding lifecycle", () => {
     expect(node.rows[0]?.published_synthesis_version_id).toBe(proposalId);
     expect((await pool.query(`select 1 from node_embeddings where node_id = $1`, [nodeId])).rowCount)
       .toBe(0);
+  });
+
+  it("invalidates the prior vector for a legacy direct publication update", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId);
+    const originalVersionId = await insertSynthesis({
+      userId,
+      nodeId,
+      content: "Original legacy Summary",
+      status: "approved",
+    });
+    await refreshApprovedSynthesisEmbeddingForUser(userId, {
+      nodeId,
+      synthesisVersionId: originalVersionId,
+      embed: async () => embedding(),
+    });
+    const proposalId = await insertSynthesis({
+      userId,
+      nodeId,
+      baseVersionId: originalVersionId,
+      content: "Replacement legacy Summary",
+      status: "pending",
+    });
+
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `update synthesis_versions
+         set status = 'approved', decided_at = now(), updated_at = now()
+         where user_id = $1 and node_id = $2 and id = $3`,
+        [userId, nodeId, proposalId],
+      );
+      await client.query(
+        `update nodes
+         set published_synthesis_version_id = $1, updated_at = now()
+         where user_id = $2 and id = $3`,
+        [proposalId, userId, nodeId],
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    expect((await pool.query(
+      `select 1 from node_embeddings where user_id = $1 and node_id = $2`,
+      [userId, nodeId],
+    )).rowCount).toBe(0);
+    expect((await pool.query<{ published_synthesis_version_id: string }>(
+      `select published_synthesis_version_id from nodes where user_id = $1 and id = $2`,
+      [userId, nodeId],
+    )).rows).toEqual([{ published_synthesis_version_id: proposalId }]);
   });
 
   it("enforces current approved fixed-profile provenance and cascades with node deletion", async () => {
