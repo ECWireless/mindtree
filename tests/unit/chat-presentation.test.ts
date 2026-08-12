@@ -13,8 +13,12 @@ describe("chat failure presentation", () => {
   });
 
   it.each([
-    ["response-invalid", "Couldn’t verify that source. Check the URL and try again."],
+    [
+      "response-invalid",
+      "Couldn’t read or verify that source. Try a webpage or another source.",
+    ],
     ["provider-timeout", "Web research timed out. Try again."],
+    ["stream-disconnected", "Web research was interrupted. Try again."],
   ] as const)("maps a web %s failure to actionable copy", (failureCode, expected) => {
     expect(chatFailureMessage({ failureCode, webSearchAuthorized: true })).toBe(expected);
   });
@@ -26,7 +30,7 @@ describe("chat failure presentation", () => {
     })).toBe("That response didn’t finish.");
     expect(chatFailureMessage({
       failureCode: "stream-disconnected",
-      webSearchAuthorized: true,
+      webSearchAuthorized: false,
     })).toBe("That response didn’t finish.");
   });
 });

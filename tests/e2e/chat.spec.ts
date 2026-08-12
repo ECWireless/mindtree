@@ -158,7 +158,7 @@ test("authorizes web sources for one message and renders validated citations", a
     await page.getByRole("button", { name: "Send" }).click();
     await expect(useWebSources).not.toBeChecked();
     await expect(page.locator(".chat-message__failure").getByText(
-      "That response didn’t finish.",
+      "Web research was interrupted. Try again.",
       { exact: true },
     )).toBeVisible();
     await page.unroute("**/api/chat");
@@ -270,7 +270,7 @@ test("shows a concise durable error when web research cannot verify a source", a
     const useWebSources = page.getByRole("checkbox", { name: "Use web sources" });
     const composer = page.getByRole("textbox", { name: "Message" });
     const liveStatus = page.locator(".chat-panel > .sr-only[role='status']");
-    const failure = "Couldn’t verify that source. Check the URL and try again.";
+    const failure = "Couldn’t read or verify that source. Try a webpage or another source.";
     const progress = "Researching web sources… This can take up to 2 minutes.";
 
     await useWebSources.check();
@@ -301,6 +301,128 @@ test("shows a concise durable error when web research cannot verify a source", a
       { exact: true },
     )).toBeVisible();
     await expect(liveStatus).toHaveText(failure);
+  } finally {
+    await seeded.cleanup();
+  }
+});
+
+test("recovers acknowledged web research after the downstream stream disconnects", async ({
+  context,
+  page,
+}) => {
+  const seeded = await seedBrowserSession(pool);
+  const nodeId = randomUUID();
+
+  try {
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values ($1, $2, null, 0, 'Interrupted web research')`,
+      [nodeId, seeded.userId],
+    );
+    await installBrowserSessionCookie(context, seeded.cookie);
+    await page.addInitScript(() => {
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (input, init) => {
+        const request = input instanceof Request ? input : null;
+        const method = (init?.method ?? request?.method ?? "GET").toUpperCase();
+        const url = typeof input === "string"
+          ? input
+          : input instanceof URL
+          ? input.href
+          : request?.url ?? "";
+        const response = await originalFetch(input, init);
+        let alreadyDisconnected = false;
+        try {
+          alreadyDisconnected = sessionStorage.getItem("synthetic-chat-disconnected") === "1";
+        } catch {
+          // Initial document setup may not have an origin yet.
+        }
+        if (
+          method !== "POST" ||
+          !url.includes("/api/chat") ||
+          !response.body ||
+          alreadyDisconnected
+        ) {
+          return response;
+        }
+        sessionStorage.setItem("synthetic-chat-disconnected", "1");
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let disconnectOnNextPull = false;
+        const body = new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            if (disconnectOnNextPull) {
+              await reader.cancel();
+              controller.error(new TypeError("Synthetic downstream disconnect"));
+              return;
+            }
+            const { done, value } = await reader.read();
+            if (done) {
+              controller.close();
+              return;
+            }
+            if (decoder.decode(value, { stream: true }).includes('"type":"research-status"')) {
+              disconnectOnNextPull = true;
+            }
+            controller.enqueue(value);
+          },
+          cancel(reason) {
+            return reader.cancel(reason);
+          },
+        });
+        return new Response(body, {
+          headers: response.headers,
+          status: response.status,
+          statusText: response.statusText,
+        });
+      };
+    });
+    await page.goto(`/?node=${nodeId}`);
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+
+    const failure = "Web research was interrupted. Try again.";
+    const liveStatus = page.locator(".chat-panel > .sr-only[role='status']");
+    await page.getByRole("checkbox", { name: "Use web sources" }).check();
+    await page.getByRole("textbox", { name: "Message" })
+      .fill("Research a synthetic topic");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page.locator(".chat-message__failure").getByText(
+      failure,
+      { exact: true },
+    )).toBeVisible();
+    await expect(liveStatus).toHaveText(failure);
+
+    await expect.poll(async () => {
+      const result = await pool.query<{ failure_code: string | null; id: string; status: string }>(
+        `select id, status, failure_code from chat_messages
+         where user_id = $1 and node_id = $2 and role = 'assistant'`,
+        [seeded.userId, nodeId],
+      );
+      return result.rows[0] ?? null;
+    }).toMatchObject({ status: "failed", failure_code: "stream-disconnected" });
+    const assistantBeforeRetry = await pool.query<{ id: string }>(
+      `select id from chat_messages
+       where user_id = $1 and node_id = $2 and role = 'assistant'`,
+      [seeded.userId, nodeId],
+    );
+
+    await page.reload();
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+    await expect(page.locator(".chat-message__failure").getByText(
+      failure,
+      { exact: true },
+    )).toBeVisible();
+    await page.getByRole("button", { name: "Retry" }).click();
+    await expect(liveStatus).toHaveText("Assistant response completed.");
+    const assistantAfterRetry = await pool.query<{ id: string; status: string }>(
+      `select id, status from chat_messages
+       where user_id = $1 and node_id = $2 and role = 'assistant'`,
+      [seeded.userId, nodeId],
+    );
+    expect(assistantAfterRetry.rows).toEqual([{
+      id: assistantBeforeRetry.rows[0]?.id,
+      status: "completed",
+    }]);
   } finally {
     await seeded.cleanup();
   }

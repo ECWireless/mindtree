@@ -40,6 +40,7 @@ import {
   getChatGenerationMode,
   streamChatResponse,
 } from "@/lib/server/chat-runtime";
+import { scheduleChatStreamHeartbeats } from "@/lib/server/chat-stream";
 import {
   OpenAIChatAbortError,
   OpenAIChatError,
@@ -200,9 +201,21 @@ export async function POST(request: Request) {
     request.signal,
     downstreamAbortController.signal,
   ]);
+  let downstreamDisconnected = false;
+  let generationTask: Promise<void> | null = null;
   const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      controller.enqueue(event({ type: "turn", ...turn }));
+    start(controller) {
+      generationTask = (async () => {
+      const enqueueEvent = (streamEvent: ChatStreamEvent) => {
+        try {
+          controller.enqueue(event(streamEvent));
+        } catch {
+          downstreamDisconnected = true;
+          downstreamAbortController.abort();
+        }
+      };
+      enqueueEvent({ type: "turn", ...turn });
+      const stopHeartbeats = scheduleChatStreamHeartbeats(enqueueEvent);
       let visibleContent = "";
       let providerContextRecorded = false;
       let providerResponseRecorded = false;
@@ -231,7 +244,7 @@ export async function POST(request: Request) {
           throw new OpenAIChatError("response-invalid");
         }
         visibleContent += content;
-        controller.enqueue(event({ type: "delta", content }));
+        enqueueEvent({ type: "delta", content });
         await flushPersistence();
       };
 
@@ -283,10 +296,10 @@ export async function POST(request: Request) {
             } else if (providerEvent.type === "text-delta") {
               await emitVisibleContent(providerEvent.content);
             } else if (providerEvent.type === "research-status") {
-              controller.enqueue(event({
+              enqueueEvent({
                 type: "research-status",
                 status: providerEvent.status,
-              }));
+              });
             } else {
               completedEvent = providerEvent;
             }
@@ -338,11 +351,11 @@ export async function POST(request: Request) {
             await emitVisibleContent(STALE_BRANCH_OUTLINE_SUMMARY_NOTICE);
             await flushPersistence(true);
             const assistantMessage = await completeChatTurnForUser(userId, input);
-            controller.enqueue(event({
+            enqueueEvent({
               type: "completed",
               assistantMessage,
               proposalCreated: false,
-            }));
+            });
             return;
           }
           installExternalEvidence();
@@ -379,11 +392,11 @@ export async function POST(request: Request) {
               const assistantMessage = await completeChatTurnForUser(userId, input, {
                 externalCitations: chatExternalCitations,
               });
-              controller.enqueue(event({
+              enqueueEvent({
                 type: "completed",
                 assistantMessage,
                 proposalCreated: false,
-              }));
+              });
               return;
             }
             installExternalEvidence();
@@ -418,11 +431,11 @@ export async function POST(request: Request) {
               }
             : { externalCitations: chatExternalCitations },
         );
-        controller.enqueue(event({
+        enqueueEvent({
           type: "completed",
           assistantMessage,
           proposalCreated: finalResult.proposal !== null,
-        }));
+        });
       } catch (error) {
         try {
           await flushPersistence(true);
@@ -430,33 +443,37 @@ export async function POST(request: Request) {
           // Preserve the authoritative persisted prefix and continue to a terminal state.
         }
         try {
-          const cancelled =
-            generationSignal.aborted || error instanceof OpenAIChatAbortError;
-          const assistantMessage = cancelled
-            ? await cancelChatTurnForUser(userId, input)
-            : await failChatTurnForUser(userId, {
-                ...input,
-                failureCode:
-                  error instanceof OpenAIChatError
-                    ? error.failureCode
-                    : "generation-failed",
-              });
-          if (!cancelled && assistantMessage.status === "failed") {
-            controller.enqueue(event({ type: "failed", assistantMessage }));
+          const interrupted = downstreamDisconnected ||
+            generationSignal.aborted ||
+            error instanceof OpenAIChatAbortError;
+          const assistantMessage = await failChatTurnForUser(userId, {
+            ...input,
+            failureCode: interrupted
+              ? "stream-disconnected"
+              : error instanceof OpenAIChatError
+              ? error.failureCode
+              : "generation-failed",
+          });
+          if (assistantMessage.status === "failed") {
+            enqueueEvent({ type: "failed", assistantMessage });
           }
         } catch {
           // The persisted state remains authoritative when the client reloads.
         }
       } finally {
+        stopHeartbeats();
         try {
           controller.close();
         } catch {
           // The downstream reader may already be gone.
         }
       }
-    },
-    cancel() {
+    })();
+  },
+    async cancel() {
+      downstreamDisconnected = true;
       downstreamAbortController.abort();
+      await generationTask?.catch(() => undefined);
     },
   });
 

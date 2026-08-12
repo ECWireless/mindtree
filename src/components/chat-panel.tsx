@@ -262,6 +262,21 @@ export function ChatPanel({
     }
   }
 
+  async function reconcileTerminalTurn(clientMessageId: string) {
+    let reconciled: Awaited<ReturnType<typeof reconcileTurn>> = null;
+    for (const delayMs of [0, 100, 250, 500, 1_000]) {
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+      reconciled = await reconcileTurn(clientMessageId);
+      const status = reconciled?.assistant?.status;
+      if (status === "completed" || status === "failed" || status === "cancelled") {
+        return reconciled;
+      }
+    }
+    return reconciled;
+  }
+
   async function streamTurn(payload: Record<string, unknown>) {
     const controller = new AbortController();
     abortController.current = controller;
@@ -303,6 +318,8 @@ export function ChatPanel({
                 ? { ...message, content: `${message.content}${streamEvent.content}`, status: "streaming" }
                 : message,
             ));
+          } else if (streamEvent.type === "heartbeat") {
+            continue;
           } else if (streamEvent.type === "research-status") {
             setResearchingClientMessageId(clientMessageId);
             setAnnouncement(WEB_RESEARCH_PROGRESS_MESSAGE);
@@ -339,7 +356,7 @@ export function ChatPanel({
         ));
       } else {
         setAnnouncement("Assistant response could not be completed.");
-        const reconciled = await reconcileTurn(clientMessageId);
+        const reconciled = await reconcileTerminalTurn(clientMessageId);
         if (reconciled?.assistant?.status === "completed") {
           setAnnouncement(reconciled.proposalCreated
             ? "Synthesis proposal request completed."
@@ -353,7 +370,11 @@ export function ChatPanel({
           }));
         }
         if (reconciled?.assistant?.status === "cancelled") setAnnouncement("Assistant response stopped.");
-        if (!reconciled) {
+        if (
+          !reconciled ||
+          reconciled.assistant?.status === "pending" ||
+          reconciled.assistant?.status === "streaming"
+        ) {
           setAnnouncement(chatFailureMessage({
             failureCode: "stream-disconnected",
             webSearchAuthorized,
@@ -421,7 +442,6 @@ export function ChatPanel({
 
   async function stop(clientMessageId = activeClientMessageId) {
     if (!clientMessageId) return;
-    if (clientMessageId === activeClientMessageId) abortController.current?.abort();
     try {
       const response = await fetch("/api/chat", {
         method: "DELETE",
@@ -430,6 +450,7 @@ export function ChatPanel({
       });
       if (!response.ok) throw new Error("stop failed");
       const result = await response.json() as { assistantMessage: ChatMessage };
+      if (clientMessageId === activeClientMessageId) abortController.current?.abort();
       setMessages((current) => replaceMessage(current, result.assistantMessage));
       setAnnouncement("Assistant response stopped.");
     } catch {

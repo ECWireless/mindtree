@@ -7,10 +7,13 @@ export function chatFailureMessage(input: {
 }) {
   if (input.webSearchAuthorized) {
     if (input.failureCode === "response-invalid") {
-      return "Couldn’t verify that source. Check the URL and try again.";
+      return "Couldn’t read or verify that source. Try a webpage or another source.";
     }
     if (input.failureCode === "provider-timeout") {
       return "Web research timed out. Try again.";
+    }
+    if (input.failureCode === "stream-disconnected") {
+      return "Web research was interrupted. Try again.";
     }
   }
   return "That response didn’t finish.";

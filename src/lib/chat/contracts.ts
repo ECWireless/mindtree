@@ -58,6 +58,7 @@ export type LoadChatMessagesInput = z.infer<typeof loadChatMessagesInputSchema>;
 
 export type ChatStreamEvent =
   | { type: "turn"; userMessage: ChatMessage; assistantMessage: ChatMessage }
+  | { type: "heartbeat" }
   | { type: "research-status"; status: "searching" }
   | { type: "delta"; content: string }
   | { type: "completed"; assistantMessage: ChatMessage; proposalCreated: boolean }

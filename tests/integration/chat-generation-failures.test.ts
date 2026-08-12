@@ -19,10 +19,28 @@ const runtime = vi.hoisted(() => ({
     | "timeout"
     | "wait-for-abort"
     | "web-provider-refusal"
+    | "web-wait-for-abort"
     | "web-success"
     | "web-timeout"
   >,
 }));
+
+vi.mock("@/lib/server/chat-stream", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/server/chat-stream")>(
+    "@/lib/server/chat-stream",
+  );
+  return {
+    ...actual,
+    scheduleChatStreamHeartbeats: (
+      emit: Parameters<typeof actual.scheduleChatStreamHeartbeats>[0],
+    ) => actual.scheduleChatStreamHeartbeats(
+      emit,
+      runtime.scenarios[0] === "web-wait-for-abort"
+        ? 10
+        : actual.CHAT_STREAM_HEARTBEAT_MS,
+    ),
+  };
+});
 
 vi.mock("@/lib/server/chat-runtime", async () => {
   const { OpenAIChatAbortError, OpenAIChatError } = await vi.importActual<
@@ -62,6 +80,19 @@ vi.mock("@/lib/server/chat-runtime", async () => {
           }
           if (scenario === "web-timeout") {
             throw new OpenAIChatError("provider-timeout");
+          }
+          if (scenario === "web-wait-for-abort") {
+            await new Promise<never>((_resolve, reject) => {
+              if (input.signal.aborted) {
+                reject(new OpenAIChatAbortError());
+                return;
+              }
+              input.signal.addEventListener(
+                "abort",
+                () => reject(new OpenAIChatAbortError()),
+                { once: true },
+              );
+            });
           }
           const content = "A completed synthetic research claim.";
           yield { type: "text-delta" as const, content };
@@ -154,6 +185,7 @@ const pool = new Pool({ connectionString });
 const authSecret = "synthetic-generation-failure-secret-at-least-32-chars";
 const allowedEmail = "chat-generation-failure@example.test";
 let postChat: typeof import("../../src/app/api/chat/route").POST;
+let deleteChat: typeof import("../../src/app/api/chat/route").DELETE;
 let userId = "";
 let cookie = "";
 let nodeId = "";
@@ -164,6 +196,14 @@ function post(body: object, signal?: AbortSignal) {
     headers: { "Content-Type": "application/json", cookie },
     body: JSON.stringify(body),
     signal,
+  }));
+}
+
+function stop(body: object) {
+  return deleteChat(new Request("http://127.0.0.1:3189/api/chat", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json", cookie },
+    body: JSON.stringify(body),
   }));
 }
 
@@ -241,7 +281,7 @@ describe("chat generation failure boundaries", () => {
     vi.stubEnv("GOOGLE_CLIENT_ID", "synthetic-google-client-id");
     vi.stubEnv("GOOGLE_CLIENT_SECRET", "synthetic-google-client-secret");
     vi.stubEnv("ALLOWED_EMAIL", allowedEmail);
-    ({ POST: postChat } = await import("../../src/app/api/chat/route"));
+    ({ DELETE: deleteChat, POST: postChat } = await import("../../src/app/api/chat/route"));
 
     userId = `chat-generation-failure-${randomUUID()}`;
     const token = `chat-generation-failure-token-${randomUUID()}`;
@@ -808,27 +848,103 @@ describe("chat generation failure boundaries", () => {
     ]);
   });
 
-  it("persists request abortion as cancellation and never completes the turn", async () => {
-    runtime.scenarios.push("wait-for-abort");
+  it("persists a web request abortion as an interrupted retryable failure", async () => {
+    runtime.scenarios.push("web-wait-for-abort");
     const clientMessageId = randomUUID();
     const requestAbortController = new AbortController();
     const response = await post({
       nodeId,
       clientMessageId,
-      content: "Cancel this synthetic turn",
-      webSearchAuthorized: false,
+      content: "Interrupt this synthetic web turn",
+      webSearchAuthorized: true,
     }, requestAbortController.signal);
 
     requestAbortController.abort();
     const events = await readEvents(response);
     expect(events.map(({ type }) => type)).not.toContain("completed");
-    expect(events.map(({ type }) => type)).not.toContain("failed");
+    expect(events.at(-1)).toMatchObject({
+      type: "failed",
+      assistantMessage: {
+        status: "failed",
+        failureCode: "stream-disconnected",
+      },
+    });
+    expect(await storedTurn(clientMessageId)).toMatchObject([
+      { role: "user", status: "completed", web_search_authorized: true },
+      {
+        role: "assistant",
+        status: "failed",
+        failure_code: "stream-disconnected",
+      },
+    ]);
+    expect(runtime.invocations).toBe(1);
+  });
+
+  it("keeps an explicit Stop cancelled when the POST stream subsequently aborts", async () => {
+    runtime.scenarios.push("wait-for-abort");
+    const clientMessageId = randomUUID();
+    const response = await post({
+      nodeId,
+      clientMessageId,
+      content: "Stop this synthetic turn explicitly",
+      webSearchAuthorized: false,
+    });
+    const reader = response.body!.getReader();
+    await reader.read();
+
+    const stopped = await stop({ nodeId, clientMessageId });
+    expect(stopped.status).toBe(200);
+    await expect(stopped.json()).resolves.toMatchObject({
+      assistantMessage: { status: "cancelled", failureCode: null },
+    });
+    await reader.cancel();
     expect(await storedTurn(clientMessageId)).toMatchObject([
       { role: "user", status: "completed" },
       {
         role: "assistant",
         status: "cancelled",
         failure_code: null,
+      },
+    ]);
+    expect(runtime.invocations).toBe(1);
+  });
+
+  it("emits heartbeats and persists downstream interruption as retryable failure", async () => {
+    runtime.scenarios.push("web-wait-for-abort");
+    const clientMessageId = randomUUID();
+    const response = await post({
+      nodeId,
+      clientMessageId,
+      content: "Research until the downstream reader disconnects",
+      webSearchAuthorized: true,
+    });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    const events: Array<{ type: string }> = [];
+    let buffer = "";
+
+    while (
+      !events.some(({ type }) => type === "heartbeat") ||
+      !events.some(({ type }) => type === "research-status")
+    ) {
+      const { done, value } = await reader.read();
+      expect(done).toBe(false);
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      events.push(...lines.filter(Boolean).map((line) => JSON.parse(line)));
+    }
+
+    expect(events[0]).toMatchObject({ type: "turn" });
+    expect(events.map(({ type }) => type)).toContain("research-status");
+    expect(events.map(({ type }) => type)).toContain("heartbeat");
+    await reader.cancel();
+    expect(await storedTurn(clientMessageId)).toMatchObject([
+      { role: "user", status: "completed", web_search_authorized: true },
+      {
+        role: "assistant",
+        status: "failed",
+        failure_code: "stream-disconnected",
       },
     ]);
     expect(runtime.invocations).toBe(1);
