@@ -77,7 +77,7 @@ The authenticated owner can:
   depth limit.
 - Expand, collapse, search, and navigate the tree using linkable node URLs.
 - Open one persistent chat per node.
-- Ask questions, develop ideas, and explicitly request external web sources in
+- Ask questions, develop ideas, and explicitly request external sources in
   chat.
 - Review an assistant response and an optional proposed synthesis revision.
 - Compare a proposed synthesis with the currently published synthesis.
@@ -193,9 +193,13 @@ v0.1.0 does not include:
   requiring the owner to understand model configuration.
 - The composer remains anchored inside the conversation viewport. **Enter**
   submits a non-empty message, while **Shift+Enter** inserts a new line.
-- A clear **Use web sources** control is off by default and applies only to the
+- A clear **Use external sources** control is off by default and applies only to the
   next submitted turn. Natural-language requests may explain that the control
-  must be enabled; they do not silently authorize web use.
+  must be enabled; they do not silently authorize external access.
+- An authorized turn may use web search or attach exactly one provider-fetchable,
+  non-local HTTPS PDF
+  URL supplied in that turn as a low-detail provider file input. MindTree never
+  downloads or stores PDF bytes or extracted document text.
 - Assistant messages may contain ordinary discussion, numbered clickable
   external citations, and at most one inline synthesis proposal with its full
   diff, application-owned internal node links, and explicit decision controls.
@@ -390,17 +394,22 @@ synthesis or ancestor state.
 
 ### External citations
 
-- External research uses the OpenAI Responses API web-search tool only when the
-  owner enables web sources for the turn.
-- The application preserves returned URL-citation annotations including URL,
-  title, and association with output text.
+- External research uses the OpenAI Responses API only when the owner enables
+  external sources for the turn. Ordinary research uses `web_search`; exactly
+  one provider-fetchable, non-local HTTPS PDF URL explicitly present in the current message instead
+  uses a low-detail `input_file`.
+- The application preserves returned URL-citation annotations for web search.
+  For a direct PDF, it accepts only structured exact citation phrases that occur
+  once in the visible answer and maps them to that one application-validated URL.
 - External URLs are normalized and validated as HTTP or HTTPS before storage
   and rendering.
 - Inline citations are clearly visible and clickable.
 - A References section lists cited sources once in first-citation order.
-- Model-authored URLs that are not backed by a returned citation annotation are
-  rendered as plain text or rejected from a synthesis proposal.
-- MindTree stores citation metadata, not scraped copies of external pages.
+- Model-authored URLs that are not backed by returned web annotations or the
+  single validated PDF destination are rendered as plain text or rejected from
+  a synthesis proposal.
+- MindTree stores citation metadata, not scraped pages, PDF bytes, or extracted
+  document text.
 
 ## AI configuration
 
@@ -413,11 +422,13 @@ v0.1.0 intentionally uses a fixed, quality-first OpenAI stack:
   `reasoning.mode: "pro"` and `reasoning.effort: "high"`. Branch Outline
   generation never enables web search.
 - Related-node embeddings: `text-embedding-3-large`.
-- Web research: the Responses API `web_search` tool.
+- External research: the Responses API `web_search` tool or one owner-supplied
+  HTTPS PDF as a low-detail `input_file`.
 
 This selection was reviewed on 2026-08-02 against OpenAI's
 [latest-model guidance](https://developers.openai.com/api/docs/guides/latest-model),
 [web-search citation contract](https://developers.openai.com/api/docs/guides/tools-web-search#output-and-citations),
+the [file-input guide](https://developers.openai.com/api/docs/guides/file-inputs),
 and [embedding model guidance](https://developers.openai.com/api/docs/guides/embeddings#embedding-models).
 Because model and feature availability can change, the relevant implementation
 phase re-verifies the documented API combination and runs a bounded synthetic
@@ -677,7 +688,7 @@ The selected node contains:
 - A prominent **Chat** action opening persistent history and the composer,
   including any pending proposal, full diff, and explicit decision controls as
   inline conversation artifacts.
-- **Use web sources** for the next message.
+- **Use external sources** for the next message.
 - Add-child, archive/unarchive, **Move To…**, and delete actions.
 
 Inline interactions are preferred. Modals are reserved for movement and
@@ -750,7 +761,7 @@ constraints and transaction checks.
 
 - UUID `id`, `userId`, `nodeId`, ordered creation timestamp, and `role`.
 - Message content, lifecycle status, optional model and response metadata, and
-  whether web sources were authorized.
+  whether external sources were authorized.
 - Optional link from an assistant message to its generated proposal.
 
 Messages belong to the same owner as their node. User-message creation and
@@ -805,14 +816,16 @@ safe retries without initiating child generation.
 - Citation kind: internal node or external URL.
 - Internal fields: nullable live target node and synthesis-version references,
   immutable target node ID/title/revision snapshots, and deletion state.
-- External fields: normalized URL and title from a web-search annotation.
+- External fields: normalized URL and title from a web-search annotation or the
+  one application-validated owner-supplied PDF URL.
 - Stable ordinal and bounded text-location metadata for rendering.
 
 Live internal references use deletion behavior that preserves the immutable
 snapshot while clearing unavailable foreign-key targets. Database checks
 enforce the appropriate field combination for each citation kind. Application
-validation ensures citations correspond to supplied evidence or returned
-web-search annotations.
+validation ensures citations correspond to supplied evidence, returned
+web-search annotations, or exact response spans mapped to the single supplied
+PDF.
 
 ### `nodeEmbeddings`
 
@@ -957,7 +970,8 @@ revalidates affected application data.
   revocation/rotation linearization, and citation redaction.
 - AI-boundary tests use deterministic synthetic provider fixtures for streamed
   chat, Summary proposals, Branch Outlines, refusals, invalid structured
-  output, invalid citations, web-search annotations, retries, and timeouts.
+  output, invalid citations, web-search annotations, direct-PDF provenance,
+  retries, and timeouts.
   Normal automated tests do not call paid external models.
 - A small opt-in evaluation suite calls the configured real models with
   synthetic knowledge trees to measure instruction following, Summary proposal

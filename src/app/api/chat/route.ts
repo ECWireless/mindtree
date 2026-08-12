@@ -23,6 +23,7 @@ import {
   toExternalResearchEvidence,
   type ExternalCitationEvidence,
 } from "@/lib/server/external-citations";
+import { findAuthorizedExternalPdfSource } from "@/lib/server/external-pdf-source";
 import {
   persistChatTurnContentPrefixForUser,
   cancelChatTurnForUser,
@@ -172,6 +173,21 @@ export async function POST(request: Request) {
       jsonError(409, "The message is already in progress.");
   }
   const webSearchAuthorized = turn.userMessage.webSearchAuthorized;
+  let externalPdfSource: ReturnType<typeof findAuthorizedExternalPdfSource> = null;
+  if (webSearchAuthorized) {
+    try {
+      externalPdfSource = findAuthorizedExternalPdfSource(turn.userMessage.content);
+    } catch {
+      const assistantMessage = await failChatTurnForUser(userId, {
+        ...input,
+        failureCode: "response-invalid",
+      });
+      return await terminalResponse(userId, {
+        userMessage: turn.userMessage,
+        assistantMessage,
+      }) ?? jsonError(400, "The external PDF URL is invalid.");
+    }
+  }
 
   let preparedContext;
   try {
@@ -280,6 +296,7 @@ export async function POST(request: Request) {
             safetyIdentifier,
             signal: generationSignal,
             webSearchAuthorized: phase === "conversation" && webSearchAuthorized,
+            externalPdfSource: phase === "conversation" ? externalPdfSource : null,
           })) {
             if (generationSignal.aborted) {
               throw new OpenAIChatAbortError();

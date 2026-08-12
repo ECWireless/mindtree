@@ -21,6 +21,7 @@ import {
   OPENAI_CHAT_MODEL,
   OPENAI_CHAT_REASONING,
   OPENAI_CHAT_TIMEOUT_MS,
+  OPENAI_PDF_RESEARCH_INSTRUCTIONS,
   OPENAI_RESEARCH_INSTRUCTIONS,
   OPENAI_RESEARCH_REASONING,
   OPENAI_SYNTHESIS_INSTRUCTIONS,
@@ -30,12 +31,18 @@ import {
   MAX_ASSISTANT_MESSAGE_LENGTH,
   type ChatFailureCode,
 } from "@/lib/chat/contracts";
-import type { ExternalCitationView } from "@/lib/citations/contracts";
+import {
+  externalCitationMentionSchema,
+  MAX_EXTERNAL_CITATION_OCCURRENCES,
+  type ExternalCitationView,
+} from "@/lib/citations/contracts";
 import {
   ExternalCitationValidationError,
   normalizeExternalCitationAnnotations,
+  normalizeExternalCitationMentions,
   type ProviderUrlCitation,
 } from "@/lib/server/external-citations";
+import type { ExternalPdfSource } from "@/lib/server/external-pdf-source";
 import {
   synthesisProposalDraftSchema,
   type SynthesisProposalDraft,
@@ -53,6 +60,27 @@ const synthesisProposalTool = zodResponsesFunction({
   name: "propose_synthesis",
   description: "Create an approval-required replacement synthesis for the selected MindTree node.",
   parameters: synthesisProposalDraftSchema,
+});
+
+const pdfCitationMentionSchema = z.object({
+  sourceAlias: z.literal("W1"),
+  citedText: externalCitationMentionSchema.shape.citedText.regex(
+    /^[^<>\[\]]+$/u,
+    "Do not include square or angle brackets in PDF citations.",
+  ),
+}).strict();
+
+const pdfResearchCompletionSchema = z.object({
+  citations: z.array(pdfCitationMentionSchema)
+    .min(1)
+    .max(MAX_EXTERNAL_CITATION_OCCURRENCES),
+  synthesisRequested: z.boolean(),
+}).strict();
+
+const pdfResearchCompletionTool = zodResponsesFunction({
+  name: "complete_pdf_research",
+  description: "Complete the explicitly authorized PDF answer with exact visible citation spans and synthesis-routing intent.",
+  parameters: pdfResearchCompletionSchema,
 });
 
 export type NormalizedOpenAIChatEvent =
@@ -92,11 +120,20 @@ function requireResponseId(value: unknown) {
 
 export async function* normalizeOpenAIChatEvents(
   events: AsyncIterable<ResponseStreamEvent>,
-  options: { phase?: OpenAIChatPhase; webSearchAuthorized?: boolean } = {},
+  options: {
+    phase?: OpenAIChatPhase;
+    webSearchAuthorized?: boolean;
+    externalPdfSource?: ExternalPdfSource | null;
+  } = {},
 ): AsyncGenerator<NormalizedOpenAIChatEvent> {
   const phase = options.phase ?? "conversation";
   const webSearchAuthorized = options.webSearchAuthorized === true;
-  if (phase === "synthesis" && webSearchAuthorized) {
+  const externalPdfSource = options.externalPdfSource ?? null;
+  const pdfResearch = webSearchAuthorized && externalPdfSource !== null;
+  if (
+    (phase === "synthesis" && webSearchAuthorized) ||
+    (!webSearchAuthorized && externalPdfSource !== null)
+  ) {
     throw new OpenAIChatError("response-invalid");
   }
   let providerResponseId: string | null = null;
@@ -120,6 +157,10 @@ export async function* normalizeOpenAIChatEvents(
         }
         providerResponseId = requireResponseId(event.response.id);
         yield { type: "started", providerResponseId };
+        if (pdfResearch) {
+          researchStatusEmitted = true;
+          yield { type: "research-status", status: "searching" };
+        }
         break;
       }
       case "response.output_text.delta": {
@@ -144,7 +185,7 @@ export async function* normalizeOpenAIChatEvents(
       }
       case "response.web_search_call.in_progress":
       case "response.web_search_call.searching": {
-        if (!webSearchAuthorized || providerResponseId === null) {
+        if (!webSearchAuthorized || pdfResearch || providerResponseId === null) {
           throw new OpenAIChatError("response-invalid");
         }
         if (!researchStatusEmitted) {
@@ -154,7 +195,7 @@ export async function* normalizeOpenAIChatEvents(
         break;
       }
       case "response.web_search_call.completed": {
-        if (!webSearchAuthorized || providerResponseId === null) {
+        if (!webSearchAuthorized || pdfResearch || providerResponseId === null) {
           throw new OpenAIChatError("response-invalid");
         }
         const itemId = requireResponseId(event.item_id);
@@ -175,7 +216,7 @@ export async function* normalizeOpenAIChatEvents(
         throw new OpenAIChatError("response-invalid");
       case "response.failed":
       case "error":
-        throw new OpenAIChatError("generation-failed");
+        throw new OpenAIChatError(pdfResearch ? "response-invalid" : "generation-failed");
       case "response.completed": {
         const candidateResponseId = requireResponseId(event.response.id);
         if (
@@ -206,7 +247,7 @@ export async function* normalizeOpenAIChatEvents(
               content.type === "output_text"
             ));
           } else if (item.type === "web_search_call") {
-            if (!webSearchAuthorized || item.status !== "completed") {
+            if (!webSearchAuthorized || pdfResearch || item.status !== "completed") {
               throw new OpenAIChatError("response-invalid");
             }
             const itemId = requireResponseId(item.id);
@@ -218,7 +259,21 @@ export async function* normalizeOpenAIChatEvents(
             throw new OpenAIChatError("response-invalid");
           }
         }
-        if (webSearchAuthorized) {
+        if (pdfResearch) {
+          if (
+            responseWebSearchCallIds.size > 0 ||
+            outputTextParts.length !== 1
+          ) {
+            throw new OpenAIChatError("response-invalid");
+          }
+          const outputText = outputTextParts[0]!;
+          if (
+            outputText.text !== bufferedResearchText ||
+            outputText.annotations.length > 0
+          ) {
+            throw new OpenAIChatError("response-invalid");
+          }
+        } else if (webSearchAuthorized) {
           if (
             responseWebSearchCallIds.size < 1 ||
             completedWebSearchCallIds.size !== responseWebSearchCallIds.size ||
@@ -265,11 +320,23 @@ export async function* normalizeOpenAIChatEvents(
           try {
             const argumentsValue: unknown = JSON.parse(functionCall.arguments);
             if (phase === "conversation") {
-              if (functionCall.name !== "request_synthesis") {
+              if (pdfResearch) {
+                if (functionCall.name !== "complete_pdf_research") {
+                  throw new Error("unexpected tool");
+                }
+                const completion = pdfResearchCompletionSchema.parse(argumentsValue);
+                externalCitations = normalizeExternalCitationMentions({
+                  content: bufferedResearchText,
+                  mentions: completion.citations,
+                  evidence: [externalPdfSource!],
+                });
+                synthesisRequested = completion.synthesisRequested;
+              } else if (functionCall.name !== "request_synthesis") {
                 throw new Error("unexpected tool");
+              } else {
+                synthesisRequestSchema.parse(argumentsValue);
+                synthesisRequested = true;
               }
-              synthesisRequestSchema.parse(argumentsValue);
-              synthesisRequested = true;
             } else {
               if (functionCall.name !== "propose_synthesis") {
                 throw new Error("unexpected tool");
@@ -279,6 +346,9 @@ export async function* normalizeOpenAIChatEvents(
           } catch {
             throw new OpenAIChatError("response-invalid");
           }
+        }
+        if (pdfResearch && functionCalls.length !== 1) {
+          throw new OpenAIChatError("response-invalid");
         }
         completedResponseId = candidateResponseId;
         break;
@@ -328,18 +398,42 @@ export function createOpenAIChatRequest(input: {
   phase?: OpenAIChatPhase;
   safetyIdentifier: string;
   webSearchAuthorized?: boolean;
+  externalPdfSource?: ExternalPdfSource | null;
 }): ResponseCreateParamsStreaming {
   const phase = input.phase ?? "conversation";
   const synthesis = phase === "synthesis";
   const research = !synthesis && input.webSearchAuthorized === true;
+  if (input.externalPdfSource != null && !research) {
+    throw new OpenAIChatError("response-invalid");
+  }
+  const pdfResearch = research && input.externalPdfSource != null;
+  const providerInput: ResponseInput = pdfResearch
+    ? input.messages.map((message, index) =>
+        index === input.messages.length - 1 && message.role === "user"
+          ? {
+              role: "user" as const,
+              content: [
+                { type: "input_text" as const, text: message.content },
+                {
+                  type: "input_file" as const,
+                  file_url: input.externalPdfSource!.url,
+                  detail: "low" as const,
+                },
+              ],
+            }
+          : message
+      ) satisfies ResponseInput
+    : input.messages satisfies ResponseInput;
   return {
     model: OPENAI_CHAT_MODEL,
     instructions: synthesis
       ? OPENAI_SYNTHESIS_INSTRUCTIONS
-      : research
+      : pdfResearch
+        ? OPENAI_PDF_RESEARCH_INSTRUCTIONS
+        : research
         ? OPENAI_RESEARCH_INSTRUCTIONS
         : OPENAI_CHAT_INSTRUCTIONS,
-    input: input.messages satisfies ResponseInput,
+    input: providerInput,
     max_output_tokens: OPENAI_CHAT_MAX_OUTPUT_TOKENS,
     reasoning: synthesis
       ? OPENAI_SYNTHESIS_REASONING
@@ -351,10 +445,12 @@ export function createOpenAIChatRequest(input: {
     stream: true,
     tools: synthesis
       ? [synthesisProposalTool]
-      : research
+      : pdfResearch
+        ? [pdfResearchCompletionTool]
+        : research
         ? [{ type: "web_search" as const }, synthesisRequestTool]
         : [synthesisRequestTool],
-    tool_choice: synthesis ? "required" : "auto",
+    tool_choice: synthesis || pdfResearch ? "required" : "auto",
     parallel_tool_calls: false,
   };
 }
@@ -404,6 +500,7 @@ export async function* streamOpenAIChat(input: {
   safetyIdentifier: string;
   signal: AbortSignal;
   webSearchAuthorized?: boolean;
+  externalPdfSource?: ExternalPdfSource | null;
 }): AsyncGenerator<NormalizedOpenAIChatEvent> {
   const client = new OpenAI({
     apiKey: input.apiKey,
@@ -430,6 +527,7 @@ export async function* streamOpenAIChat(input: {
     for await (const event of normalizeOpenAIChatEvents(stream, {
       phase: input.phase,
       webSearchAuthorized: input.webSearchAuthorized,
+      externalPdfSource: input.externalPdfSource,
     })) {
       if (input.signal.aborted) {
         throw new OpenAIChatAbortError();
@@ -448,6 +546,14 @@ export async function* streamOpenAIChat(input: {
     }
     if (deadlineExceeded && !input.signal.aborted) {
       throw new OpenAIChatError("provider-timeout");
+    }
+    if (
+      input.webSearchAuthorized === true &&
+      input.externalPdfSource != null &&
+      error instanceof APIError &&
+      (error.status === 400 || error.status === 413 || error.status === 422)
+    ) {
+      throw new OpenAIChatError("response-invalid");
     }
     throw classifyOpenAIChatSDKError(error, input.signal);
   } finally {

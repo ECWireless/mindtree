@@ -6,20 +6,21 @@ import {
 } from "@/lib/chat/presentation";
 
 describe("chat failure presentation", () => {
-  it("keeps web research progress concise while setting a time expectation", () => {
+  it("keeps external research progress concise while setting a time expectation", () => {
     expect(WEB_RESEARCH_PROGRESS_MESSAGE).toBe(
-      "Researching web sources… This can take up to 2 minutes.",
+      "Reading external sources… This can take up to 2 minutes.",
     );
   });
 
   it.each([
+    ["assistant-unavailable", "External research is unavailable. Try again."],
     [
       "response-invalid",
-      "Couldn’t read or verify that source. Try a webpage or another source.",
+      "Couldn’t verify that source. Try one webpage or HTTPS PDF.",
     ],
-    ["provider-timeout", "Web research timed out. Try again."],
-    ["stream-disconnected", "Web research was interrupted. Try again."],
-  ] as const)("maps a web %s failure to actionable copy", (failureCode, expected) => {
+    ["provider-timeout", "External research timed out. Try again."],
+    ["stream-disconnected", "External research was interrupted. Try again."],
+  ] as const)("maps an external %s failure to actionable copy", (failureCode, expected) => {
     expect(chatFailureMessage({ failureCode, webSearchAuthorized: true })).toBe(expected);
   });
 

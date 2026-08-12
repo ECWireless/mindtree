@@ -10,6 +10,7 @@ import {
   type NormalizedOpenAIChatEvent,
   type OpenAIChatPhase,
 } from "@/lib/server/openai-chat";
+import type { ExternalPdfSource } from "@/lib/server/external-pdf-source";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 type ChatEnvironment = Record<string, string | undefined>;
@@ -61,11 +62,13 @@ async function* streamDeterministicChatFixture(input: {
   phase: OpenAIChatPhase;
   signal: AbortSignal;
   webSearchAuthorized: boolean;
+  externalPdfSource?: ExternalPdfSource | null;
 }): AsyncGenerator<NormalizedOpenAIChatEvent> {
   const topic = [...input.messages]
     .reverse()
     .find(({ role }) => role === "user")
     ?.content.trim().replace(/\s+/g, " ").slice(0, 80) ?? "This thought";
+  const synthesisTopic = topic.replace(/https?:\/\/\S+/giu, "the supplied source");
   const providerResponseId = "fixture-response";
   const hasPendingProposal = input.messages[0]?.content.includes(
     '"refinementProposal":{"state":"pending"',
@@ -84,7 +87,9 @@ async function* streamDeterministicChatFixture(input: {
 
   yield { type: "started", providerResponseId };
   if (input.phase === "conversation" && input.webSearchAuthorized) {
-    const content = `Researching **${topic}** found a current synthetic source.`;
+    const content = input.externalPdfSource
+      ? `Reading **${topic}** found a supported synthetic PDF claim.`
+      : `Researching **${topic}** found a current synthetic source.`;
     yield { type: "research-status", status: "searching" };
     if (topic === "Research an unverifiable synthetic source") {
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -108,8 +113,8 @@ async function* streamDeterministicChatFixture(input: {
         ordinal: 1,
         startUtf16: content.length,
         endUtf16: content.length,
-        title: "Synthetic research source",
-        url: "https://example.test/research",
+        title: input.externalPdfSource?.title ?? "Synthetic research source",
+        url: input.externalPdfSource?.url ?? "https://example.test/research",
       }],
     };
     return;
@@ -136,7 +141,7 @@ async function* streamDeterministicChatFixture(input: {
     synthesisRequested: false,
     proposal: input.phase === "synthesis"
       ? {
-          content: `# ${topic}\n\nA concise synthetic synthesis proposal.`,
+          content: `# ${synthesisTopic}\n\nA concise synthetic synthesis proposal.`,
           citations: [],
           externalCitations: input.messages.some(({ content }) =>
             content.includes('"externalResearchEvidence"')
@@ -157,12 +162,14 @@ export function streamChatResponse(input: {
   safetyIdentifier: string;
   signal: AbortSignal;
   webSearchAuthorized?: boolean;
+  externalPdfSource?: ExternalPdfSource | null;
 }): AsyncGenerator<NormalizedOpenAIChatEvent> {
   const mode = getChatGenerationMode();
   if (mode === "deterministic-fixture") {
     return streamDeterministicChatFixture({
       ...input,
       webSearchAuthorized: input.webSearchAuthorized === true,
+      externalPdfSource: input.externalPdfSource,
     });
   }
   if (mode === "openai") {
@@ -174,6 +181,7 @@ export function streamChatResponse(input: {
       safetyIdentifier: input.safetyIdentifier,
       signal: input.signal,
       webSearchAuthorized: input.webSearchAuthorized,
+      externalPdfSource: input.externalPdfSource,
     });
   }
   throw new Error("chat generation is unavailable");

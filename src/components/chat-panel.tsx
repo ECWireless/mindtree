@@ -565,7 +565,7 @@ export function ChatPanel({
                 <>
                   <p>{message.content}</p>
                   {message.webSearchAuthorized ? (
-                    <p className="chat-message__source-note">Web sources enabled for this message.</p>
+                    <p className="chat-message__source-note">External sources enabled for this message.</p>
                   ) : null}
                 </>
               )}
@@ -661,7 +661,7 @@ export function ChatPanel({
                 aria-describedby={webDisclosureId}
                 onChange={(event) => setUseWebSources(event.target.checked)}
               />
-              <span>Use web sources</span>
+              <span>Use external sources</span>
             </label>
             <small aria-hidden="true">
               {generationEnabled ? (
@@ -686,7 +686,7 @@ export function ChatPanel({
             )}
           </div>
           <p className="chat-composer__web-disclosure" id={webDisclosureId}>
-            Applies to the next message only. External sources may change.
+            Next message only. Supports web research or one HTTPS PDF; sources may change.
           </p>
         </form>
         <p className="sr-only" aria-live="polite" role="status">{announcement}</p>

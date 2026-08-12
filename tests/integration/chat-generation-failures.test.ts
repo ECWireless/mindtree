@@ -6,6 +6,7 @@ import { Pool } from "pg";
 
 const runtime = vi.hoisted(() => ({
   invocations: 0,
+  externalPdfSources: [] as Array<null | { alias: string; title: string; url: string }>,
   beforeRouteComplete: null as null | (() => Promise<void>),
   scenarios: [] as Array<
     | "disconnect-after-delta"
@@ -54,8 +55,10 @@ vi.mock("@/lib/server/chat-runtime", async () => {
       phase: "conversation" | "synthesis";
       signal: AbortSignal;
       webSearchAuthorized?: boolean;
+      externalPdfSource?: null | { alias: string; title: string; url: string };
     }) => {
       runtime.invocations += 1;
+      runtime.externalPdfSources.push(input.externalPdfSource ?? null);
       const scenario = runtime.scenarios.shift();
       return (async function* () {
         if (scenario === "timeout") {
@@ -106,8 +109,8 @@ vi.mock("@/lib/server/chat-runtime", async () => {
               ordinal: 1,
               startUtf16: content.length,
               endUtf16: content.length,
-              title: "Synthetic retry source",
-              url: "https://example.test/retry-source",
+              title: input.externalPdfSource?.title ?? "Synthetic retry source",
+              url: input.externalPdfSource?.url ?? "https://example.test/retry-source",
             }],
           };
           return;
@@ -301,6 +304,7 @@ describe("chat generation failure boundaries", () => {
   beforeEach(async () => {
     runtime.scenarios.length = 0;
     runtime.invocations = 0;
+    runtime.externalPdfSources.length = 0;
     runtime.beforeRouteComplete = null;
     await pool.query(`delete from nodes where user_id = $1`, [userId]);
     nodeId = randomUUID();
@@ -533,6 +537,47 @@ describe("chat generation failure boundaries", () => {
     const replayed = await readEvents(await post(createBody));
     expect(replayed.map(({ type }) => type)).toEqual(["turn", "completed"]);
     expect(runtime.invocations).toBe(2);
+  });
+
+  it("passes only the explicitly supplied current-turn PDF to the provider and persists its provenance", async () => {
+    runtime.scenarios.push("web-success");
+    const clientMessageId = randomUUID();
+    const url = "https://example.test/papers/rosenblatt-1957.pdf";
+    const events = await readEvents(await post({
+      nodeId,
+      clientMessageId,
+      content: `Give me one short supported claim from ${url}`,
+      webSearchAuthorized: true,
+    }));
+
+    expect(runtime.externalPdfSources).toEqual([{
+      alias: "W1",
+      title: "rosenblatt-1957.pdf",
+      url,
+    }]);
+    expect(events.at(-1)).toMatchObject({
+      type: "completed",
+      assistantMessage: {
+        citations: [{ title: "rosenblatt-1957.pdf", url }],
+      },
+    });
+  });
+
+  it("fails an invalid direct PDF before incurring provider cost", async () => {
+    const clientMessageId = randomUUID();
+    const events = await readEvents(await post({
+      nodeId,
+      clientMessageId,
+      content: "Read http://example.test/private.pdf",
+      webSearchAuthorized: true,
+    }));
+
+    expect(events.at(-1)).toMatchObject({
+      type: "failed",
+      assistantMessage: { failureCode: "response-invalid" },
+    });
+    expect(runtime.invocations).toBe(0);
+    expect(runtime.externalPdfSources).toEqual([]);
   });
 
   it("persists a requested synthesis proposal without publishing it", async () => {

@@ -117,7 +117,7 @@ test("authorizes web sources for one message and renders validated citations", a
     await page.goto(`/?node=${nodeId}`);
     await page.getByRole("button", { name: "Chat", exact: true }).click();
 
-    const useWebSources = page.getByRole("checkbox", { name: "Use web sources" });
+    const useWebSources = page.getByRole("checkbox", { name: "Use external sources" });
     const composer = page.getByRole("textbox", { name: "Message" });
     await expectTouchTarget(page.locator(".chat-composer__web-toggle"));
     await expect(useWebSources).not.toBeChecked();
@@ -126,14 +126,14 @@ test("authorizes web sources for one message and renders validated citations", a
     await page.getByRole("button", { name: "Send" }).click();
 
     await expect(useWebSources).not.toBeChecked();
-    await expect(page.getByText("Web sources enabled for this message.")).toBeVisible();
+    await expect(page.getByText("External sources enabled for this message.")).toBeVisible();
     const liveStatus = page.locator(".chat-panel > .sr-only[role='status']");
     await expect(page.locator(".chat-message__state").getByText(
-      "Researching web sources… This can take up to 2 minutes.",
+      "Reading external sources… This can take up to 2 minutes.",
       { exact: true },
     )).toBeVisible();
     await expect(liveStatus).toHaveText(
-      "Researching web sources… This can take up to 2 minutes.",
+      "Reading external sources… This can take up to 2 minutes.",
     );
     await expect(liveStatus)
       .toHaveText("Assistant response completed.");
@@ -158,13 +158,13 @@ test("authorizes web sources for one message and renders validated citations", a
     await page.getByRole("button", { name: "Send" }).click();
     await expect(useWebSources).not.toBeChecked();
     await expect(page.locator(".chat-message__failure").getByText(
-      "Web research was interrupted. Try again.",
+      "External research was interrupted. Try again.",
       { exact: true },
     )).toBeVisible();
     await page.unroute("**/api/chat");
     await page.getByRole("button", { name: "Retry" }).last().click();
     await expect(page.locator(".chat-message__state").getByText(
-      "Researching web sources… This can take up to 2 minutes.",
+      "Reading external sources… This can take up to 2 minutes.",
       { exact: true },
     )).toBeVisible();
     await expect(liveStatus).toHaveText("Assistant response completed.");
@@ -215,7 +215,7 @@ test("authorizes web sources for one message and renders validated citations", a
     await expect(useWebSources).not.toBeChecked();
     await page.getByRole("button", { name: "Retry" }).last().click();
     await expect(page.locator(".chat-message__state").getByText(
-      "Researching web sources… This can take up to 2 minutes.",
+      "Reading external sources… This can take up to 2 minutes.",
       { exact: true },
     )).toBeVisible();
     await expect(liveStatus).toHaveText("Assistant response completed.");
@@ -241,12 +241,48 @@ test("authorizes web sources for one message and renders validated citations", a
 
     await page.reload();
     await page.getByRole("button", { name: "Chat", exact: true }).click();
-    await expect(page.getByText("Web sources enabled for this message.")).toHaveCount(3);
+    await expect(page.getByText("External sources enabled for this message.")).toHaveCount(3);
     await expect(page.getByRole("link", {
       name: "Source 1: Synthetic research source. Opens in a new tab.",
     })).toHaveCount(3);
   } finally {
     await pool.query(`delete from "user" where id = $1`, [seeded.userId]);
+  }
+});
+
+test("attaches one explicitly supplied PDF and renders its validated destination", async ({
+  context,
+  page,
+}) => {
+  const seeded = await seedBrowserSession(pool);
+  const nodeId = randomUUID();
+  const pdfUrl =
+    "https://bpb-us-e2.wpmucdn.com/websites.umass.edu/dist/a/27637/files/2016/03/rosenblatt-1957.pdf";
+
+  try {
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values ($1, $2, null, 0, 'Direct PDF research')`,
+      [nodeId, seeded.userId],
+    );
+    await installBrowserSessionCookie(context, seeded.cookie);
+    await page.goto(`/?node=${nodeId}`);
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+
+    await page.getByRole("checkbox", { name: "Use external sources" }).check();
+    await page.getByRole("textbox", { name: "Message" }).fill(
+      `Give me one short supported claim from ${pdfUrl}`,
+    );
+    await page.getByRole("button", { name: "Send" }).click();
+
+    const citation = page.getByRole("link", {
+      name: "Source 1: rosenblatt-1957.pdf. Opens in a new tab.",
+    });
+    await expect(citation).toHaveAttribute("href", pdfUrl);
+    await expect(page.getByText("External sources enabled for this message."))
+      .toBeVisible();
+  } finally {
+    await seeded.cleanup();
   }
 });
 
@@ -267,11 +303,11 @@ test("shows a concise durable error when web research cannot verify a source", a
     await page.goto(`/?node=${nodeId}`);
     await page.getByRole("button", { name: "Chat", exact: true }).click();
 
-    const useWebSources = page.getByRole("checkbox", { name: "Use web sources" });
+    const useWebSources = page.getByRole("checkbox", { name: "Use external sources" });
     const composer = page.getByRole("textbox", { name: "Message" });
     const liveStatus = page.locator(".chat-panel > .sr-only[role='status']");
-    const failure = "Couldn’t read or verify that source. Try a webpage or another source.";
-    const progress = "Researching web sources… This can take up to 2 minutes.";
+    const failure = "Couldn’t verify that source. Try one webpage or HTTPS PDF.";
+    const progress = "Reading external sources… This can take up to 2 minutes.";
 
     await useWebSources.check();
     await composer.fill("Research an unverifiable synthetic source");
@@ -380,9 +416,9 @@ test("recovers acknowledged web research after the downstream stream disconnects
     await page.goto(`/?node=${nodeId}`);
     await page.getByRole("button", { name: "Chat", exact: true }).click();
 
-    const failure = "Web research was interrupted. Try again.";
+    const failure = "External research was interrupted. Try again.";
     const liveStatus = page.locator(".chat-panel > .sr-only[role='status']");
-    await page.getByRole("checkbox", { name: "Use web sources" }).check();
+    await page.getByRole("checkbox", { name: "Use external sources" }).check();
     await page.getByRole("textbox", { name: "Message" })
       .fill("Research a synthetic topic");
     await page.getByRole("button", { name: "Send" }).click();
@@ -443,7 +479,7 @@ test("publishes cited web research with durable inline markers and References", 
     await page.getByRole("button", { name: "Chat", exact: true }).click();
 
     const chatDialog = page.getByRole("dialog", { name: "Chat about Cited research synthesis" });
-    await chatDialog.getByRole("checkbox", { name: "Use web sources" }).check();
+    await chatDialog.getByRole("checkbox", { name: "Use external sources" }).check();
     await chatDialog.getByRole("textbox", { name: "Message" })
       .fill("Research and propose a synthesis");
     await chatDialog.getByRole("button", { name: "Send" }).click();
@@ -483,6 +519,67 @@ test("publishes cited web research with durable inline markers and References", 
     await expect(page.getByRole("region", { name: "External references" })
       .getByRole("link", { name: "Synthetic research source" }))
       .toHaveAttribute("href", "https://example.test/research");
+  } finally {
+    await seeded.cleanup();
+  }
+});
+
+test("publishes a cited PDF-backed proposal with durable References", async ({
+  context,
+  page,
+}) => {
+  const seeded = await seedBrowserSession(pool);
+  const nodeId = randomUUID();
+  const pdfUrl =
+    "https://bpb-us-e2.wpmucdn.com/websites.umass.edu/dist/a/27637/files/2016/03/rosenblatt-1957.pdf";
+
+  try {
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values ($1, $2, null, 0, 'PDF-backed synthesis')`,
+      [nodeId, seeded.userId],
+    );
+    await installBrowserSessionCookie(context, seeded.cookie);
+    await page.goto(`/?node=${nodeId}`);
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+
+    const chatDialog = page.getByRole("dialog", { name: "Chat about PDF-backed synthesis" });
+    await chatDialog.getByRole("checkbox", { name: "Use external sources" }).check();
+    await chatDialog.getByRole("textbox", { name: "Message" }).fill(
+      `Propose a short synthesis grounded in ${pdfUrl}`,
+    );
+    await chatDialog.getByRole("button", { name: "Send" }).click();
+
+    const proposal = chatDialog.getByRole("region", { name: "Proposed synthesis" });
+    await expect(proposal).toBeVisible({ timeout: 10_000 });
+    await expect(proposal.getByRole("link", {
+      name: "Source 1: rosenblatt-1957.pdf. Opens in a new tab.",
+    })).toHaveAttribute("href", pdfUrl);
+    await expect(proposal.getByRole("region", { name: "External references" })
+      .getByRole("link", { name: "rosenblatt-1957.pdf" }))
+      .toHaveAttribute("href", pdfUrl);
+
+    await proposal.getByRole("button", { name: "Approve and publish" }).click();
+    await expect(chatDialog).not.toBeVisible();
+    const published = page.getByRole("region", { name: "Summary" });
+    await expect(published.getByRole("link", {
+      name: "Source 1: rosenblatt-1957.pdf. Opens in a new tab.",
+    })).toHaveAttribute("href", pdfUrl);
+    const references = page.getByRole("region", { name: "External references" });
+    await expect(references.getByRole("link", { name: "rosenblatt-1957.pdf" }))
+      .toHaveAttribute("href", pdfUrl);
+    await expect(references.evaluate((element) => {
+      const outline = document.querySelector(".branch-outline");
+      return Boolean(
+        outline &&
+        (element.compareDocumentPosition(outline) & Node.DOCUMENT_POSITION_FOLLOWING),
+      );
+    })).resolves.toBe(true);
+
+    await page.reload();
+    await expect(page.getByRole("region", { name: "External references" })
+      .getByRole("link", { name: "rosenblatt-1957.pdf" }))
+      .toHaveAttribute("href", pdfUrl);
   } finally {
     await seeded.cleanup();
   }
@@ -609,10 +706,10 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
     await composer.fill("Keep this fixture response open");
     await composer.focus();
     await page.keyboard.press("Tab");
-    const webToggle = page.getByRole("checkbox", { name: "Use web sources" });
+    const webToggle = page.getByRole("checkbox", { name: "Use external sources" });
     await expect(webToggle).toBeFocused();
     await expect(webToggle).toHaveAccessibleDescription(
-      "Applies to the next message only. External sources may change.",
+      "Next message only. Supports web research or one HTTPS PDF; sources may change.",
     );
     await page.keyboard.press("Tab");
     const send = page.getByRole("button", { name: "Send" });
