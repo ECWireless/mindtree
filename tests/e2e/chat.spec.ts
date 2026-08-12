@@ -157,6 +157,32 @@ test("authorizes web sources for one message and renders validated citations", a
     await page.getByRole("button", { name: "Retry" }).last().click();
     await expect(page.getByText("Researching web sources…")).toBeVisible();
     await expect(liveStatus).toHaveText("Assistant response completed.");
+    const preAcknowledgementRetry = await pool.query<{
+      id: string;
+      role: "assistant" | "user";
+      status: string;
+      web_search_authorized: boolean;
+    }>(
+      `select id, role, status, web_search_authorized
+       from chat_messages
+       where user_id = $1 and node_id = $2 and client_message_id = (
+         select client_message_id from chat_messages
+         where user_id = $1 and node_id = $2 and role = 'user' and content = $3
+       )
+       order by sequence`,
+      [seeded.userId, nodeId, "Retry web research before acknowledgement"],
+    );
+    expect(preAcknowledgementRetry.rows).toMatchObject([
+      { role: "user", status: "completed", web_search_authorized: true },
+      { role: "assistant", status: "completed" },
+    ]);
+    const preAcknowledgementAssistantId = preAcknowledgementRetry.rows
+      .find(({ role }) => role === "assistant")?.id;
+    const preAcknowledgementCitations = await pool.query<{ count: number }>(
+      `select count(*)::int as count from citations where assistant_message_id = $1`,
+      [preAcknowledgementAssistantId],
+    );
+    expect(preAcknowledgementCitations.rows).toEqual([{ count: 1 }]);
 
     const persistedRetryId = randomUUID();
     await pool.query(
@@ -168,6 +194,11 @@ test("authorizes web sources for one message and renders validated citations", a
         ($1, $2, $3, 5, 'assistant', 'failed', '', false, null, 'generation-failed')`,
       [seeded.userId, nodeId, persistedRetryId],
     );
+    const persistedAssistantBeforeRetry = await pool.query<{ id: string }>(
+      `select id from chat_messages
+       where user_id = $1 and node_id = $2 and client_message_id = $3 and role = 'assistant'`,
+      [seeded.userId, nodeId, persistedRetryId],
+    );
     await page.reload();
     await page.getByRole("button", { name: "Chat", exact: true }).click();
     await expect(useWebSources).not.toBeChecked();
@@ -175,6 +206,24 @@ test("authorizes web sources for one message and renders validated citations", a
     await expect(page.getByText("Researching web sources…")).toBeVisible();
     await expect(liveStatus).toHaveText("Assistant response completed.");
     await expect(citation).toHaveCount(3);
+    const persistedAssistantAfterRetry = await pool.query<{
+      id: string;
+      status: string;
+      citation_count: number;
+    }>(
+      `select m.id, m.status, count(c.id)::int as citation_count
+       from chat_messages m
+       left join citations c on c.assistant_message_id = m.id
+       where m.user_id = $1 and m.node_id = $2 and m.client_message_id = $3
+         and m.role = 'assistant'
+       group by m.id`,
+      [seeded.userId, nodeId, persistedRetryId],
+    );
+    expect(persistedAssistantAfterRetry.rows).toEqual([{
+      id: persistedAssistantBeforeRetry.rows[0]?.id,
+      status: "completed",
+      citation_count: 1,
+    }]);
 
     await page.reload();
     await page.getByRole("button", { name: "Chat", exact: true }).click();

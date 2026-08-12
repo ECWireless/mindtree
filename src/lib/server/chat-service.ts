@@ -17,6 +17,10 @@ import {
 } from "@/lib/chat/contracts";
 import type { ExternalCitationView } from "@/lib/citations/contracts";
 import {
+  ExternalCitationValidationError,
+  normalizeExternalCitationViews,
+} from "@/lib/server/external-citations";
+import {
   insertPendingSynthesisProposal,
   type PendingSynthesisProposalInput,
 } from "@/lib/server/synthesis-service";
@@ -864,28 +868,21 @@ export async function completeChatTurnForUser(
         throw new ChatServiceError("retry-unavailable");
       }
 
-      const externalCitations = options.externalCitations ?? [];
+      let externalCitations = options.externalCitations ?? [];
       if (externalCitations.length > 0) {
         if (!userMessage.webSearchAuthorized) {
           throw new ChatServiceError("retry-unavailable");
         }
-        const seenOccurrences = new Set<string>();
-        for (const citation of externalCitations) {
-          const occurrence = `${citation.ordinal}:${citation.startUtf16}:${citation.endUtf16}`;
-          if (
-            citation.kind !== "external" ||
-            !Number.isSafeInteger(citation.ordinal) ||
-            citation.ordinal < 1 ||
-            citation.ordinal > 32 ||
-            !Number.isSafeInteger(citation.startUtf16) ||
-            citation.startUtf16 < 0 ||
-            citation.endUtf16 !== citation.startUtf16 ||
-            citation.endUtf16 > assistantMessage.content.length ||
-            seenOccurrences.has(occurrence)
-          ) {
+        try {
+          externalCitations = normalizeExternalCitationViews({
+            content: assistantMessage.content,
+            citations: externalCitations,
+          });
+        } catch (error) {
+          if (error instanceof ExternalCitationValidationError) {
             throw new ChatServiceError("retry-unavailable");
           }
-          seenOccurrences.add(occurrence);
+          throw error;
         }
         await tx.insert(citations).values(externalCitations.map((citation) => ({
           userId,

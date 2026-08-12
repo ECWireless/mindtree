@@ -210,6 +210,247 @@ describe("OpenAI Responses chat stream", () => {
     );
   });
 
+  it.each([
+    ["refusal", { type: "response.refusal.done", sequence_number: 3 }, "provider-refusal"],
+    ["incomplete response", { type: "response.incomplete", sequence_number: 3 }, "response-invalid"],
+  ] as const)(
+    "does not expose buffered partial research after a %s",
+    async (_label, terminalEvent, failureCode) => {
+      const yielded: NormalizedOpenAIChatEvent[] = [];
+      let failure: unknown;
+      try {
+        for await (const event of normalizeOpenAIChatEvents(fixture([
+          createdEvent,
+          {
+            type: "response.web_search_call.in_progress",
+            sequence_number: 1,
+            item_id: "ws_partial",
+            output_index: 0,
+          },
+          deltaEvent("Sensitive partial research without a citation.", 2),
+          terminalEvent,
+        ]), { webSearchAuthorized: true })) {
+          yielded.push(event);
+        }
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toEqual(new OpenAIChatError(failureCode));
+      expect(yielded).toEqual([
+        { type: "started", providerResponseId: "resp_synthetic" },
+        { type: "research-status", status: "searching" },
+      ]);
+    },
+  );
+
+  it.each([
+    ["missing streamed completion", false, true],
+    ["missing completed output item", true, false],
+  ] as const)(
+    "rejects a search lifecycle with %s",
+    async (_label, includeStreamCompletion, includeOutputItem) => {
+      const rawContent = "A superficially cited claim.【source】";
+      const markerStart = rawContent.indexOf("【source】");
+      await expect(Array.fromAsync(normalizeOpenAIChatEvents(fixture([
+        createdEvent,
+        {
+          type: "response.web_search_call.in_progress",
+          sequence_number: 1,
+          item_id: "ws_incomplete",
+          output_index: 0,
+        },
+        deltaEvent(rawContent, 2),
+        ...(includeStreamCompletion
+          ? [{
+              type: "response.web_search_call.completed",
+              sequence_number: 3,
+              item_id: "ws_incomplete",
+              output_index: 0,
+            }]
+          : []),
+        {
+          type: "response.completed",
+          sequence_number: 4,
+          response: {
+            id: "resp_synthetic",
+            status: "completed",
+            output: [
+              ...(includeOutputItem
+                ? [{
+                    type: "web_search_call",
+                    id: "ws_incomplete",
+                    status: "completed",
+                    action: { type: "search", query: "synthetic topic" },
+                  }]
+                : []),
+              {
+                type: "message",
+                id: "msg_synthetic",
+                status: "completed",
+                role: "assistant",
+                content: [{
+                  type: "output_text",
+                  text: rawContent,
+                  annotations: [{
+                    type: "url_citation",
+                    start_index: markerStart,
+                    end_index: rawContent.length,
+                    title: "Synthetic source",
+                    url: "https://example.test/source",
+                  }],
+                }],
+              },
+            ],
+          },
+        },
+      ]), { webSearchAuthorized: true }))).rejects.toEqual(
+        new OpenAIChatError("response-invalid"),
+      );
+    },
+  );
+
+  it.each([
+    ["mismatched streamed and terminal IDs", ["ws_stream"], ["ws_terminal"]],
+    ["a duplicate streamed completion", ["ws_stream", "ws_stream"], ["ws_stream"]],
+    ["a duplicate terminal completion", ["ws_stream"], ["ws_stream", "ws_stream"]],
+  ] as const)("rejects a search lifecycle with %s", async (_label, streamedIds, terminalIds) => {
+    const rawContent = "A cited claim.【source】";
+    const markerStart = rawContent.indexOf("【source】");
+    await expect(Array.fromAsync(normalizeOpenAIChatEvents(fixture([
+      createdEvent,
+      ...streamedIds.map((itemId, index) => ({
+        type: "response.web_search_call.completed",
+        sequence_number: index + 1,
+        item_id: itemId,
+        output_index: index,
+      })),
+      deltaEvent(rawContent, streamedIds.length + 1),
+      {
+        type: "response.completed",
+        sequence_number: streamedIds.length + 2,
+        response: {
+          id: "resp_synthetic",
+          status: "completed",
+          output: [
+            ...terminalIds.map((id) => ({
+              type: "web_search_call",
+              id,
+              status: "completed",
+              action: { type: "search", query: "synthetic topic" },
+            })),
+            {
+              type: "message",
+              id: "msg_synthetic",
+              status: "completed",
+              role: "assistant",
+              content: [{
+                type: "output_text",
+                text: rawContent,
+                annotations: [{
+                  type: "url_citation",
+                  start_index: markerStart,
+                  end_index: rawContent.length,
+                  title: "Synthetic source",
+                  url: "https://example.test/source",
+                }],
+              }],
+            },
+          ],
+        },
+      },
+    ]), { webSearchAuthorized: true }))).rejects.toEqual(
+      new OpenAIChatError("response-invalid"),
+    );
+  });
+
+  it("does not expose buffered research after a transport timeout", async () => {
+    async function* timedOutResearch() {
+      yield createdEvent as ResponseStreamEvent;
+      yield {
+        type: "response.web_search_call.in_progress",
+        sequence_number: 1,
+        item_id: "ws_timeout",
+        output_index: 0,
+      } as ResponseStreamEvent;
+      yield deltaEvent("Buffered research before timeout.", 2) as ResponseStreamEvent;
+      throw new OpenAIChatError("provider-timeout");
+    }
+    const yielded: NormalizedOpenAIChatEvent[] = [];
+
+    await expect((async () => {
+      for await (const event of normalizeOpenAIChatEvents(
+        timedOutResearch(),
+        { webSearchAuthorized: true },
+      )) {
+        yielded.push(event);
+      }
+    })()).rejects.toEqual(new OpenAIChatError("provider-timeout"));
+    expect(yielded).toEqual([
+      { type: "started", providerResponseId: "resp_synthetic" },
+      { type: "research-status", status: "searching" },
+    ]);
+  });
+
+  it("maps unsafe or unsupported research annotations to a bounded invalid response", async () => {
+    const rawContent = "Unsafe claim.【source】";
+    const markerStart = rawContent.indexOf("【source】");
+    const completedSearch = {
+      type: "response.web_search_call.completed",
+      sequence_number: 2,
+      item_id: "ws_unsafe",
+      output_index: 0,
+    };
+    const responseOutput = (annotation: object) => ({
+      type: "response.completed",
+      sequence_number: 3,
+      response: {
+        id: "resp_synthetic",
+        status: "completed",
+        output: [
+          {
+            type: "web_search_call",
+            id: "ws_unsafe",
+            status: "completed",
+            action: { type: "search", query: "synthetic topic" },
+          },
+          {
+            type: "message",
+            id: "msg_synthetic",
+            status: "completed",
+            role: "assistant",
+            content: [{ type: "output_text", text: rawContent, annotations: [annotation] }],
+          },
+        ],
+      },
+    });
+
+    for (const annotation of [
+      {
+        type: "url_citation",
+        start_index: markerStart,
+        end_index: rawContent.length,
+        title: "Unsafe source",
+        url: "file:///private/source",
+      },
+      {
+        type: "file_citation",
+        start_index: markerStart,
+        end_index: rawContent.length,
+        filename: "private.txt",
+      },
+    ]) {
+      await expect(Array.fromAsync(normalizeOpenAIChatEvents(fixture([
+        createdEvent,
+        deltaEvent(rawContent),
+        completedSearch,
+        responseOutput(annotation),
+      ]), { webSearchAuthorized: true }))).rejects.toEqual(
+        new OpenAIChatError("response-invalid"),
+      );
+    }
+  });
+
   it("normalizes the consumed successful text lifecycle", async () => {
     const response = { id: "resp_synthetic", status: "completed", output: [] };
     const normalized = await Array.fromAsync(normalizeOpenAIChatEvents(fixture([

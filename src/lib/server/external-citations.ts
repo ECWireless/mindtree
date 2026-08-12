@@ -57,18 +57,20 @@ export function normalizeExternalTitle(value: string) {
   return title;
 }
 
-export function createExternalCitationEvidence(input: {
+export function normalizeExternalCitationViews(input: {
   content: string;
   citations: readonly ExternalCitationView[];
-  owner: ExternalCitationProvenance["owner"];
-  ownerId: string;
 }) {
-  const byOrdinal = new Map<number, ExternalCitationEvidence>();
-  const seenUrls = new Set<string>();
-  const ordered = [...input.citations].sort((left, right) =>
-    left.ordinal - right.ordinal || left.startUtf16 - right.startUtf16
-  );
-  for (const citation of ordered) {
+  if (
+    input.citations.length < 1 ||
+    input.citations.length > MAX_EXTERNAL_CITATION_OCCURRENCES
+  ) {
+    throw new ExternalCitationValidationError("invalid-count");
+  }
+  const sourceByOrdinal = new Map<number, { title: string; url: string }>();
+  const ordinalByUrl = new Map<string, number>();
+  const seenOccurrences = new Set<string>();
+  const normalized = input.citations.map((citation) => {
     if (
       citation.kind !== "external" ||
       !Number.isSafeInteger(citation.ordinal) ||
@@ -83,6 +85,41 @@ export function createExternalCitationEvidence(input: {
     }
     const title = normalizeExternalTitle(citation.title);
     const url = normalizeExternalUrl(citation.url);
+    const existingSource = sourceByOrdinal.get(citation.ordinal);
+    const existingOrdinal = ordinalByUrl.get(url);
+    const occurrence = `${citation.ordinal}:${citation.startUtf16}:${citation.endUtf16}`;
+    if (
+      (existingSource && (existingSource.title !== title || existingSource.url !== url)) ||
+      (existingOrdinal !== undefined && existingOrdinal !== citation.ordinal) ||
+      seenOccurrences.has(occurrence)
+    ) {
+      throw new ExternalCitationValidationError("inconsistent-evidence");
+    }
+    sourceByOrdinal.set(citation.ordinal, { title, url });
+    ordinalByUrl.set(url, citation.ordinal);
+    seenOccurrences.add(occurrence);
+    return { ...citation, title, url };
+  });
+  const ordinals = [...sourceByOrdinal.keys()].sort((left, right) => left - right);
+  if (ordinals.some((ordinal, index) => ordinal !== index + 1)) {
+    throw new ExternalCitationValidationError("invalid-evidence");
+  }
+  return normalized;
+}
+
+export function createExternalCitationEvidence(input: {
+  content: string;
+  citations: readonly ExternalCitationView[];
+  owner: ExternalCitationProvenance["owner"];
+  ownerId: string;
+}) {
+  const byOrdinal = new Map<number, ExternalCitationEvidence>();
+  const seenUrls = new Set<string>();
+  const ordered = normalizeExternalCitationViews(input).sort((left, right) =>
+    left.ordinal - right.ordinal || left.startUtf16 - right.startUtf16
+  );
+  for (const citation of ordered) {
+    const { title, url } = citation;
     const excerptStart = Math.max(
       0,
       citation.startUtf16 - EXTERNAL_EVIDENCE_BEFORE_CHARACTERS,

@@ -1296,6 +1296,35 @@ describe("persistent chat ledger", () => {
     expect(page.messages.find(({ role }) => role === "assistant")?.citations).toEqual(
       completed.citations,
     );
+
+    await expect(pool.query(
+      `update citations set external_title = 'Tampered source'
+       where assistant_message_id = $1`,
+      [completed.id],
+    )).rejects.toMatchObject({
+      code: "23514",
+      constraint: "citations_immutable_check",
+    });
+    await expect(pool.query(
+      `delete from citations where assistant_message_id = $1`,
+      [completed.id],
+    )).rejects.toMatchObject({
+      code: "23514",
+      constraint: "citations_immutable_check",
+    });
+
+    const foreignUserId = await insertUser();
+    await expect(pool.query(
+      `insert into citations
+         (user_id, owner_node_id, assistant_message_id, kind, ordinal,
+          start_utf16, end_utf16, external_url, external_title)
+       values ($1, $2, $3, 'external', 2, $4, $4,
+               'https://example.test/foreign', 'Foreign source')`,
+      [foreignUserId, nodeId, completed.id, content.length],
+    )).rejects.toMatchObject({
+      code: "23514",
+      constraint: "citations_message_state_check",
+    });
   });
 
   it("rejects completed web turns without citations and citations on no-web turns", async () => {
@@ -1334,6 +1363,74 @@ describe("persistent chat ledger", () => {
             }],
       })).rejects.toEqual(new ChatServiceError("retry-unavailable"));
     }
+  });
+
+  it.each([
+    [
+      "one ordinal mapped to different sources",
+      [
+        { ordinal: 1, title: "Source one", url: "https://one.example.test/" },
+        { ordinal: 1, title: "Source two", url: "https://two.example.test/" },
+      ],
+    ],
+    [
+      "one source split across ordinals",
+      [
+        { ordinal: 1, title: "Source", url: "https://example.test/source" },
+        { ordinal: 2, title: "Source", url: "https://example.test/source" },
+      ],
+    ],
+    [
+      "a non-contiguous first ordinal",
+      [{ ordinal: 2, title: "Source", url: "https://example.test/source" }],
+    ],
+  ])("rejects %s without partially completing the web turn", async (_label, sources) => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId);
+    const clientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId,
+      content: "Research malformed citation provenance.",
+      webSearchAuthorized: true,
+    }, { claimAssistant: true });
+    await recordChatTurnContextForUser(userId, {
+      nodeId,
+      clientMessageId,
+      model: "gpt-5.6-sol",
+      contextFingerprint: "9".repeat(64),
+    });
+    const content = "First claim. Second claim.";
+    await persistChatTurnContentPrefixForUser(userId, {
+      nodeId,
+      clientMessageId,
+      contentPrefix: content,
+    });
+    const externalCitations = sources.map((source, index) => ({
+      kind: "external" as const,
+      ordinal: source.ordinal,
+      startUtf16: index === 0 ? "First claim.".length : content.length,
+      endUtf16: index === 0 ? "First claim.".length : content.length,
+      title: source.title,
+      url: source.url,
+    }));
+
+    await expect(completeChatTurnForUser(userId, { nodeId, clientMessageId }, {
+      externalCitations,
+    })).rejects.toEqual(new ChatServiceError("retry-unavailable"));
+    const stored = await pool.query<{
+      citation_count: number;
+      status: string;
+    }>(
+      `select m.status, count(c.id)::int as citation_count
+       from chat_messages m
+       left join citations c on c.assistant_message_id = m.id
+       where m.user_id = $1 and m.node_id = $2 and m.client_message_id = $3
+         and m.role = 'assistant'
+       group by m.id`,
+      [userId, nodeId, clientMessageId],
+    );
+    expect(stored.rows).toEqual([{ status: "streaming", citation_count: 0 }]);
   });
 
   it("does not distinguish foreign nodes from missing nodes", async () => {

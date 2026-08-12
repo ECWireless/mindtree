@@ -18,6 +18,9 @@ const runtime = vi.hoisted(() => ({
     | "success"
     | "timeout"
     | "wait-for-abort"
+    | "web-provider-refusal"
+    | "web-success"
+    | "web-timeout"
   >,
 }));
 
@@ -29,7 +32,11 @@ vi.mock("@/lib/server/chat-runtime", async () => {
   return {
     createOpenAISafetyIdentifier: () => "mt_synthetic_failure_test",
     getChatGenerationMode: () => "deterministic-fixture",
-    streamChatResponse: (input: { phase: "conversation" | "synthesis"; signal: AbortSignal }) => {
+    streamChatResponse: (input: {
+      phase: "conversation" | "synthesis";
+      signal: AbortSignal;
+      webSearchAuthorized?: boolean;
+    }) => {
       runtime.invocations += 1;
       const scenario = runtime.scenarios.shift();
       return (async function* () {
@@ -45,6 +52,35 @@ vi.mock("@/lib/server/chat-runtime", async () => {
 
         const providerResponseId = `resp_${scenario}`;
         yield { type: "started" as const, providerResponseId };
+        if (scenario.startsWith("web-")) {
+          if (input.phase !== "conversation" || input.webSearchAuthorized !== true) {
+            throw new Error("unexpected web research profile");
+          }
+          yield { type: "research-status" as const, status: "searching" as const };
+          if (scenario === "web-provider-refusal") {
+            throw new OpenAIChatError("provider-refusal");
+          }
+          if (scenario === "web-timeout") {
+            throw new OpenAIChatError("provider-timeout");
+          }
+          const content = "A completed synthetic research claim.";
+          yield { type: "text-delta" as const, content };
+          yield {
+            type: "completed" as const,
+            providerResponseId,
+            synthesisRequested: false,
+            proposal: null,
+            externalCitations: [{
+              kind: "external" as const,
+              ordinal: 1,
+              startUtf16: content.length,
+              endUtf16: content.length,
+              title: "Synthetic retry source",
+              url: "https://example.test/retry-source",
+            }],
+          };
+          return;
+        }
         if (
           scenario === "route-synthesis" ||
           scenario === "route-synthesis-at-content-limit"
@@ -146,9 +182,10 @@ async function storedTurn(clientMessageId: string) {
     provider_response_id: string | null;
     model: string | null;
     context_fingerprint: string | null;
+    web_search_authorized: boolean;
   }>(
     `select id, role, status, content, failure_code, provider_response_id, model,
-            context_fingerprint
+            context_fingerprint, web_search_authorized
      from chat_messages
      where user_id = $1 and node_id = $2 and client_message_id = $3
      order by sequence`,
@@ -339,6 +376,122 @@ describe("chat generation failure boundaries", () => {
 
     const replayEvents = await readEvents(await post(createBody));
     expect(replayEvents.map(({ type }) => type)).toEqual(["turn", "completed"]);
+    expect(runtime.invocations).toBe(2);
+  });
+
+  it.each([
+    ["web-provider-refusal", "provider-refusal"],
+    ["web-timeout", "provider-timeout"],
+  ] as const)(
+    "fails closed for %s without persisting buffered research or citations",
+    async (scenario, failureCode) => {
+      runtime.scenarios.push(scenario);
+      const clientMessageId = randomUUID();
+      const events = await readEvents(await post({
+        nodeId,
+        clientMessageId,
+        content: "Research a synthetic failure",
+        webSearchAuthorized: true,
+      }));
+
+      expect(events.map(({ type }) => type)).toEqual([
+        "turn",
+        "research-status",
+        "failed",
+      ]);
+      expect(events.at(-1)).toMatchObject({
+        type: "failed",
+        assistantMessage: { status: "failed", failureCode, content: "" },
+      });
+      expect(await storedTurn(clientMessageId)).toMatchObject([
+        { role: "user", web_search_authorized: true },
+        { role: "assistant", status: "failed", content: "" },
+      ]);
+      const citationCount = await pool.query<{ count: number }>(
+        `select count(*)::int as count from citations
+         where user_id = $1 and owner_node_id = $2`,
+        [userId, nodeId],
+      );
+      const proposalCount = await pool.query<{ count: number }>(
+        `select count(*)::int as count from synthesis_versions
+         where user_id = $1 and node_id = $2`,
+        [userId, nodeId],
+      );
+      expect(citationCount.rows).toEqual([{ count: 0 }]);
+      expect(proposalCount.rows).toEqual([{ count: 0 }]);
+    },
+  );
+
+  it("retries failed web research on the same ledger row with its original authorization", async () => {
+    runtime.scenarios.push("web-provider-refusal", "web-success");
+    const clientMessageId = randomUUID();
+    const createBody = {
+      nodeId,
+      clientMessageId,
+      content: "Research a synthetic retry",
+      webSearchAuthorized: true,
+    };
+    const failedEvents = await readEvents(await post(createBody));
+    const failedAssistant = (await storedTurn(clientMessageId))
+      .find(({ role }) => role === "assistant");
+    expect(failedEvents.at(-1)).toMatchObject({
+      type: "failed",
+      assistantMessage: { id: failedAssistant?.id, failureCode: "provider-refusal" },
+    });
+
+    const retriedEvents = await readEvents(await post({
+      nodeId,
+      clientMessageId,
+      retry: true,
+    }));
+    expect(retriedEvents.map(({ type }) => type)).toEqual([
+      "turn",
+      "research-status",
+      "delta",
+      "completed",
+    ]);
+    expect(retriedEvents.at(-1)).toMatchObject({
+      type: "completed",
+      proposalCreated: false,
+      assistantMessage: {
+        id: failedAssistant?.id,
+        status: "completed",
+        content: "A completed synthetic research claim.",
+        citations: [{
+          kind: "external",
+          ordinal: 1,
+          title: "Synthetic retry source",
+          url: "https://example.test/retry-source",
+        }],
+      },
+    });
+    expect(await storedTurn(clientMessageId)).toMatchObject([
+      { role: "user", web_search_authorized: true },
+      {
+        id: failedAssistant?.id,
+        role: "assistant",
+        status: "completed",
+        failure_code: null,
+      },
+    ]);
+    const citations = await pool.query<{
+      assistant_message_id: string;
+      title: string;
+      url: string;
+    }>(
+      `select assistant_message_id, external_title as title, external_url as url
+       from citations where user_id = $1 and owner_node_id = $2`,
+      [userId, nodeId],
+    );
+    expect(citations.rows).toEqual([{
+      assistant_message_id: failedAssistant?.id,
+      title: "Synthetic retry source",
+      url: "https://example.test/retry-source",
+    }]);
+    expect(runtime.invocations).toBe(2);
+
+    const replayed = await readEvents(await post(createBody));
+    expect(replayed.map(({ type }) => type)).toEqual(["turn", "completed"]);
     expect(runtime.invocations).toBe(2);
   });
 

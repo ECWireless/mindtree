@@ -1,17 +1,128 @@
 import { describe, expect, it } from "vitest";
 
+import { MAX_EXTERNAL_CITATION_OCCURRENCES } from "@/lib/citations/contracts";
 import {
   ExternalCitationValidationError,
   createExternalCitationEvidence,
   mergeExternalCitationEvidenceBounded,
   normalizeExternalCitationAnnotations,
   normalizeExternalCitationMentions,
+  normalizeExternalCitationViews,
   normalizeExternalUrl,
   requireNonOverlappingSynthesisCitations,
   toExternalResearchEvidence,
 } from "@/lib/server/external-citations";
 
 describe("external citation normalization", () => {
+  it("normalizes stored citation source metadata without changing occurrence order", () => {
+    expect(normalizeExternalCitationViews({
+      content: "First claim. Second claim.",
+      citations: [
+        {
+          kind: "external",
+          ordinal: 1,
+          startUtf16: 12,
+          endUtf16: 12,
+          title: "  Synthetic   source  ",
+          url: "HTTPS://EXAMPLE.TEST:443/report#section",
+        },
+        {
+          kind: "external",
+          ordinal: 1,
+          startUtf16: 26,
+          endUtf16: 26,
+          title: "Synthetic source",
+          url: "https://example.test/report",
+        },
+      ],
+    })).toEqual([
+      {
+        kind: "external",
+        ordinal: 1,
+        startUtf16: 12,
+        endUtf16: 12,
+        title: "Synthetic source",
+        url: "https://example.test/report",
+      },
+      {
+        kind: "external",
+        ordinal: 1,
+        startUtf16: 26,
+        endUtf16: 26,
+        title: "Synthetic source",
+        url: "https://example.test/report",
+      },
+    ]);
+  });
+
+  it.each([
+    {
+      name: "maps one ordinal to different sources",
+      citations: [
+        { ordinal: 1, title: "First", url: "https://one.example.test/" },
+        { ordinal: 1, title: "Second", url: "https://two.example.test/" },
+      ],
+    },
+    {
+      name: "maps one source to different ordinals",
+      citations: [
+        { ordinal: 1, title: "Source", url: "https://one.example.test/" },
+        { ordinal: 2, title: "Source", url: "https://one.example.test/" },
+      ],
+    },
+    {
+      name: "starts source ordinals after one",
+      citations: [
+        { ordinal: 2, title: "Source", url: "https://one.example.test/" },
+      ],
+    },
+  ])("rejects citation metadata that $name", ({ citations }) => {
+    expect(() => normalizeExternalCitationViews({
+      content: "Claim.",
+      citations: citations.map((citation, index) => ({
+        kind: "external" as const,
+        startUtf16: index + 1,
+        endUtf16: index + 1,
+        ...citation,
+      })),
+    })).toThrowError(ExternalCitationValidationError);
+  });
+
+  it("rejects duplicate occurrences and enforces the occurrence bound", () => {
+    const citation = {
+      kind: "external" as const,
+      ordinal: 1,
+      startUtf16: 0,
+      endUtf16: 0,
+      title: "Source",
+      url: "https://example.test/source",
+    };
+    expect(() => normalizeExternalCitationViews({
+      content: "Claim.",
+      citations: [citation, citation],
+    })).toThrowError(new ExternalCitationValidationError("inconsistent-evidence"));
+
+    const bounded = Array.from(
+      { length: MAX_EXTERNAL_CITATION_OCCURRENCES },
+      (_, startUtf16) => ({ ...citation, startUtf16, endUtf16: startUtf16 }),
+    );
+    expect(normalizeExternalCitationViews({
+      content: "x".repeat(MAX_EXTERNAL_CITATION_OCCURRENCES),
+      citations: bounded,
+    })).toHaveLength(MAX_EXTERNAL_CITATION_OCCURRENCES);
+    expect(() => normalizeExternalCitationViews({
+      content: "x".repeat(MAX_EXTERNAL_CITATION_OCCURRENCES + 1),
+      citations: [
+        ...bounded,
+        {
+          ...citation,
+          startUtf16: MAX_EXTERNAL_CITATION_OCCURRENCES,
+          endUtf16: MAX_EXTERNAL_CITATION_OCCURRENCES,
+        },
+      ],
+    })).toThrowError(new ExternalCitationValidationError("invalid-count"));
+  });
+
   it("removes provider markers and reuses first-source ordinals across occurrences", () => {
     const content = "First claim.【source one】 Second claim.【source again】";
     const firstStart = content.indexOf("【source one】");

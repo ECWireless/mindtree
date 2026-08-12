@@ -104,7 +104,7 @@ export async function* normalizeOpenAIChatEvents(
   let visibleCharacterCount = 0;
   let bufferedResearchText = "";
   let researchStatusEmitted = false;
-  let completedWebSearchCalls = 0;
+  const completedWebSearchCallIds = new Set<string>();
   let synthesisRequested = false;
   let proposal: SynthesisProposalDraft | null = null;
   let externalCitations: ExternalCitationView[] = [];
@@ -157,7 +157,11 @@ export async function* normalizeOpenAIChatEvents(
         if (!webSearchAuthorized || providerResponseId === null) {
           throw new OpenAIChatError("response-invalid");
         }
-        completedWebSearchCalls += 1;
+        const itemId = requireResponseId(event.item_id);
+        if (completedWebSearchCallIds.has(itemId)) {
+          throw new OpenAIChatError("response-invalid");
+        }
+        completedWebSearchCallIds.add(itemId);
         if (!researchStatusEmitted) {
           researchStatusEmitted = true;
           yield { type: "research-status", status: "searching" };
@@ -184,7 +188,7 @@ export async function* normalizeOpenAIChatEvents(
         }
         const functionCalls = [];
         const outputTextParts: ResponseOutputText[] = [];
-        let responseWebSearchCalls = 0;
+        const responseWebSearchCallIds = new Set<string>();
         for (const item of event.response.output) {
           if (item.type === "function_call") {
             if (item.status !== "completed") {
@@ -205,15 +209,22 @@ export async function* normalizeOpenAIChatEvents(
             if (!webSearchAuthorized || item.status !== "completed") {
               throw new OpenAIChatError("response-invalid");
             }
-            responseWebSearchCalls += 1;
+            const itemId = requireResponseId(item.id);
+            if (responseWebSearchCallIds.has(itemId)) {
+              throw new OpenAIChatError("response-invalid");
+            }
+            responseWebSearchCallIds.add(itemId);
           } else if (item.type !== "reasoning") {
             throw new OpenAIChatError("response-invalid");
           }
         }
         if (webSearchAuthorized) {
           if (
-            responseWebSearchCalls < 1 ||
-            completedWebSearchCalls < 1 ||
+            responseWebSearchCallIds.size < 1 ||
+            completedWebSearchCallIds.size !== responseWebSearchCallIds.size ||
+            [...completedWebSearchCallIds].some((itemId) =>
+              !responseWebSearchCallIds.has(itemId)
+            ) ||
             outputTextParts.length !== 1
           ) {
             throw new OpenAIChatError("response-invalid");
@@ -243,7 +254,7 @@ export async function* normalizeOpenAIChatEvents(
             }
             throw error;
           }
-        } else if (responseWebSearchCalls > 0) {
+        } else if (responseWebSearchCallIds.size > 0) {
           throw new OpenAIChatError("response-invalid");
         }
         if (functionCalls.length > 1) {
