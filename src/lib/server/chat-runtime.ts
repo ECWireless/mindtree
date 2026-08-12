@@ -5,6 +5,7 @@ import { createHmac } from "node:crypto";
 import { getServerEnvironment } from "@/lib/env/server";
 import {
   OpenAIChatAbortError,
+  OpenAIChatError,
   streamOpenAIChat,
   type NormalizedOpenAIChatEvent,
   type OpenAIChatPhase,
@@ -85,6 +86,13 @@ async function* streamDeterministicChatFixture(input: {
   if (input.phase === "conversation" && input.webSearchAuthorized) {
     const content = `Researching **${topic}** found a current synthetic source.`;
     yield { type: "research-status", status: "searching" };
+    if (topic === "Research an unverifiable synthetic source") {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (input.signal.aborted) {
+        throw new OpenAIChatAbortError();
+      }
+      throw new OpenAIChatError("response-invalid");
+    }
     await new Promise((resolve) => setTimeout(resolve, 1_000));
     if (input.signal.aborted) {
       throw new OpenAIChatAbortError();

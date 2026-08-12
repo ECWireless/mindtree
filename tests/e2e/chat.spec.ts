@@ -128,8 +128,13 @@ test("authorizes web sources for one message and renders validated citations", a
     await expect(useWebSources).not.toBeChecked();
     await expect(page.getByText("Web sources enabled for this message.")).toBeVisible();
     const liveStatus = page.locator(".chat-panel > .sr-only[role='status']");
-    await expect(page.getByText("Researching web sources…")).toBeVisible();
-    await expect(liveStatus).toHaveText("Researching web sources.");
+    await expect(page.locator(".chat-message__state").getByText(
+      "Researching web sources… This can take up to 2 minutes.",
+      { exact: true },
+    )).toBeVisible();
+    await expect(liveStatus).toHaveText(
+      "Researching web sources… This can take up to 2 minutes.",
+    );
     await expect(liveStatus)
       .toHaveText("Assistant response completed.");
     const citation = page.getByRole("link", {
@@ -152,10 +157,16 @@ test("authorizes web sources for one message and renders validated citations", a
     await composer.fill("Retry web research before acknowledgement");
     await page.getByRole("button", { name: "Send" }).click();
     await expect(useWebSources).not.toBeChecked();
-    await expect(page.getByText("That response didn’t finish.")).toBeVisible();
+    await expect(page.locator(".chat-message__failure").getByText(
+      "That response didn’t finish.",
+      { exact: true },
+    )).toBeVisible();
     await page.unroute("**/api/chat");
     await page.getByRole("button", { name: "Retry" }).last().click();
-    await expect(page.getByText("Researching web sources…")).toBeVisible();
+    await expect(page.locator(".chat-message__state").getByText(
+      "Researching web sources… This can take up to 2 minutes.",
+      { exact: true },
+    )).toBeVisible();
     await expect(liveStatus).toHaveText("Assistant response completed.");
     const preAcknowledgementRetry = await pool.query<{
       id: string;
@@ -203,7 +214,10 @@ test("authorizes web sources for one message and renders validated citations", a
     await page.getByRole("button", { name: "Chat", exact: true }).click();
     await expect(useWebSources).not.toBeChecked();
     await page.getByRole("button", { name: "Retry" }).last().click();
-    await expect(page.getByText("Researching web sources…")).toBeVisible();
+    await expect(page.locator(".chat-message__state").getByText(
+      "Researching web sources… This can take up to 2 minutes.",
+      { exact: true },
+    )).toBeVisible();
     await expect(liveStatus).toHaveText("Assistant response completed.");
     await expect(citation).toHaveCount(3);
     const persistedAssistantAfterRetry = await pool.query<{
@@ -233,6 +247,62 @@ test("authorizes web sources for one message and renders validated citations", a
     })).toHaveCount(3);
   } finally {
     await pool.query(`delete from "user" where id = $1`, [seeded.userId]);
+  }
+});
+
+test("shows a concise durable error when web research cannot verify a source", async ({
+  context,
+  page,
+}) => {
+  const seeded = await seedBrowserSession(pool);
+  const nodeId = randomUUID();
+
+  try {
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values ($1, $2, null, 0, 'Unverifiable web source')`,
+      [nodeId, seeded.userId],
+    );
+    await installBrowserSessionCookie(context, seeded.cookie);
+    await page.goto(`/?node=${nodeId}`);
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+
+    const useWebSources = page.getByRole("checkbox", { name: "Use web sources" });
+    const composer = page.getByRole("textbox", { name: "Message" });
+    const liveStatus = page.locator(".chat-panel > .sr-only[role='status']");
+    const failure = "Couldn’t verify that source. Check the URL and try again.";
+    const progress = "Researching web sources… This can take up to 2 minutes.";
+
+    await useWebSources.check();
+    await composer.fill("Research an unverifiable synthetic source");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page.locator(".chat-message__state").getByText(progress, { exact: true }))
+      .toBeVisible();
+    await expect(liveStatus).toHaveText(progress);
+    await expect(page.locator(".chat-message__failure").getByText(
+      failure,
+      { exact: true },
+    )).toBeVisible();
+    await expect(liveStatus).toHaveText(failure);
+    await expect(page.getByText("That response didn’t finish.", { exact: true }))
+      .toHaveCount(0);
+
+    await page.reload();
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+    await expect(page.locator(".chat-message__failure").getByText(
+      failure,
+      { exact: true },
+    )).toBeVisible();
+    await page.getByRole("button", { name: "Retry" }).click();
+    await expect(page.locator(".chat-message__state").getByText(progress, { exact: true }))
+      .toBeVisible();
+    await expect(page.locator(".chat-message__failure").getByText(
+      failure,
+      { exact: true },
+    )).toBeVisible();
+    await expect(liveStatus).toHaveText(failure);
+  } finally {
+    await seeded.cleanup();
   }
 });
 
