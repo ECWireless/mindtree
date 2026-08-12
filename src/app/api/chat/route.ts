@@ -23,7 +23,12 @@ import {
   toExternalResearchEvidence,
   type ExternalCitationEvidence,
 } from "@/lib/server/external-citations";
-import { findAuthorizedExternalPdfSource } from "@/lib/server/external-pdf-source";
+import {
+  createDeterministicExternalPdfInput,
+  fetchAuthorizedExternalPdf,
+  findAuthorizedExternalPdfSource,
+  type ExternalPdfInput,
+} from "@/lib/server/external-pdf-source";
 import {
   persistChatTurnContentPrefixForUser,
   cancelChatTurnForUser,
@@ -173,10 +178,15 @@ export async function POST(request: Request) {
       jsonError(409, "The message is already in progress.");
   }
   const webSearchAuthorized = turn.userMessage.webSearchAuthorized;
-  let externalPdfSource: ReturnType<typeof findAuthorizedExternalPdfSource> = null;
+  let externalPdfSource: ExternalPdfInput | null = null;
   if (webSearchAuthorized) {
     try {
-      externalPdfSource = findAuthorizedExternalPdfSource(turn.userMessage.content);
+      const source = findAuthorizedExternalPdfSource(turn.userMessage.content);
+      if (source) {
+        externalPdfSource = getChatGenerationMode() === "deterministic-fixture"
+          ? createDeterministicExternalPdfInput(source)
+          : await fetchAuthorizedExternalPdf(source, { signal: request.signal });
+      }
     } catch {
       const assistantMessage = await failChatTurnForUser(userId, {
         ...input,

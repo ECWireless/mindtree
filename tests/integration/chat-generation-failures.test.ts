@@ -6,7 +6,16 @@ import { Pool } from "pg";
 
 const runtime = vi.hoisted(() => ({
   invocations: 0,
-  externalPdfSources: [] as Array<null | { alias: string; title: string; url: string }>,
+  generationMode: "deterministic-fixture" as "deterministic-fixture" | "openai",
+  pdfFetchFailure: false,
+  pdfFetchInvocations: [] as Array<{ alias: string; title: string; url: string }>,
+  externalPdfSources: [] as Array<null | {
+    alias: string;
+    fileData: string;
+    filename: string;
+    title: string;
+    url: string;
+  }>,
   beforeRouteComplete: null as null | (() => Promise<void>),
   scenarios: [] as Array<
     | "disconnect-after-delta"
@@ -25,6 +34,30 @@ const runtime = vi.hoisted(() => ({
     | "web-timeout"
   >,
 }));
+
+vi.mock("@/lib/server/external-pdf-source", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/server/external-pdf-source")>(
+    "@/lib/server/external-pdf-source",
+  );
+  return {
+    ...actual,
+    fetchAuthorizedExternalPdf: async (source: {
+      alias: "W1";
+      title: string;
+      url: string;
+    }) => {
+      runtime.pdfFetchInvocations.push(source);
+      if (runtime.pdfFetchFailure) {
+        throw new Error("synthetic secure PDF fetch failure");
+      }
+      return {
+        ...source,
+        fileData: "data:application/pdf;base64,JVBERi0xLjQK",
+        filename: source.title,
+      };
+    },
+  };
+});
 
 vi.mock("@/lib/server/chat-stream", async () => {
   const actual = await vi.importActual<typeof import("@/lib/server/chat-stream")>(
@@ -50,12 +83,18 @@ vi.mock("@/lib/server/chat-runtime", async () => {
 
   return {
     createOpenAISafetyIdentifier: () => "mt_synthetic_failure_test",
-    getChatGenerationMode: () => "deterministic-fixture",
+    getChatGenerationMode: () => runtime.generationMode,
     streamChatResponse: (input: {
       phase: "conversation" | "synthesis";
       signal: AbortSignal;
       webSearchAuthorized?: boolean;
-      externalPdfSource?: null | { alias: string; title: string; url: string };
+      externalPdfSource?: null | {
+        alias: string;
+        fileData: string;
+        filename: string;
+        title: string;
+        url: string;
+      };
     }) => {
       runtime.invocations += 1;
       runtime.externalPdfSources.push(input.externalPdfSource ?? null);
@@ -304,6 +343,9 @@ describe("chat generation failure boundaries", () => {
   beforeEach(async () => {
     runtime.scenarios.length = 0;
     runtime.invocations = 0;
+    runtime.generationMode = "deterministic-fixture";
+    runtime.pdfFetchFailure = false;
+    runtime.pdfFetchInvocations.length = 0;
     runtime.externalPdfSources.length = 0;
     runtime.beforeRouteComplete = null;
     await pool.query(`delete from nodes where user_id = $1`, [userId]);
@@ -540,6 +582,7 @@ describe("chat generation failure boundaries", () => {
   });
 
   it("passes only the explicitly supplied current-turn PDF to the provider and persists its provenance", async () => {
+    runtime.generationMode = "openai";
     runtime.scenarios.push("web-success");
     const clientMessageId = randomUUID();
     const url = "https://example.test/papers/rosenblatt-1957.pdf";
@@ -551,6 +594,13 @@ describe("chat generation failure boundaries", () => {
     }));
 
     expect(runtime.externalPdfSources).toEqual([{
+      alias: "W1",
+      fileData: "data:application/pdf;base64,JVBERi0xLjQK",
+      filename: "rosenblatt-1957.pdf",
+      title: "rosenblatt-1957.pdf",
+      url,
+    }]);
+    expect(runtime.pdfFetchInvocations).toEqual([{
       alias: "W1",
       title: "rosenblatt-1957.pdf",
       url,
@@ -576,6 +626,31 @@ describe("chat generation failure boundaries", () => {
       type: "failed",
       assistantMessage: { failureCode: "response-invalid" },
     });
+    expect(runtime.invocations).toBe(0);
+    expect(runtime.externalPdfSources).toEqual([]);
+  });
+
+  it("fails a direct PDF that cannot be fetched safely before incurring provider cost", async () => {
+    runtime.generationMode = "openai";
+    runtime.pdfFetchFailure = true;
+    const clientMessageId = randomUUID();
+    const url = "https://example.test/private-after-resolution.pdf";
+    const events = await readEvents(await post({
+      nodeId,
+      clientMessageId,
+      content: `Read ${url}`,
+      webSearchAuthorized: true,
+    }));
+
+    expect(events.at(-1)).toMatchObject({
+      type: "failed",
+      assistantMessage: { failureCode: "response-invalid" },
+    });
+    expect(runtime.pdfFetchInvocations).toEqual([{
+      alias: "W1",
+      title: "private-after-resolution.pdf",
+      url,
+    }]);
     expect(runtime.invocations).toBe(0);
     expect(runtime.externalPdfSources).toEqual([]);
   });

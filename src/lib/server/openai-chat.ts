@@ -42,7 +42,7 @@ import {
   normalizeExternalCitationMentions,
   type ProviderUrlCitation,
 } from "@/lib/server/external-citations";
-import type { ExternalPdfSource } from "@/lib/server/external-pdf-source";
+import type { ExternalPdfInput } from "@/lib/server/external-pdf-source";
 import {
   synthesisProposalDraftSchema,
   type SynthesisProposalDraft,
@@ -123,7 +123,7 @@ export async function* normalizeOpenAIChatEvents(
   options: {
     phase?: OpenAIChatPhase;
     webSearchAuthorized?: boolean;
-    externalPdfSource?: ExternalPdfSource | null;
+    externalPdfSource?: ExternalPdfInput | null;
   } = {},
 ): AsyncGenerator<NormalizedOpenAIChatEvent> {
   const phase = options.phase ?? "conversation";
@@ -398,7 +398,7 @@ export function createOpenAIChatRequest(input: {
   phase?: OpenAIChatPhase;
   safetyIdentifier: string;
   webSearchAuthorized?: boolean;
-  externalPdfSource?: ExternalPdfSource | null;
+  externalPdfSource?: ExternalPdfInput | null;
 }): ResponseCreateParamsStreaming {
   const phase = input.phase ?? "conversation";
   const synthesis = phase === "synthesis";
@@ -416,8 +416,9 @@ export function createOpenAIChatRequest(input: {
                 { type: "input_text" as const, text: message.content },
                 {
                   type: "input_file" as const,
-                  file_url: input.externalPdfSource!.url,
                   detail: "low" as const,
+                  file_data: input.externalPdfSource!.fileData,
+                  filename: input.externalPdfSource!.filename,
                 },
               ],
             }
@@ -500,7 +501,7 @@ export async function* streamOpenAIChat(input: {
   safetyIdentifier: string;
   signal: AbortSignal;
   webSearchAuthorized?: boolean;
-  externalPdfSource?: ExternalPdfSource | null;
+  externalPdfSource?: ExternalPdfInput | null;
 }): AsyncGenerator<NormalizedOpenAIChatEvent> {
   const client = new OpenAI({
     apiKey: input.apiKey,

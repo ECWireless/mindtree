@@ -196,10 +196,13 @@ v0.1.0 does not include:
 - A clear **Use external sources** control is off by default and applies only to the
   next submitted turn. Natural-language requests may explain that the control
   must be enabled; they do not silently authorize external access.
-- An authorized turn may use web search or attach exactly one provider-fetchable,
-  non-local HTTPS PDF
-  URL supplied in that turn as a low-detail provider file input. MindTree never
-  downloads or stores PDF bytes or extracted document text.
+- An authorized turn may use web search or ingest exactly one non-local HTTPS
+  PDF URL supplied in that turn. MindTree resolves every DNS answer, rejects
+  non-global addresses, pins the validated address during TLS, and repeats the
+  checks for at most five HTTPS redirects. It downloads at most 20 MiB for at
+  most 20 seconds, verifies an unencoded PDF response and signature, sends
+  transient base64 data as a low-detail provider file input, and never stores
+  PDF bytes or extracted document text.
 - Assistant messages may contain ordinary discussion, numbered clickable
   external citations, and at most one inline synthesis proposal with its full
   diff, application-owned internal node links, and explicit decision controls.
@@ -396,11 +399,13 @@ synthesis or ancestor state.
 
 - External research uses the OpenAI Responses API only when the owner enables
   external sources for the turn. Ordinary research uses `web_search`; exactly
-  one provider-fetchable, non-local HTTPS PDF URL explicitly present in the current message instead
-  uses a low-detail `input_file`.
+  one non-local HTTPS PDF URL explicitly present in the current message is
+  instead fetched through the bounded, redirect-aware public-address path and
+  sent as transient base64 data in a low-detail `input_file`.
 - The application preserves returned URL-citation annotations for web search.
   For a direct PDF, it accepts only structured exact citation phrases that occur
-  once in the visible answer and maps them to that one application-validated URL.
+  once in the visible answer and maps them to the final application-validated
+  public HTTPS URL reached from the owner-supplied destination.
 - External URLs are normalized and validated as HTTP or HTTPS before storage
   and rendering.
 - Inline citations are clearly visible and clickable.
@@ -423,7 +428,8 @@ v0.1.0 intentionally uses a fixed, quality-first OpenAI stack:
   generation never enables web search.
 - Related-node embeddings: `text-embedding-3-large`.
 - External research: the Responses API `web_search` tool or one owner-supplied
-  HTTPS PDF as a low-detail `input_file`.
+  HTTPS PDF fetched through MindTree's bounded public-address path and sent as
+  a transient low-detail base64 `input_file`.
 
 This selection was reviewed on 2026-08-02 against OpenAI's
 [latest-model guidance](https://developers.openai.com/api/docs/guides/latest-model),
@@ -941,6 +947,10 @@ revalidates affected application data.
   link and external-citation components create links.
 - Server-side URL validation permits only HTTP and HTTPS external citations and
   prevents script or local-file schemes.
+- Direct-PDF ingestion permits HTTPS only, rejects any non-global DNS answer,
+  pins one validated address for each TLS connection, revalidates every bounded
+  redirect, and enforces response type, signature, byte, encoding, and timeout
+  limits before transient provider submission.
 - Authorization occurs before resource-specific validation where validation
   could reveal private data.
 - Node IDs supplied by the model are accepted only from the server-created

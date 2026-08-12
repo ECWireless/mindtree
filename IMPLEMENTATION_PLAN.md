@@ -895,8 +895,10 @@ an approval-required synthesis proposal.
   after submission.
 - Responses API `web_search` enabled only for the synthesis/research profile
   when the flag is true.
-- One explicitly supplied provider-fetchable, non-local HTTPS PDF may instead be attached directly as
-  a low-detail `input_file`; PDF bytes and extracted text are not stored.
+- One explicitly supplied non-local HTTPS PDF may instead be fetched through a
+  bounded, redirect-aware, DNS-validated and address-pinned path, then attached
+  as transient base64 data in a low-detail `input_file`; PDF bytes and extracted
+  text are not stored.
 - Normalized handling of search-call state and `url_citation` annotations.
 - Application-owned PDF provenance maps exact, unique cited response spans only
   to the single validated URL supplied by the owner in that turn.
@@ -917,12 +919,15 @@ an approval-required synthesis proposal.
 2. `feat: add validated external citations and references`
 3. `test: harden web research failures and citation integrity`
 4. `feat: cite explicitly supplied PDF sources`
+5. `fix: securely ingest external PDFs`
 
 ### Acceptance
 
 - Web search is never enabled from model initiative or prior-turn state.
 - Direct PDF input is never attached from prior-turn state or without the
   current turn's explicit external-source authorization.
+- Direct PDF input never follows an unvalidated DNS answer or redirect, exceeds
+  the agreed byte/time bounds, or asks the provider to fetch the URL itself.
 - The control authorizes exactly one submitted turn.
 - Every rendered external synthesis link traces to a returned web annotation or
   to the one validated PDF URL explicitly supplied in the authorized turn.
@@ -937,10 +942,11 @@ an approval-required synthesis proposal.
 - Deterministic web-search event/annotation fixtures including duplicate URLs,
   invalid schemes, missing annotations, partial search, and refusal.
 - Deterministic direct-PDF request, exact-span provenance, invalid/private URL,
-  provider rejection, and desktop/mobile rendering coverage.
+  private or mixed DNS, rebinding, redirects, response bounds, provider
+  rejection, and desktop/mobile rendering coverage.
 - Integration tests for citation constraints and owner scoping.
 - Desktop/mobile browser research and References workflows using fixtures.
-- Two reviewers: provider/security and experience/accessibility.
+- Two reviewers: network/security and provider/citation integrity.
 - Separately approved bounded live-web evaluation with synthetic topics and no
   private node content.
 

@@ -10,7 +10,7 @@ import {
   type NormalizedOpenAIChatEvent,
   type OpenAIChatPhase,
 } from "@/lib/server/openai-chat";
-import type { ExternalPdfSource } from "@/lib/server/external-pdf-source";
+import type { ExternalPdfInput } from "@/lib/server/external-pdf-source";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 type ChatEnvironment = Record<string, string | undefined>;
@@ -62,7 +62,7 @@ async function* streamDeterministicChatFixture(input: {
   phase: OpenAIChatPhase;
   signal: AbortSignal;
   webSearchAuthorized: boolean;
-  externalPdfSource?: ExternalPdfSource | null;
+  externalPdfSource?: ExternalPdfInput | null;
 }): AsyncGenerator<NormalizedOpenAIChatEvent> {
   const topic = [...input.messages]
     .reverse()
@@ -170,7 +170,7 @@ export function streamChatResponse(input: {
   safetyIdentifier: string;
   signal: AbortSignal;
   webSearchAuthorized?: boolean;
-  externalPdfSource?: ExternalPdfSource | null;
+  externalPdfSource?: ExternalPdfInput | null;
 }): AsyncGenerator<NormalizedOpenAIChatEvent> {
   const mode = getChatGenerationMode();
   if (mode === "deterministic-fixture") {
