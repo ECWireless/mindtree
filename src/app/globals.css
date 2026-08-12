@@ -2118,9 +2118,8 @@ button:not(:disabled) {
 }
 
 .chat-composer {
-  position: sticky;
+  position: relative;
   z-index: 4;
-  bottom: 0;
   display: grid;
   gap: 0.4rem;
   border: 1px solid rgb(154 166 178 / 32%);

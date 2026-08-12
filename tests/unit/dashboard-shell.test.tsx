@@ -152,7 +152,14 @@ describe("DashboardShell", () => {
             baseVersionId: null,
             status: "approved",
             content: "# Summary\n\nOld point",
-            citations: [],
+            citations: [{
+              kind: "external",
+              ordinal: 1,
+              startUtf16: "# Summary\n\nOld point".length,
+              endUtf16: "# Summary\n\nOld point".length,
+              title: "Synthetic source",
+              url: "https://example.test/source",
+            }],
             decidedAt: "2026-08-05T12:00:00.000Z",
           },
           pending: {
@@ -191,6 +198,10 @@ describe("DashboardShell", () => {
     expect(markup).toContain("Open Chat to request a refreshed Summary");
     expect(markup).not.toContain("<h1>Summary</h1>");
     expect(markup).toContain("<h4>Summary</h4>");
+    expect(markup).toContain("Synthetic source");
+    expect(markup.indexOf('aria-label="External references"')).toBeLessThan(
+      markup.indexOf('class="branch-outline"'),
+    );
   });
 
   it("renders a useful empty state for a synthetic account with no nodes", () => {

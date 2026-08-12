@@ -216,9 +216,9 @@ v0.1.0 does not include:
 - A node may have no published synthesis or exactly one current published
   synthesis version.
 - The current published version is rendered as the **Summary** at the top of
-  the node's content surface. **Branch Outline** follows it, and validated
-  **References** follow when citation phases add reference data. No speculative
-  empty References section is shown before then.
+  the node's content surface. Validated **References** follow when the Summary
+  cites external sources, then **Branch Outline** provides branch context. No
+  speculative empty References section is shown before then.
 - Every approval creates a new immutable synthesis version; prior approved
   versions remain available to integrity checks and future history UI.
 - The current version is selected by an explicit pointer on the node rather
@@ -670,8 +670,10 @@ Each row presents:
 The selected node contains:
 
 - Breadcrumbs and inline-editable title.
-- The published **Summary** followed by **Branch Outline**, whose empty state
-  offers **Generate** and whose current or stale state offers **Regenerate**.
+- The published **Summary**, validated **References** when it cites external
+  sources, then **Branch Outline**, whose empty state offers **Generate** and
+  whose current or stale state offers **Regenerate**. No empty References
+  section is shown.
 - A prominent **Chat** action opening persistent history and the composer,
   including any pending proposal, full diff, and explicit decision controls as
   inline conversation artifacts.

@@ -1297,6 +1297,14 @@ function DashboardWorkspace({
                   </section>
                 )}
               </div>
+              {synthesisWorkspace.published ? (
+                <ExternalReferences
+                  citations={synthesisWorkspace.published.citations.filter(
+                    (citation) => citation.kind === "external",
+                  )}
+                  headingLevel={2}
+                />
+              ) : null}
               <BranchOutlinePanel
                 key={[
                   selectedNode.id,
@@ -1309,14 +1317,6 @@ function DashboardWorkspace({
                 initialWorkspace={branchOutlineWorkspace}
                 generationEnabled={branchOutlineGenerationEnabled}
               />
-              {synthesisWorkspace.published ? (
-                <ExternalReferences
-                  citations={synthesisWorkspace.published.citations.filter(
-                    (citation) => citation.kind === "external",
-                  )}
-                  headingLevel={2}
-                />
-              ) : null}
               {creatingParentId === selectedNode.id && creatingChildSurface === "detail" ? (
                 <NodeCreateForm
                   parentId={selectedNode.id}

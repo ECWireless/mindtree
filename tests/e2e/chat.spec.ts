@@ -283,7 +283,7 @@ test("publishes cited web research with durable inline markers and References", 
       const outline = document.querySelector(".branch-outline");
       return Boolean(
         outline &&
-        (outline.compareDocumentPosition(references) & Node.DOCUMENT_POSITION_FOLLOWING),
+        (references.compareDocumentPosition(outline) & Node.DOCUMENT_POSITION_FOLLOWING),
       );
     })).resolves.toBe(true);
 
@@ -453,15 +453,13 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
     await page.getByRole("button", { name: "Chat", exact: true }).click();
     await expect(page.locator(".chat-message--user").getByText("A fresh angle", { exact: true })).toBeVisible();
     await expect(page.getByText(/What evidence would change your view/).last()).toBeVisible();
-    await expect(history.locator(".chat-composer")).toHaveCount(1);
+    await expect(history.locator(".chat-composer")).toHaveCount(0);
+    await expect(chatDialog.locator(".chat-composer")).toHaveCount(1);
     const historyBox = await history.boundingBox();
-    const composerBox = await history.locator(".chat-composer").boundingBox();
+    const composerBox = await chatDialog.locator(".chat-composer").boundingBox();
     expect(historyBox).not.toBeNull();
     expect(composerBox).not.toBeNull();
-    expect(composerBox!.y).toBeGreaterThanOrEqual(historyBox!.y - 1);
-    expect(composerBox!.y + composerBox!.height).toBeLessThanOrEqual(
-      historyBox!.y + historyBox!.height + 1,
-    );
+    expect(composerBox!.y).toBeGreaterThanOrEqual(historyBox!.y + historyBox!.height - 1);
     const historyDimensions = await history.evaluate((element) => ({
       clientWidth: element.clientWidth,
       scrollWidth: element.scrollWidth,
@@ -501,9 +499,18 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
     await page.getByRole("link", { name: /Chat beta/ }).click();
     await expect(page.getByRole("heading", { name: "Chat beta", level: 1 })).toBeVisible();
     await page.getByRole("button", { name: "Chat", exact: true }).click();
-    await expect(page.getByRole("dialog", { name: "Chat about Chat beta" })).toBeVisible();
+    const emptyChatDialog = page.getByRole("dialog", { name: "Chat about Chat beta" });
+    await expect(emptyChatDialog).toBeVisible();
     await expect(page.getByText("No messages yet.", { exact: false })).toBeVisible();
     await expect(page.locator(".chat-message--user").getByText("A fresh angle", { exact: true })).toHaveCount(0);
+    const emptyHistoryBox = await emptyChatDialog.locator(".chat-history").boundingBox();
+    const emptyComposerBox = await emptyChatDialog.locator(".chat-composer").boundingBox();
+    expect(emptyHistoryBox).not.toBeNull();
+    expect(emptyComposerBox).not.toBeNull();
+    expect(emptyComposerBox!.y).toBeGreaterThanOrEqual(
+      emptyHistoryBox!.y + emptyHistoryBox!.height - 1,
+    );
+    expect(emptyComposerBox!.height).toBeLessThan(220);
 
     const dimensions = await page.evaluate(() => ({
       clientWidth: document.documentElement.clientWidth,

@@ -573,6 +573,7 @@ export function ChatPanel({
           />
         ) : null}
         <SynthesisDecisionHistory history={decisionsOutsidePage} />
+        </div>
         <form className="chat-composer" onSubmit={submit}>
           <label className="sr-only" htmlFor={`chat-draft-${nodeId}`}>Message</label>
           <p className="sr-only" id={composerHelpId}>
@@ -633,7 +634,6 @@ export function ChatPanel({
             Applies to the next message only. External sources may change.
           </p>
         </form>
-        </div>
         <p className="sr-only" aria-live="polite" role="status">{announcement}</p>
       </section>
     </dialog>
