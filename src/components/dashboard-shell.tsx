@@ -42,6 +42,7 @@ import { BranchOutlinePanel } from "@/components/branch-outline-panel";
 import { ChatPanel } from "@/components/chat-panel";
 import { MoveNodeDialog } from "@/components/move-node-dialog";
 import { NodeTreeList } from "@/components/node-tree-list";
+import { ExternalReferences } from "@/components/chat-message-content";
 import { PublishedSynthesisArtifact } from "@/components/synthesis-panel";
 import type { ChatMessagePage } from "@/lib/chat/contracts";
 import type { BranchOutlineWorkspace } from "@/lib/branch-outlines/contracts";
@@ -1296,6 +1297,14 @@ function DashboardWorkspace({
                   </section>
                 )}
               </div>
+              {synthesisWorkspace.published ? (
+                <ExternalReferences
+                  citations={synthesisWorkspace.published.citations.filter(
+                    (citation) => citation.kind === "external",
+                  )}
+                  headingLevel={2}
+                />
+              ) : null}
               <BranchOutlinePanel
                 key={[
                   selectedNode.id,

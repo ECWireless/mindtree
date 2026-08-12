@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { DrizzleError, DrizzleQueryError } from "drizzle-orm/errors";
 
 import { db } from "@/db/client";
@@ -14,14 +14,24 @@ import {
   user,
 } from "@/db/schema";
 import { OPENAI_SYNTHESIS_MODEL } from "@/lib/ai/openai-profiles";
-import type { InternalCitationView } from "@/lib/citations/contracts";
+import type {
+  ExternalCitationView,
+  InternalCitationView,
+  SynthesisCitationView,
+} from "@/lib/citations/contracts";
 import {
   synthesisProposalDraftSchema,
   type SynthesisDecisionInput,
-  type SynthesisProposalDraft,
+  type SynthesisProposalDraftInput,
   type SynthesisVersion,
   type SynthesisWorkspace,
 } from "@/lib/synthesis/contracts";
+import {
+  ExternalCitationValidationError,
+  normalizeExternalCitationMentions,
+  requireNonOverlappingSynthesisCitations,
+  type ExternalCitationEvidence,
+} from "@/lib/server/external-citations";
 import {
   InternalCitationValidationError,
   normalizeInternalCitationMentions,
@@ -42,7 +52,7 @@ type SynthesisTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export type PendingSynthesisProposalInput = {
   baseVersionId: string | null;
-  draft: SynthesisProposalDraft;
+  draft: SynthesisProposalDraftInput;
   model: typeof OPENAI_SYNTHESIS_MODEL;
   reasoningMode: "pro";
   reasoningEffort: "high";
@@ -52,6 +62,7 @@ export type PendingSynthesisProposalInput = {
     sourceStateFingerprint: string;
   } | null;
   relatedInputs?: InternalCitationEvidence[];
+  externalEvidence?: ExternalCitationEvidence[];
   refinementProposalId?: string | null;
 };
 
@@ -147,7 +158,7 @@ async function lockProposal(
 
 function toSynthesisVersion(
   row: typeof synthesisVersions.$inferSelect,
-  citationViews: InternalCitationView[] = [],
+  citationViews: SynthesisCitationView[] = [],
 ): SynthesisVersion {
   return {
     id: row.id,
@@ -235,6 +246,87 @@ async function requireCurrentRelatedInputs(
   }
 }
 
+async function requireRecordedExternalEvidence(
+  tx: SynthesisTransaction,
+  userId: string,
+  nodeId: string,
+  evidence: readonly ExternalCitationEvidence[],
+) {
+  if (evidence.length === 0) return;
+  const assistantMessageIds = [...new Set(evidence.flatMap((source) =>
+    source.provenance.flatMap((item) =>
+      item.owner === "assistant-message" ? [item.ownerId] : []
+    )
+  ))];
+  const synthesisVersionIds = [...new Set(evidence.flatMap((source) =>
+    source.provenance.flatMap((item) =>
+      item.owner === "synthesis-version" ? [item.ownerId] : []
+    )
+  ))];
+  const ownerConditions = [
+    ...(assistantMessageIds.length > 0
+      ? [inArray(citations.assistantMessageId, assistantMessageIds)]
+      : []),
+    ...(synthesisVersionIds.length > 0
+      ? [inArray(citations.synthesisVersionId, synthesisVersionIds)]
+      : []),
+  ];
+  if (ownerConditions.length === 0) {
+    throw new SynthesisServiceError("invalid-proposal");
+  }
+  const rows = await tx
+    .select({
+      assistantMessageId: citations.assistantMessageId,
+      synthesisVersionId: citations.synthesisVersionId,
+      ordinal: citations.ordinal,
+      startUtf16: citations.startUtf16,
+      endUtf16: citations.endUtf16,
+      title: citations.externalTitle,
+      url: citations.externalUrl,
+    })
+    .from(citations)
+    .where(and(
+      eq(citations.userId, userId),
+      eq(citations.ownerNodeId, nodeId),
+      eq(citations.kind, "external"),
+      or(...ownerConditions),
+    ))
+    .orderBy(asc(citations.createdAt), asc(citations.startUtf16));
+  const rowByOccurrence = new Map(rows.map((row) => [
+    `${row.assistantMessageId ?? ""}:${row.synthesisVersionId ?? ""}:${row.ordinal}:${row.startUtf16}:${row.endUtf16}`,
+    row,
+  ]));
+  const seenProvenance = new Set<string>();
+  for (let index = 0; index < evidence.length; index += 1) {
+    const supplied = evidence[index]!;
+    if (
+      supplied.alias !== `W${index + 1}` ||
+      supplied.provenance.length < 1 ||
+      supplied.provenance.length !== supplied.excerpts.length
+    ) {
+      throw new SynthesisServiceError("invalid-proposal");
+    }
+    let titleMatched = false;
+    for (const provenance of supplied.provenance) {
+      const key = provenance.owner === "assistant-message"
+        ? `${provenance.ownerId}::${provenance.ordinal}:${provenance.startUtf16}:${provenance.endUtf16}`
+        : `:${provenance.ownerId}:${provenance.ordinal}:${provenance.startUtf16}:${provenance.endUtf16}`;
+      const row = rowByOccurrence.get(key);
+      if (
+        seenProvenance.has(key) ||
+        !row ||
+        row.url !== supplied.url ||
+        row.title === null
+      ) {
+        throw new SynthesisServiceError("invalid-proposal");
+      }
+      seenProvenance.add(key);
+      titleMatched ||= row.title === supplied.title;
+    }
+    if (!titleMatched) throw new SynthesisServiceError("invalid-proposal");
+  }
+}
+
 async function getInternalCitationViewsForVersions(
   tx: SynthesisTransaction,
   userId: string,
@@ -314,6 +406,51 @@ async function getInternalCitationViewsForVersions(
         synthesisVersionId: row.snapshotSynthesisVersionId,
       },
       target,
+    });
+    byVersionId.set(row.synthesisVersionId, views);
+  }
+  return byVersionId;
+}
+
+async function getExternalCitationViewsForVersions(
+  tx: SynthesisTransaction,
+  userId: string,
+  versionIds: readonly string[],
+) {
+  const byVersionId = new Map<string, ExternalCitationView[]>();
+  if (versionIds.length === 0) return byVersionId;
+  const rows = await tx
+    .select({
+      synthesisVersionId: citations.synthesisVersionId,
+      ordinal: citations.ordinal,
+      startUtf16: citations.startUtf16,
+      endUtf16: citations.endUtf16,
+      title: citations.externalTitle,
+      url: citations.externalUrl,
+    })
+    .from(citations)
+    .where(and(
+      eq(citations.userId, userId),
+      eq(citations.kind, "external"),
+      inArray(citations.synthesisVersionId, [...versionIds]),
+    ))
+    .orderBy(
+      asc(citations.synthesisVersionId),
+      asc(citations.startUtf16),
+      asc(citations.ordinal),
+    );
+  for (const row of rows) {
+    if (row.synthesisVersionId === null || row.title === null || row.url === null) {
+      throw new SynthesisServiceError("unavailable");
+    }
+    const views = byVersionId.get(row.synthesisVersionId) ?? [];
+    views.push({
+      kind: "external",
+      ordinal: row.ordinal,
+      startUtf16: row.startUtf16,
+      endUtf16: row.endUtf16,
+      title: row.title,
+      url: row.url,
     });
     byVersionId.set(row.synthesisVersionId, views);
   }
@@ -431,6 +568,7 @@ export async function insertPendingSynthesisProposal(
   const draft = synthesisProposalDraftSchema.safeParse(input.draft);
   const outlineInput = input.outlineInput ?? null;
   const relatedInputs = input.relatedInputs ?? [];
+  const externalEvidence = input.externalEvidence ?? [];
   if (
     !draft.success ||
     input.model !== OPENAI_SYNTHESIS_MODEL ||
@@ -452,15 +590,34 @@ export async function insertPendingSynthesisProposal(
     input.nodeId,
     relatedInputs,
   );
+  await requireRecordedExternalEvidence(
+    tx,
+    input.userId,
+    input.nodeId,
+    externalEvidence,
+  );
   let normalizedCitations: ReturnType<typeof normalizeInternalCitationMentions>;
+  let normalizedExternalCitations: ExternalCitationView[];
   try {
     normalizedCitations = normalizeInternalCitationMentions({
       content: draft.data.content,
       mentions: draft.data.citations,
       evidence: relatedInputs,
     });
+    normalizedExternalCitations = normalizeExternalCitationMentions({
+      content: draft.data.content,
+      mentions: draft.data.externalCitations,
+      evidence: externalEvidence,
+    });
+    requireNonOverlappingSynthesisCitations({
+      external: normalizedExternalCitations,
+      internal: normalizedCitations,
+    });
   } catch (error) {
-    if (error instanceof InternalCitationValidationError) {
+    if (
+      error instanceof InternalCitationValidationError ||
+      error instanceof ExternalCitationValidationError
+    ) {
       throw new SynthesisServiceError("invalid-proposal");
     }
     throw error;
@@ -572,6 +729,20 @@ export async function insertPendingSynthesisProposal(
       targetSynthesisVersionIdSnapshot: citation.evidence.synthesisVersionId,
     })));
   }
+  if (normalizedExternalCitations.length > 0) {
+    await tx.insert(citations).values(normalizedExternalCitations.map((citation) => ({
+      userId: input.userId,
+      ownerNodeId: input.nodeId,
+      synthesisVersionId: created.id,
+      assistantMessageId: null,
+      kind: "external" as const,
+      ordinal: citation.ordinal,
+      startUtf16: citation.startUtf16,
+      endUtf16: citation.endUtf16,
+      externalUrl: citation.url,
+      externalTitle: citation.title,
+    })));
+  }
   const citationViews: InternalCitationView[] = normalizedCitations.map((citation) => ({
     kind: "internal",
     ordinal: citation.ordinal,
@@ -593,7 +764,7 @@ export async function insertPendingSynthesisProposal(
       changedRevision: false,
     },
   }));
-  return toSynthesisVersion(created, citationViews);
+  return toSynthesisVersion(created, [...citationViews, ...normalizedExternalCitations]);
 }
 
 export async function approveSynthesisProposalForUser(
@@ -875,20 +1046,28 @@ export async function getSynthesisWorkspaceForUser(
     const decidedBaseContent = new Map(
       decidedBases.map((version) => [version.id, version.content]),
     );
-    const citationViews = await getInternalCitationViewsForVersions(tx, userId, [
+    const versionIds = [
       ...(published ? [published.id] : []),
       ...(pendingVersions[0] ? [pendingVersions[0].id] : []),
       ...decidedVersions.map(({ id }) => id),
+    ];
+    const [internalCitationViews, externalCitationViews] = await Promise.all([
+      getInternalCitationViewsForVersions(tx, userId, versionIds),
+      getExternalCitationViewsForVersions(tx, userId, versionIds),
     ]);
+    const versionCitations = (versionId: string): SynthesisCitationView[] => [
+      ...(internalCitationViews.get(versionId) ?? []),
+      ...(externalCitationViews.get(versionId) ?? []),
+    ];
     return {
       published: published
-        ? toSynthesisVersion(published, citationViews.get(published.id) ?? [])
+        ? toSynthesisVersion(published, versionCitations(published.id))
         : null,
       staleAt: node.synthesisStaleAt?.toISOString() ?? null,
       pending: pendingVersions[0]
         ? toSynthesisVersion(
             pendingVersions[0],
-            citationViews.get(pendingVersions[0].id) ?? [],
+            versionCitations(pendingVersions[0].id),
           )
         : null,
       history: decidedVersions.map((version) => {
@@ -908,7 +1087,7 @@ export async function getSynthesisWorkspaceForUser(
           content: version.content,
           baseContent: baseContent ?? null,
           decidedAt: version.decidedAt.toISOString(),
-          citations: citationViews.get(version.id) ?? [],
+          citations: versionCitations(version.id),
         };
       }),
     };

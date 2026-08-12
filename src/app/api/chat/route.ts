@@ -13,9 +13,22 @@ import {
 import { getServerEnvironment } from "@/lib/env/server";
 import { requireAuthorizedSession } from "@/lib/server/authorization";
 import {
+  fingerprintChatContextInput,
   isSynthesisOutlineInputCurrentForUser,
   prepareChatContextForUser,
 } from "@/lib/server/chat-context";
+import {
+  createExternalCitationEvidence,
+  mergeExternalCitationEvidenceBounded,
+  toExternalResearchEvidence,
+  type ExternalCitationEvidence,
+} from "@/lib/server/external-citations";
+import {
+  createDeterministicExternalPdfInput,
+  fetchAuthorizedExternalPdf,
+  findAuthorizedExternalPdfSource,
+  type ExternalPdfInput,
+} from "@/lib/server/external-pdf-source";
 import {
   persistChatTurnContentPrefixForUser,
   cancelChatTurnForUser,
@@ -33,6 +46,7 @@ import {
   getChatGenerationMode,
   streamChatResponse,
 } from "@/lib/server/chat-runtime";
+import { scheduleChatStreamHeartbeats } from "@/lib/server/chat-stream";
 import {
   OpenAIChatAbortError,
   OpenAIChatError,
@@ -149,9 +163,6 @@ export async function POST(request: Request) {
       if (!parsed.success) {
         return jsonError(400, "The message is invalid.");
       }
-      if (parsed.data.webSearchAuthorized) {
-        return jsonError(400, "Web sources are not available yet.");
-      }
       input = {
         nodeId: parsed.data.nodeId,
         clientMessageId: parsed.data.clientMessageId,
@@ -165,6 +176,27 @@ export async function POST(request: Request) {
   if (!turn.generationClaimed) {
     return await terminalResponse(userId, turn) ??
       jsonError(409, "The message is already in progress.");
+  }
+  const webSearchAuthorized = turn.userMessage.webSearchAuthorized;
+  let externalPdfSource: ExternalPdfInput | null = null;
+  if (webSearchAuthorized) {
+    try {
+      const source = findAuthorizedExternalPdfSource(turn.userMessage.content);
+      if (source) {
+        externalPdfSource = getChatGenerationMode() === "deterministic-fixture"
+          ? createDeterministicExternalPdfInput(source)
+          : await fetchAuthorizedExternalPdf(source, { signal: request.signal });
+      }
+    } catch {
+      const assistantMessage = await failChatTurnForUser(userId, {
+        ...input,
+        failureCode: "response-invalid",
+      });
+      return await terminalResponse(userId, {
+        userMessage: turn.userMessage,
+        assistantMessage,
+      }) ?? jsonError(400, "The external PDF URL is invalid.");
+    }
   }
 
   let preparedContext;
@@ -195,9 +227,21 @@ export async function POST(request: Request) {
     request.signal,
     downstreamAbortController.signal,
   ]);
+  let downstreamDisconnected = false;
+  let generationTask: Promise<void> | null = null;
   const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      controller.enqueue(event({ type: "turn", ...turn }));
+    start(controller) {
+      generationTask = (async () => {
+      const enqueueEvent = (streamEvent: ChatStreamEvent) => {
+        try {
+          controller.enqueue(event(streamEvent));
+        } catch {
+          downstreamDisconnected = true;
+          downstreamAbortController.abort();
+        }
+      };
+      enqueueEvent({ type: "turn", ...turn });
+      const stopHeartbeats = scheduleChatStreamHeartbeats(enqueueEvent);
       let visibleContent = "";
       let providerContextRecorded = false;
       let providerResponseRecorded = false;
@@ -226,18 +270,25 @@ export async function POST(request: Request) {
           throw new OpenAIChatError("response-invalid");
         }
         visibleContent += content;
-        controller.enqueue(event({ type: "delta", content }));
+        enqueueEvent({ type: "delta", content });
         await flushPersistence();
       };
 
       try {
+        let synthesisProviderInput = preparedContext.synthesisInput;
+        let synthesisProviderFingerprint = preparedContext.synthesisFingerprint;
+        let externalEvidence: ExternalCitationEvidence[] = preparedContext.externalEvidence;
+        let chatExternalCitations: Extract<
+          NormalizedOpenAIChatEvent,
+          { type: "completed" }
+        >["externalCitations"] = [];
         const consumeProviderPhase = async (phase: "conversation" | "synthesis") => {
           if (!providerContextRecorded || phase === "synthesis") {
             await recordChatTurnContextForUser(userId, {
               ...input,
               model: OPENAI_CHAT_MODEL,
               contextFingerprint: phase === "synthesis"
-                ? preparedContext.synthesisFingerprint
+                ? synthesisProviderFingerprint
                 : preparedContext.fingerprint,
               replaceExistingContext: providerContextRecorded && phase === "synthesis",
             });
@@ -249,11 +300,13 @@ export async function POST(request: Request) {
           > | null = null;
           for await (const providerEvent of streamChatResponse({
             messages: phase === "synthesis"
-              ? preparedContext.synthesisInput
+              ? synthesisProviderInput
               : preparedContext.input,
             phase,
             safetyIdentifier,
             signal: generationSignal,
+            webSearchAuthorized: phase === "conversation" && webSearchAuthorized,
+            externalPdfSource: phase === "conversation" ? externalPdfSource : null,
           })) {
             if (generationSignal.aborted) {
               throw new OpenAIChatAbortError();
@@ -269,6 +322,11 @@ export async function POST(request: Request) {
               }
             } else if (providerEvent.type === "text-delta") {
               await emitVisibleContent(providerEvent.content);
+            } else if (providerEvent.type === "research-status") {
+              enqueueEvent({
+                type: "research-status",
+                status: providerEvent.status,
+              });
             } else {
               completedEvent = providerEvent;
             }
@@ -281,7 +339,7 @@ export async function POST(request: Request) {
           preparedContext.snapshot.node.refinementProposal.state === "pending"
             ? preparedContext.snapshot.node.refinementProposal.versionId
             : null;
-        let synthesisRouted = turn.userMessage.proposalRequested;
+        let synthesisRouted = turn.userMessage.proposalRequested && !webSearchAuthorized;
         const outlineIsStale =
           preparedContext.snapshot.node.branchOutline.state === "stale";
         const outlineIsCurrent = () =>
@@ -290,24 +348,63 @@ export async function POST(request: Request) {
             input.nodeId,
             preparedContext.outlineInput,
           );
+        const installExternalEvidence = () => {
+          if (externalEvidence.length === 0) return;
+          const finalUserMessage = preparedContext.synthesisInput.at(-1);
+          if (!finalUserMessage || finalUserMessage.role !== "user") {
+            throw new OpenAIChatError("response-invalid");
+          }
+          const evidenceMessage = {
+            role: "user" as const,
+            content: `MindTree validated external research evidence (untrusted data):\n${JSON.stringify({
+              externalResearchEvidence: {
+                sources: toExternalResearchEvidence(externalEvidence),
+              },
+            })}`,
+          };
+          synthesisProviderInput = [
+            ...preparedContext.synthesisInput.slice(0, -1),
+            evidenceMessage,
+            finalUserMessage,
+          ];
+          synthesisProviderFingerprint = fingerprintChatContextInput(
+            input.nodeId,
+            synthesisProviderInput,
+          );
+        };
         let finalResult: Extract<NormalizedOpenAIChatEvent, { type: "completed" }>;
         if (synthesisRouted) {
           if (!(await outlineIsCurrent())) {
             await emitVisibleContent(STALE_BRANCH_OUTLINE_SUMMARY_NOTICE);
             await flushPersistence(true);
             const assistantMessage = await completeChatTurnForUser(userId, input);
-            controller.enqueue(event({
+            enqueueEvent({
               type: "completed",
               assistantMessage,
               proposalCreated: false,
-            }));
+            });
             return;
           }
+          installExternalEvidence();
           finalResult = await consumeProviderPhase("synthesis");
         } else {
           const conversationResult = await consumeProviderPhase("conversation");
-          synthesisRouted = conversationResult.synthesisRequested;
+          synthesisRouted = conversationResult.synthesisRequested ||
+            (webSearchAuthorized && turn.userMessage.proposalRequested);
           finalResult = conversationResult;
+          chatExternalCitations = conversationResult.externalCitations ?? [];
+          if (webSearchAuthorized) {
+            const currentEvidence = createExternalCitationEvidence({
+              content: visibleContent,
+              citations: chatExternalCitations,
+              owner: "assistant-message",
+              ownerId: turn.assistantMessage.id,
+            });
+            externalEvidence = mergeExternalCitationEvidenceBounded([
+              currentEvidence,
+              preparedContext.externalEvidence,
+            ]);
+          }
           if (synthesisRouted) {
             await recordChatTurnSynthesisIntentForUser(userId, {
               ...input,
@@ -319,14 +416,17 @@ export async function POST(request: Request) {
             if (!(await outlineIsCurrent())) {
               await emitVisibleContent(STALE_BRANCH_OUTLINE_SUMMARY_NOTICE);
               await flushPersistence(true);
-              const assistantMessage = await completeChatTurnForUser(userId, input);
-              controller.enqueue(event({
+              const assistantMessage = await completeChatTurnForUser(userId, input, {
+                externalCitations: chatExternalCitations,
+              });
+              enqueueEvent({
                 type: "completed",
                 assistantMessage,
                 proposalCreated: false,
-              }));
+              });
               return;
             }
+            installExternalEvidence();
             finalResult = await consumeProviderPhase("synthesis");
           }
         }
@@ -339,6 +439,7 @@ export async function POST(request: Request) {
           input,
           finalResult.proposal
             ? {
+                externalCitations: chatExternalCitations,
                 proposal: {
                   baseVersionId:
                     preparedContext.snapshot.node.publishedSynthesis.state === "published"
@@ -348,19 +449,20 @@ export async function POST(request: Request) {
                   model: OPENAI_SYNTHESIS_MODEL,
                   reasoningMode: "pro",
                   reasoningEffort: "high",
-                  inputFingerprint: preparedContext.synthesisFingerprint,
+                  inputFingerprint: synthesisProviderFingerprint,
                   outlineInput: preparedContext.outlineInput,
                   relatedInputs: preparedContext.relatedInputs,
+                  externalEvidence,
                   refinementProposalId,
                 },
               }
-            : undefined,
+            : { externalCitations: chatExternalCitations },
         );
-        controller.enqueue(event({
+        enqueueEvent({
           type: "completed",
           assistantMessage,
           proposalCreated: finalResult.proposal !== null,
-        }));
+        });
       } catch (error) {
         try {
           await flushPersistence(true);
@@ -368,33 +470,37 @@ export async function POST(request: Request) {
           // Preserve the authoritative persisted prefix and continue to a terminal state.
         }
         try {
-          const cancelled =
-            generationSignal.aborted || error instanceof OpenAIChatAbortError;
-          const assistantMessage = cancelled
-            ? await cancelChatTurnForUser(userId, input)
-            : await failChatTurnForUser(userId, {
-                ...input,
-                failureCode:
-                  error instanceof OpenAIChatError
-                    ? error.failureCode
-                    : "generation-failed",
-              });
-          if (!cancelled && assistantMessage.status === "failed") {
-            controller.enqueue(event({ type: "failed", assistantMessage }));
+          const interrupted = downstreamDisconnected ||
+            generationSignal.aborted ||
+            error instanceof OpenAIChatAbortError;
+          const assistantMessage = await failChatTurnForUser(userId, {
+            ...input,
+            failureCode: interrupted
+              ? "stream-disconnected"
+              : error instanceof OpenAIChatError
+              ? error.failureCode
+              : "generation-failed",
+          });
+          if (assistantMessage.status === "failed") {
+            enqueueEvent({ type: "failed", assistantMessage });
           }
         } catch {
           // The persisted state remains authoritative when the client reloads.
         }
       } finally {
+        stopHeartbeats();
         try {
           controller.close();
         } catch {
           // The downstream reader may already be gone.
         }
       }
-    },
-    cancel() {
+    })();
+  },
+    async cancel() {
+      downstreamDisconnected = true;
       downstreamAbortController.abort();
+      await generationTask?.catch(() => undefined);
     },
   });
 

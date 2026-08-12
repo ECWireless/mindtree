@@ -114,6 +114,7 @@ describe("initial authentication schema", () => {
        order by conname`,
     );
     expect(constraints.rows.map(({ conname }) => conname)).toEqual([
+      "citations_external_bounds_check",
       "citations_kind_check",
       "citations_kind_fields_check",
       "citations_live_snapshot_check",

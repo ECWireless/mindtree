@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import type { ExternalCitationView } from "@/lib/citations/contracts";
+
 export const CHAT_PAGE_SIZE = 50;
 export const MAX_USER_MESSAGE_LENGTH = 16_000;
 export const MAX_ASSISTANT_MESSAGE_LENGTH = 64_000;
@@ -56,6 +58,8 @@ export type LoadChatMessagesInput = z.infer<typeof loadChatMessagesInputSchema>;
 
 export type ChatStreamEvent =
   | { type: "turn"; userMessage: ChatMessage; assistantMessage: ChatMessage }
+  | { type: "heartbeat" }
+  | { type: "research-status"; status: "searching" }
   | { type: "delta"; content: string }
   | { type: "completed"; assistantMessage: ChatMessage; proposalCreated: boolean }
   | { type: "failed"; assistantMessage: ChatMessage }
@@ -77,6 +81,7 @@ export type ChatMessage = {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+  citations?: ExternalCitationView[];
 };
 
 export type ChatMessagePage = {

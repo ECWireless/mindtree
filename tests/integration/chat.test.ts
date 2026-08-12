@@ -23,9 +23,11 @@ import {
   prepareChatContextForUser,
 } from "../../src/lib/server/chat-context";
 import { deleteNodeForUser } from "../../src/lib/server/node-service";
+import { createExternalCitationEvidence } from "../../src/lib/server/external-citations";
 import {
   approveSynthesisProposalForUser,
   getSynthesisWorkspaceForUser,
+  SynthesisServiceError,
 } from "../../src/lib/server/synthesis-service";
 
 const connectionString = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
@@ -207,7 +209,7 @@ describe("persistent chat ledger", () => {
     const prepared = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
     const repeated = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
     expect(prepared.snapshot).toMatchObject({
-      version: 6,
+      version: 7,
       node: {
         id: nodeId,
         title: "Context leaf",
@@ -334,6 +336,220 @@ describe("persistent chat ledger", () => {
       [nodeId],
     );
     expect(node.rows[0]?.published_synthesis_version_id).toBeNull();
+  });
+
+  it("atomically carries validated chat research into a cited synthesis proposal", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId, "External proposal node");
+    const clientMessageId = randomUUID();
+    const created = await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId,
+      content: "Research and propose a synthesis",
+      webSearchAuthorized: true,
+      proposalRequested: true,
+    }, { claimAssistant: true });
+    const fingerprint = "d".repeat(64);
+    await recordChatTurnContextForUser(userId, {
+      nodeId,
+      clientMessageId,
+      model: "gpt-5.6-sol",
+      contextFingerprint: fingerprint,
+    });
+    const researchContent = "A validated research claim.";
+    await persistChatTurnContentPrefixForUser(userId, {
+      nodeId,
+      clientMessageId,
+      contentPrefix: researchContent,
+    });
+    const completed = await completeChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId,
+    }, {
+      externalCitations: [{
+        kind: "external",
+        ordinal: 1,
+        startUtf16: researchContent.length,
+        endUtf16: researchContent.length,
+        title: "Validated research source",
+        url: "https://example.test/research",
+      }],
+      proposal: {
+        baseVersionId: null,
+        draft: {
+          content: "# Proposal\n\nA supported synthesis claim.",
+          citations: [],
+          externalCitations: [{
+            sourceAlias: "W1",
+            citedText: "supported synthesis claim",
+          }],
+        },
+        model: "gpt-5.6-sol",
+        reasoningMode: "pro",
+        reasoningEffort: "high",
+        inputFingerprint: fingerprint,
+        externalEvidence: createExternalCitationEvidence({
+          content: researchContent,
+          citations: [{
+            kind: "external",
+            ordinal: 1,
+            startUtf16: researchContent.length,
+            endUtf16: researchContent.length,
+            title: "Validated research source",
+            url: "https://example.test/research",
+          }],
+          owner: "assistant-message",
+          ownerId: created.assistantMessage.id,
+        }),
+      },
+    });
+
+    expect(completed.citations).toHaveLength(1);
+    const pending = (await getSynthesisWorkspaceForUser(userId, nodeId)).pending;
+    expect(pending?.citations).toEqual([{
+      kind: "external",
+      ordinal: 1,
+      startUtf16: "# Proposal\n\nA supported synthesis claim".length,
+      endUtf16: "# Proposal\n\nA supported synthesis claim".length,
+      title: "Validated research source",
+      url: "https://example.test/research",
+    }]);
+
+    await approveSynthesisProposalForUser(userId, {
+      nodeId,
+      proposalId: pending!.id,
+    });
+    const published = (await getSynthesisWorkspaceForUser(userId, nodeId)).published;
+    expect(published?.citations).toEqual(pending?.citations);
+
+    const laterClientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: laterClientMessageId,
+      content: "Refine the cited synthesis without new web research",
+      webSearchAuthorized: false,
+      proposalRequested: true,
+    }, { claimAssistant: true });
+    const laterContext = await prepareChatContextForUser(userId, {
+      nodeId,
+      clientMessageId: laterClientMessageId,
+    });
+    expect(laterContext.externalEvidence).toHaveLength(1);
+    expect(laterContext.externalEvidence[0]).toMatchObject({
+      alias: "W1",
+      title: "Validated research source",
+      url: "https://example.test/research",
+    });
+    expect(laterContext.externalEvidence[0]?.provenance).toContainEqual(
+      expect.objectContaining({ owner: "synthesis-version", ownerId: published!.id }),
+    );
+    const laterFingerprint = "f".repeat(64);
+    await recordChatTurnContextForUser(userId, {
+      nodeId,
+      clientMessageId: laterClientMessageId,
+      model: "gpt-5.6-sol",
+      contextFingerprint: laterFingerprint,
+    });
+    await persistChatTurnContentPrefixForUser(userId, {
+      nodeId,
+      clientMessageId: laterClientMessageId,
+      contentPrefix: "I drafted a cited refinement.",
+    });
+    await completeChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId: laterClientMessageId,
+    }, {
+      proposal: {
+        baseVersionId: published!.id,
+        draft: {
+          content: "A refined supported synthesis claim.",
+          citations: [],
+          externalCitations: [{
+            sourceAlias: "W1",
+            citedText: "supported synthesis claim",
+          }],
+        },
+        model: "gpt-5.6-sol",
+        reasoningMode: "pro",
+        reasoningEffort: "high",
+        inputFingerprint: laterFingerprint,
+        externalEvidence: laterContext.externalEvidence,
+      },
+    });
+    const refined = (await getSynthesisWorkspaceForUser(userId, nodeId)).pending;
+    expect(refined?.citations).toMatchObject([{
+      kind: "external",
+      ordinal: 1,
+      title: "Validated research source",
+      url: "https://example.test/research",
+    }]);
+  });
+
+  it("rejects synthesis source aliases that do not match the generating chat citations", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId, "Mismatched external proposal node");
+    const clientMessageId = randomUUID();
+    const created = await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId,
+      content: "Research and propose",
+      webSearchAuthorized: true,
+      proposalRequested: true,
+    }, { claimAssistant: true });
+    const fingerprint = "e".repeat(64);
+    await recordChatTurnContextForUser(userId, {
+      nodeId,
+      clientMessageId,
+      model: "gpt-5.6-sol",
+      contextFingerprint: fingerprint,
+    });
+    const researchContent = "Research response.";
+    await persistChatTurnContentPrefixForUser(userId, {
+      nodeId,
+      clientMessageId,
+      contentPrefix: researchContent,
+    });
+    await expect(completeChatTurnForUser(userId, { nodeId, clientMessageId }, {
+      externalCitations: [{
+        kind: "external",
+        ordinal: 1,
+        startUtf16: researchContent.length,
+        endUtf16: researchContent.length,
+        title: "Recorded source",
+        url: "https://example.test/recorded",
+      }],
+      proposal: {
+        baseVersionId: null,
+        draft: {
+          content: "A proposed claim.",
+          citations: [],
+          externalCitations: [{ sourceAlias: "W1", citedText: "proposed claim" }],
+        },
+        model: "gpt-5.6-sol",
+        reasoningMode: "pro",
+        reasoningEffort: "high",
+        inputFingerprint: fingerprint,
+        externalEvidence: createExternalCitationEvidence({
+          content: researchContent,
+          citations: [{
+            kind: "external",
+            ordinal: 1,
+            startUtf16: researchContent.length,
+            endUtf16: researchContent.length,
+            title: "Invented source",
+            url: "https://example.test/invented",
+          }],
+          owner: "assistant-message",
+          ownerId: created.assistantMessage.id,
+        }),
+      },
+    })).rejects.toEqual(new SynthesisServiceError("invalid-proposal"));
+
+    const stored = await pool.query<{ count: number }>(
+      `select count(*)::int as count from citations where user_id = $1 and owner_node_id = $2`,
+      [userId, nodeId],
+    );
+    expect(stored.rows[0]?.count).toBe(0);
   });
 
   it("rejects proposal persistence attributed to any model outside the fixed profile", async () => {
@@ -1023,6 +1239,198 @@ describe("persistent chat ledger", () => {
     await expect(
       createChatTurnForUser(userId, { ...input, content: "Different replay content" }),
     ).rejects.toEqual(new ChatServiceError("turn-conflict"));
+  });
+
+  it("persists and reloads validated external citation occurrences only for web turns", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId);
+    const clientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId,
+      content: "Research a synthetic topic.",
+      webSearchAuthorized: true,
+    }, { claimAssistant: true });
+    await recordChatTurnContextForUser(userId, {
+      nodeId,
+      clientMessageId,
+      model: "gpt-5.6-sol",
+      contextFingerprint: "a".repeat(64),
+    });
+    const content = "First claim. Second claim.";
+    await persistChatTurnContentPrefixForUser(userId, {
+      nodeId,
+      clientMessageId,
+      contentPrefix: content,
+    });
+    const completed = await completeChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId,
+    }, {
+      externalCitations: [
+        {
+          kind: "external",
+          ordinal: 1,
+          startUtf16: "First claim.".length,
+          endUtf16: "First claim.".length,
+          title: "Synthetic source",
+          url: "https://example.test/source",
+        },
+        {
+          kind: "external",
+          ordinal: 1,
+          startUtf16: content.length,
+          endUtf16: content.length,
+          title: "Synthetic source",
+          url: "https://example.test/source",
+        },
+      ],
+    });
+
+    expect(completed.citations).toHaveLength(2);
+    const turn = await getChatTurnForUser(userId, { nodeId, clientMessageId });
+    expect(turn.find(({ role }) => role === "assistant")?.citations).toEqual(
+      completed.citations,
+    );
+    const page = await getChatMessagesForUser(userId, { nodeId });
+    expect(page.messages.find(({ role }) => role === "assistant")?.citations).toEqual(
+      completed.citations,
+    );
+
+    await expect(pool.query(
+      `update citations set external_title = 'Tampered source'
+       where assistant_message_id = $1`,
+      [completed.id],
+    )).rejects.toMatchObject({
+      code: "23514",
+      constraint: "citations_immutable_check",
+    });
+    await expect(pool.query(
+      `delete from citations where assistant_message_id = $1`,
+      [completed.id],
+    )).rejects.toMatchObject({
+      code: "23514",
+      constraint: "citations_immutable_check",
+    });
+
+    const foreignUserId = await insertUser();
+    await expect(pool.query(
+      `insert into citations
+         (user_id, owner_node_id, assistant_message_id, kind, ordinal,
+          start_utf16, end_utf16, external_url, external_title)
+       values ($1, $2, $3, 'external', 2, $4, $4,
+               'https://example.test/foreign', 'Foreign source')`,
+      [foreignUserId, nodeId, completed.id, content.length],
+    )).rejects.toMatchObject({
+      code: "23514",
+      constraint: "citations_message_state_check",
+    });
+  });
+
+  it("rejects completed web turns without citations and citations on no-web turns", async () => {
+    for (const webSearchAuthorized of [true, false]) {
+      const userId = await insertUser();
+      const nodeId = await insertNode(userId);
+      const clientMessageId = randomUUID();
+      await createChatTurnForUser(userId, {
+        nodeId,
+        clientMessageId,
+        content: "Synthetic request.",
+        webSearchAuthorized,
+      }, { claimAssistant: true });
+      await recordChatTurnContextForUser(userId, {
+        nodeId,
+        clientMessageId,
+        model: "gpt-5.6-sol",
+        contextFingerprint: "b".repeat(64),
+      });
+      await persistChatTurnContentPrefixForUser(userId, {
+        nodeId,
+        clientMessageId,
+        contentPrefix: "Synthetic response.",
+      });
+
+      await expect(completeChatTurnForUser(userId, { nodeId, clientMessageId }, {
+        externalCitations: webSearchAuthorized
+          ? []
+          : [{
+              kind: "external",
+              ordinal: 1,
+              startUtf16: 19,
+              endUtf16: 19,
+              title: "Synthetic source",
+              url: "https://example.test/source",
+            }],
+      })).rejects.toEqual(new ChatServiceError("retry-unavailable"));
+    }
+  });
+
+  it.each([
+    [
+      "one ordinal mapped to different sources",
+      [
+        { ordinal: 1, title: "Source one", url: "https://one.example.test/" },
+        { ordinal: 1, title: "Source two", url: "https://two.example.test/" },
+      ],
+    ],
+    [
+      "one source split across ordinals",
+      [
+        { ordinal: 1, title: "Source", url: "https://example.test/source" },
+        { ordinal: 2, title: "Source", url: "https://example.test/source" },
+      ],
+    ],
+    [
+      "a non-contiguous first ordinal",
+      [{ ordinal: 2, title: "Source", url: "https://example.test/source" }],
+    ],
+  ])("rejects %s without partially completing the web turn", async (_label, sources) => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId);
+    const clientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId,
+      content: "Research malformed citation provenance.",
+      webSearchAuthorized: true,
+    }, { claimAssistant: true });
+    await recordChatTurnContextForUser(userId, {
+      nodeId,
+      clientMessageId,
+      model: "gpt-5.6-sol",
+      contextFingerprint: "9".repeat(64),
+    });
+    const content = "First claim. Second claim.";
+    await persistChatTurnContentPrefixForUser(userId, {
+      nodeId,
+      clientMessageId,
+      contentPrefix: content,
+    });
+    const externalCitations = sources.map((source, index) => ({
+      kind: "external" as const,
+      ordinal: source.ordinal,
+      startUtf16: index === 0 ? "First claim.".length : content.length,
+      endUtf16: index === 0 ? "First claim.".length : content.length,
+      title: source.title,
+      url: source.url,
+    }));
+
+    await expect(completeChatTurnForUser(userId, { nodeId, clientMessageId }, {
+      externalCitations,
+    })).rejects.toEqual(new ChatServiceError("retry-unavailable"));
+    const stored = await pool.query<{
+      citation_count: number;
+      status: string;
+    }>(
+      `select m.status, count(c.id)::int as citation_count
+       from chat_messages m
+       left join citations c on c.assistant_message_id = m.id
+       where m.user_id = $1 and m.node_id = $2 and m.client_message_id = $3
+         and m.role = 'assistant'
+       group by m.id`,
+      [userId, nodeId, clientMessageId],
+    );
+    expect(stored.rows).toEqual([{ status: "streaming", citation_count: 0 }]);
   });
 
   it("does not distinguish foreign nodes from missing nodes", async () => {

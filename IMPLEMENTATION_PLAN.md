@@ -146,8 +146,9 @@ Every phase that touches the relevant area preserves these rules:
 7. Approval checks its base version and exact source revisions inside the
    transaction.
 8. Internal-link annotations are limited to supplied approved evidence; external
-   citations are limited to validated web-search annotations.
-9. Web search is authorized for one turn at a time and is off by default.
+   citations are limited to validated web-search annotations or exact response
+   spans mapped to one validated owner-supplied PDF URL.
+9. External access is authorized for one turn at a time and is off by default.
 10. Branch Outlines, child summaries, related summaries, chats, model output,
     and web content are untrusted data.
 11. Failures remain retryable without silent fallback, duplicate messages, or
@@ -873,7 +874,7 @@ references.
 
 ---
 
-## Phase 10 — Explicit external web research and References
+## Phase 10 — Explicit external research and References
 
 ### Goal
 
@@ -882,7 +883,7 @@ an approval-required synthesis proposal.
 
 ### User-visible outcome
 
-- The owner enables **Use web sources** for one message.
+- The owner enables **Use external sources** for one message.
 - The assistant visibly researches and returns numbered clickable inline
   citations.
 - A proposed synthesis contains only validated cited external claims and a
@@ -894,7 +895,13 @@ an approval-required synthesis proposal.
   after submission.
 - Responses API `web_search` enabled only for the synthesis/research profile
   when the flag is true.
+- One explicitly supplied non-local HTTPS PDF may instead be fetched through a
+  bounded, redirect-aware, DNS-validated and address-pinned path, then attached
+  as transient base64 data in a low-detail `input_file`; PDF bytes and extracted
+  text are not stored.
 - Normalized handling of search-call state and `url_citation` annotations.
+- Application-owned PDF provenance maps exact, unique cited response spans only
+  to the single validated URL supplied by the owner in that turn.
 - External citation storage in the shared `citations` boundary with normalized
   HTTP(S) URL, title, ordinal, and text-location metadata.
 - Visible/clickable numbered inline citation rendering in chat and synthesis;
@@ -902,7 +909,7 @@ an approval-required synthesis proposal.
 - References rendered from stored citation rows in first-use order with URL
   deduplication.
 - Validation that rejects or de-links model-authored URLs lacking a returned
-  web annotation.
+  web annotation or the one validated owner-supplied PDF destination.
 - Research failure, partial result, refusal, timeout, and retry presentation.
 - Clear disclosure that source links are external and may change.
 
@@ -911,12 +918,19 @@ an approval-required synthesis proposal.
 1. `feat: add explicitly authorized web research`
 2. `feat: add validated external citations and references`
 3. `test: harden web research failures and citation integrity`
+4. `feat: cite explicitly supplied PDF sources`
+5. `fix: securely ingest external PDFs`
 
 ### Acceptance
 
 - Web search is never enabled from model initiative or prior-turn state.
+- Direct PDF input is never attached from prior-turn state or without the
+  current turn's explicit external-source authorization.
+- Direct PDF input never follows an unvalidated DNS answer or redirect, exceeds
+  the agreed byte/time bounds, or asks the provider to fetch the URL itself.
 - The control authorizes exactly one submitted turn.
-- Every rendered external synthesis link traces to a returned web annotation.
+- Every rendered external synthesis link traces to a returned web annotation or
+  to the one validated PDF URL explicitly supplied in the authorized turn.
 - Numbered inline citations are visible, clickable, accessible, and consistent
   with the References section; internal node links remain unnumbered.
 - A web-backed proposal still requires explicit approval and source-version
@@ -927,9 +941,12 @@ an approval-required synthesis proposal.
 
 - Deterministic web-search event/annotation fixtures including duplicate URLs,
   invalid schemes, missing annotations, partial search, and refusal.
+- Deterministic direct-PDF request, exact-span provenance, invalid/private URL,
+  private or mixed DNS, rebinding, redirects, response bounds, provider
+  rejection, and desktop/mobile rendering coverage.
 - Integration tests for citation constraints and owner scoping.
 - Desktop/mobile browser research and References workflows using fixtures.
-- Two reviewers: provider/security and experience/accessibility.
+- Two reviewers: network/security and provider/citation integrity.
 - Separately approved bounded live-web evaluation with synthetic topics and no
   private node content.
 

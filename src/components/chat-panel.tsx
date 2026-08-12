@@ -24,6 +24,10 @@ import {
   type ChatMessagePage,
   type ChatStreamEvent,
 } from "@/lib/chat/contracts";
+import {
+  WEB_RESEARCH_PROGRESS_MESSAGE,
+  chatFailureMessage,
+} from "@/lib/chat/presentation";
 import type { SynthesisDecisionSummary, SynthesisWorkspace } from "@/lib/synthesis/contracts";
 
 type ChatPanelProps = {
@@ -42,6 +46,22 @@ function CloseIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="m6 6 12 12M18 6 6 18" />
+    </svg>
+  );
+}
+
+function SendIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m5 12 7-7 7 7M12 19V5" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor">
+      <rect x="7" y="7" width="10" height="10" rx="1" />
     </svg>
   );
 }
@@ -75,6 +95,7 @@ function createOptimisticTurn(
   nodeId: string,
   clientMessageId: string,
   content: string,
+  webSearchAuthorized: boolean,
 ) {
   const createdAt = new Date().toISOString();
   const base = {
@@ -95,6 +116,7 @@ function createOptimisticTurn(
       role: "user",
       status: "completed",
       content,
+      webSearchAuthorized,
       proposalRequested: false,
       refinementProposalId: null,
       completedAt: createdAt,
@@ -124,12 +146,15 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const router = useRouter();
   const composerHelpId = `chat-composer-help-${nodeId}`;
+  const webDisclosureId = `chat-web-disclosure-${nodeId}`;
   const [messages, setMessages] = useState(initialPage.messages);
   const [cursor, setCursor] = useState(initialPage.nextCursor);
   const [draft, setDraft] = useState("");
+  const [useWebSources, setUseWebSources] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [activeClientMessageId, setActiveClientMessageId] = useState<string | null>(null);
+  const [researchingClientMessageId, setResearchingClientMessageId] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [loadedDecisions, setLoadedDecisions] = useState<SynthesisDecisionSummary[]>([]);
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -143,7 +168,10 @@ export function ChatPanel({
   const paginationHeight = useRef<number | null>(null);
   const previousPendingProposalId = useRef(synthesisWorkspace.pending?.id ?? null);
   const decisionFocus = useRef<"approve" | "reject" | null>(null);
-  const unacknowledgedTurns = useRef(new Map<string, { content: string }>());
+  const unacknowledgedTurns = useRef(new Map<
+    string,
+    { content: string; webSearchAuthorized: boolean }
+  >());
 
   useEffect(() => () => abortController.current?.abort(), []);
   useEffect(() => {
@@ -240,6 +268,8 @@ export function ChatPanel({
       unacknowledgedTurns.current.delete(clientMessageId);
       return {
         assistant: turn.find((message) => message.role === "assistant") ?? null,
+        webSearchAuthorized:
+          turn.find((message) => message.role === "user")?.webSearchAuthorized === true,
         proposalCreated:
           turn.find((message) => message.role === "user")?.proposalRequested ?? false,
       };
@@ -248,10 +278,26 @@ export function ChatPanel({
     }
   }
 
+  async function reconcileTerminalTurn(clientMessageId: string) {
+    let reconciled: Awaited<ReturnType<typeof reconcileTurn>> = null;
+    for (const delayMs of [0, 100, 250, 500, 1_000]) {
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+      reconciled = await reconcileTurn(clientMessageId);
+      const status = reconciled?.assistant?.status;
+      if (status === "completed" || status === "failed" || status === "cancelled") {
+        return reconciled;
+      }
+    }
+    return reconciled;
+  }
+
   async function streamTurn(payload: Record<string, unknown>) {
     const controller = new AbortController();
     abortController.current = controller;
     const clientMessageId = String(payload.clientMessageId);
+    let webSearchAuthorized = payload.webSearchAuthorized === true;
     setActiveClientMessageId(clientMessageId);
     setAnnouncement("Assistant response started.");
     try {
@@ -279,6 +325,7 @@ export function ChatPanel({
           const streamEvent = JSON.parse(line) as ChatStreamEvent;
           if (streamEvent.type === "turn") {
             assistantId = streamEvent.assistantMessage.id;
+            webSearchAuthorized = streamEvent.userMessage.webSearchAuthorized;
             unacknowledgedTurns.current.delete(clientMessageId);
             setMessages((current) => replaceTurn(current, clientMessageId, [streamEvent.userMessage, streamEvent.assistantMessage]));
           } else if (streamEvent.type === "delta") {
@@ -287,6 +334,11 @@ export function ChatPanel({
                 ? { ...message, content: `${message.content}${streamEvent.content}`, status: "streaming" }
                 : message,
             ));
+          } else if (streamEvent.type === "heartbeat") {
+            continue;
+          } else if (streamEvent.type === "research-status") {
+            setResearchingClientMessageId(clientMessageId);
+            setAnnouncement(WEB_RESEARCH_PROGRESS_MESSAGE);
           } else {
             terminalReceived = true;
             setMessages((current) => replaceMessage(current, streamEvent.assistantMessage));
@@ -297,7 +349,10 @@ export function ChatPanel({
                   : "Assistant response completed."
                 : streamEvent.type === "cancelled"
                   ? "Assistant response stopped."
-                  : "Assistant response failed.",
+                  : chatFailureMessage({
+                      failureCode: streamEvent.assistantMessage.failureCode,
+                      webSearchAuthorized,
+                    }),
             );
             if (streamEvent.type === "completed" && streamEvent.proposalCreated) {
               router.refresh();
@@ -317,16 +372,29 @@ export function ChatPanel({
         ));
       } else {
         setAnnouncement("Assistant response could not be completed.");
-        const reconciled = await reconcileTurn(clientMessageId);
+        const reconciled = await reconcileTerminalTurn(clientMessageId);
         if (reconciled?.assistant?.status === "completed") {
           setAnnouncement(reconciled.proposalCreated
             ? "Synthesis proposal request completed."
             : "Assistant response completed.");
           if (reconciled.proposalCreated) router.refresh();
         }
-        if (reconciled?.assistant?.status === "failed") setAnnouncement("Assistant response failed.");
+        if (reconciled?.assistant?.status === "failed") {
+          setAnnouncement(chatFailureMessage({
+            failureCode: reconciled.assistant.failureCode,
+            webSearchAuthorized: reconciled.webSearchAuthorized,
+          }));
+        }
         if (reconciled?.assistant?.status === "cancelled") setAnnouncement("Assistant response stopped.");
-        if (!reconciled) {
+        if (
+          !reconciled ||
+          reconciled.assistant?.status === "pending" ||
+          reconciled.assistant?.status === "streaming"
+        ) {
+          setAnnouncement(chatFailureMessage({
+            failureCode: "stream-disconnected",
+            webSearchAuthorized,
+          }));
           setMessages((current) => current.map((message) =>
             message.clientMessageId === clientMessageId && message.role === "assistant"
               ? { ...message, status: "failed", failureCode: "stream-disconnected" }
@@ -337,6 +405,7 @@ export function ChatPanel({
     } finally {
       abortController.current = null;
       setActiveClientMessageId(null);
+      setResearchingClientMessageId(null);
     }
   }
 
@@ -345,17 +414,19 @@ export function ChatPanel({
     const content = draft.trim();
     if (!content || activeClientMessageId || !generationEnabled) return;
     const clientMessageId = crypto.randomUUID();
-    unacknowledgedTurns.current.set(clientMessageId, { content });
+    const webSearchAuthorized = useWebSources;
+    unacknowledgedTurns.current.set(clientMessageId, { content, webSearchAuthorized });
     setMessages((current) => mergeMessages(
       current,
-      createOptimisticTurn(nodeId, clientMessageId, content),
+      createOptimisticTurn(nodeId, clientMessageId, content, webSearchAuthorized),
     ));
     setDraft("");
+    setUseWebSources(false);
     void streamTurn({
       nodeId,
       clientMessageId,
       content,
-      webSearchAuthorized: false,
+      webSearchAuthorized,
     });
   }
 
@@ -380,14 +451,13 @@ export function ChatPanel({
           nodeId,
           clientMessageId: message.clientMessageId,
           content: unacknowledged.content,
-          webSearchAuthorized: false,
+          webSearchAuthorized: unacknowledged.webSearchAuthorized,
         }
       : { nodeId, clientMessageId: message.clientMessageId, retry: true });
   }
 
   async function stop(clientMessageId = activeClientMessageId) {
     if (!clientMessageId) return;
-    if (clientMessageId === activeClientMessageId) abortController.current?.abort();
     try {
       const response = await fetch("/api/chat", {
         method: "DELETE",
@@ -396,6 +466,7 @@ export function ChatPanel({
       });
       if (!response.ok) throw new Error("stop failed");
       const result = await response.json() as { assistantMessage: ChatMessage };
+      if (clientMessageId === activeClientMessageId) abortController.current?.abort();
       setMessages((current) => replaceMessage(current, result.assistantMessage));
       setAnnouncement("Assistant response stopped.");
     } catch {
@@ -418,6 +489,11 @@ export function ChatPanel({
     messages
       .filter((message) => message.role === "assistant")
       .map((message) => message.id),
+  );
+  const webSearchClientMessageIds = new Set(
+    messages
+      .filter((message) => message.role === "user" && message.webSearchAuthorized)
+      .map((message) => message.clientMessageId),
   );
   const decisionsOutsidePage = allDecisions.filter(
     (decision) => !visibleAssistantMessageIds.has(decision.generatingMessageId),
@@ -496,19 +572,51 @@ export function ChatPanel({
           <article className={`chat-message chat-message--${message.role}`} key={message.id}>
             <p className="chat-message__label">{message.role === "user" ? "You" : "Assistant"}</p>
             <div className="chat-message__content">
-              {message.role === "assistant" ? <ChatMessageContent content={message.content} /> : <p>{message.content}</p>}
+              {message.role === "assistant" ? (
+                <ChatMessageContent
+                  content={message.content}
+                  citations={message.citations ?? []}
+                />
+              ) : (
+                <>
+                  <p>{message.content}</p>
+                  {message.webSearchAuthorized ? (
+                    <p className="chat-message__source-note">External sources enabled for this message.</p>
+                  ) : null}
+                </>
+              )}
               {message.role === "assistant" && (message.status === "pending" || message.status === "streaming") ? (
                 <div className="chat-message__failure">
-                  <p className="chat-message__state">Thinking…</p>
+                  <p className="chat-message__state">
+                    {message.clientMessageId === researchingClientMessageId
+                      ? WEB_RESEARCH_PROGRESS_MESSAGE
+                      : "Thinking…"}
+                  </p>
                   {message.clientMessageId !== activeClientMessageId ? (
-                    <button type="button" onClick={() => void stop(message.clientMessageId)}>Stop response</button>
+                    <button
+                      type="button"
+                      className="icon-button chat-message__stop"
+                      aria-label="Stop response"
+                      onClick={() => void stop(message.clientMessageId)}
+                    >
+                      <StopIcon />
+                    </button>
                   ) : null}
                 </div>
               ) : null}
               {message.role === "assistant" && message.status === "cancelled" ? <p className="chat-message__state">Response stopped.</p> : null}
               {message.role === "assistant" && (message.status === "failed" || message.status === "cancelled") ? (
                 <div className="chat-message__failure">
-                  <p>{message.status === "failed" ? "That response didn’t finish." : "Try this response again?"}</p>
+                  <p>
+                    {message.status === "failed"
+                      ? chatFailureMessage({
+                          failureCode: message.failureCode,
+                          webSearchAuthorized: webSearchClientMessageIds.has(
+                            message.clientMessageId,
+                          ),
+                        })
+                      : "Try this response again?"}
+                  </p>
                   <button type="button" disabled={Boolean(activeClientMessageId) || !generationEnabled} onClick={() => retry(message)}>Retry</button>
                 </div>
               ) : null}
@@ -543,6 +651,7 @@ export function ChatPanel({
           />
         ) : null}
         <SynthesisDecisionHistory history={decisionsOutsidePage} />
+        </div>
         <form className="chat-composer" onSubmit={submit}>
           <label className="sr-only" htmlFor={`chat-draft-${nodeId}`}>Message</label>
           <p className="sr-only" id={composerHelpId}>
@@ -567,6 +676,16 @@ export function ChatPanel({
             onKeyDown={keyDown}
           />
           <div className="chat-composer__actions">
+            <label className="chat-composer__web-toggle">
+              <input
+                type="checkbox"
+                checked={useWebSources}
+                disabled={!generationEnabled || Boolean(activeClientMessageId)}
+                aria-describedby={webDisclosureId}
+                onChange={(event) => setUseWebSources(event.target.checked)}
+              />
+              <span>Use external sources</span>
+            </label>
             <small aria-hidden="true">
               {generationEnabled ? (
                 <>
@@ -578,19 +697,29 @@ export function ChatPanel({
               )}
             </small>
             {activeClientMessageId ? (
-              <button type="button" className="secondary-button" onClick={() => void stop()}>Stop</button>
+              <button
+                type="button"
+                className="icon-button chat-composer__control chat-composer__stop"
+                aria-label="Stop response"
+                onClick={() => void stop()}
+              >
+                <StopIcon />
+              </button>
             ) : (
               <button
-                className="chat-composer__send"
+                className="icon-button icon-button--primary chat-composer__control chat-composer__send"
                 type="submit"
+                aria-label="Send message"
                 disabled={!generationEnabled || draft.trim().length === 0}
               >
-                Send
+                <SendIcon />
               </button>
             )}
           </div>
+          <p className="chat-composer__web-disclosure" id={webDisclosureId}>
+            Next message only. Supports web research or one HTTPS PDF; sources may change.
+          </p>
         </form>
-        </div>
         <p className="sr-only" aria-live="polite" role="status">{announcement}</p>
       </section>
     </dialog>

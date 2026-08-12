@@ -72,8 +72,10 @@ For changes touching chat or synthesis, reviewers verify that:
   approval;
 - approval checks the current base and every recorded source revision;
 - internal citations reference only supplied, owner-scoped approved evidence;
-- external links come from validated web-search annotations;
-- child summaries, chat, and web results are treated as untrusted data;
+- external links come from validated web-search annotations or exact visible
+  spans mapped to the one authorized provider-fetched PDF URL;
+- child summaries, chat, web results, and direct PDF content are treated as
+  untrusted data;
 - failures, refusals, malformed output, retries, and concurrency remain safe;
 - prompts, conversations, provider payloads, and secrets are absent from logs;
 - deterministic tests cover the behavior and any live evaluation was approved.

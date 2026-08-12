@@ -1,9 +1,11 @@
 import { z } from "zod";
 
 import {
+  externalCitationMentionSchema,
   internalCitationMentionSchema,
+  MAX_EXTERNAL_CITATION_OCCURRENCES,
   MAX_INTERNAL_CITATIONS,
-  type InternalCitationView,
+  type SynthesisCitationView,
 } from "@/lib/citations/contracts";
 
 export const MAX_SYNTHESIS_CONTENT_LENGTH = 32_000;
@@ -11,6 +13,7 @@ export const MAX_SYNTHESIS_CONTENT_LENGTH = 32_000;
 const unsupportedInlineMarkdown = /[<>\[\]`|]/;
 const unsupportedBlockMarkdown = /^(?: {0,3}\t| {4}| {0,3}~~~| {0,3}(?:[-*_][ \t]*){3,}$)/m;
 const unsupportedControlCharacter = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
+const unsupportedExternalUrl = /\b(?:https?:\/\/|www\.)/i;
 
 export const synthesisStatusSchema = z.enum([
   "pending",
@@ -33,11 +36,19 @@ export const synthesisContentSchema = z
       !unsupportedInlineMarkdown.test(content) &&
       !unsupportedBlockMarkdown.test(content),
     "Use only paragraphs, headings, lists, and emphasis.",
+  )
+  .refine(
+    (content) => !unsupportedExternalUrl.test(content),
+    "URLs must be supplied through validated external citations.",
   );
 
 export const synthesisProposalDraftSchema = z.object({
   content: synthesisContentSchema,
   citations: z.array(internalCitationMentionSchema).max(MAX_INTERNAL_CITATIONS),
+  externalCitations: z
+    .array(externalCitationMentionSchema)
+    .max(MAX_EXTERNAL_CITATION_OCCURRENCES)
+    .default([]),
 }).strict();
 
 export const synthesisDecisionInputSchema = z.object({
@@ -47,6 +58,7 @@ export const synthesisDecisionInputSchema = z.object({
 
 export type SynthesisStatus = z.infer<typeof synthesisStatusSchema>;
 export type SynthesisProposalDraft = z.infer<typeof synthesisProposalDraftSchema>;
+export type SynthesisProposalDraftInput = z.input<typeof synthesisProposalDraftSchema>;
 export type SynthesisDecisionInput = z.infer<typeof synthesisDecisionInputSchema>;
 
 export type SynthesisDecisionResult =
@@ -72,7 +84,7 @@ export type SynthesisVersion = {
   createdAt: string;
   updatedAt: string;
   decidedAt: string | null;
-  citations: InternalCitationView[];
+  citations: SynthesisCitationView[];
 };
 
 export type SynthesisDecisionSummary = {
@@ -82,7 +94,7 @@ export type SynthesisDecisionSummary = {
   content: string;
   baseContent: string | null;
   decidedAt: string;
-  citations: InternalCitationView[];
+  citations: SynthesisCitationView[];
 };
 
 export type SynthesisWorkspace = {
