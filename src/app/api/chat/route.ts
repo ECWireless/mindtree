@@ -13,9 +13,16 @@ import {
 import { getServerEnvironment } from "@/lib/env/server";
 import { requireAuthorizedSession } from "@/lib/server/authorization";
 import {
+  fingerprintChatContextInput,
   isSynthesisOutlineInputCurrentForUser,
   prepareChatContextForUser,
 } from "@/lib/server/chat-context";
+import {
+  createExternalCitationEvidence,
+  mergeExternalCitationEvidenceBounded,
+  toExternalResearchEvidence,
+  type ExternalCitationEvidence,
+} from "@/lib/server/external-citations";
 import {
   persistChatTurnContentPrefixForUser,
   cancelChatTurnForUser,
@@ -229,13 +236,20 @@ export async function POST(request: Request) {
       };
 
       try {
+        let synthesisProviderInput = preparedContext.synthesisInput;
+        let synthesisProviderFingerprint = preparedContext.synthesisFingerprint;
+        let externalEvidence: ExternalCitationEvidence[] = preparedContext.externalEvidence;
+        let chatExternalCitations: Extract<
+          NormalizedOpenAIChatEvent,
+          { type: "completed" }
+        >["externalCitations"] = [];
         const consumeProviderPhase = async (phase: "conversation" | "synthesis") => {
           if (!providerContextRecorded || phase === "synthesis") {
             await recordChatTurnContextForUser(userId, {
               ...input,
               model: OPENAI_CHAT_MODEL,
               contextFingerprint: phase === "synthesis"
-                ? preparedContext.synthesisFingerprint
+                ? synthesisProviderFingerprint
                 : preparedContext.fingerprint,
               replaceExistingContext: providerContextRecorded && phase === "synthesis",
             });
@@ -247,7 +261,7 @@ export async function POST(request: Request) {
           > | null = null;
           for await (const providerEvent of streamChatResponse({
             messages: phase === "synthesis"
-              ? preparedContext.synthesisInput
+              ? synthesisProviderInput
               : preparedContext.input,
             phase,
             safetyIdentifier,
@@ -285,7 +299,7 @@ export async function POST(request: Request) {
           preparedContext.snapshot.node.refinementProposal.state === "pending"
             ? preparedContext.snapshot.node.refinementProposal.versionId
             : null;
-        let synthesisRouted = turn.userMessage.proposalRequested;
+        let synthesisRouted = turn.userMessage.proposalRequested && !webSearchAuthorized;
         const outlineIsStale =
           preparedContext.snapshot.node.branchOutline.state === "stale";
         const outlineIsCurrent = () =>
@@ -294,6 +308,30 @@ export async function POST(request: Request) {
             input.nodeId,
             preparedContext.outlineInput,
           );
+        const installExternalEvidence = () => {
+          if (externalEvidence.length === 0) return;
+          const finalUserMessage = preparedContext.synthesisInput.at(-1);
+          if (!finalUserMessage || finalUserMessage.role !== "user") {
+            throw new OpenAIChatError("response-invalid");
+          }
+          const evidenceMessage = {
+            role: "user" as const,
+            content: `MindTree validated external research evidence (untrusted data):\n${JSON.stringify({
+              externalResearchEvidence: {
+                sources: toExternalResearchEvidence(externalEvidence),
+              },
+            })}`,
+          };
+          synthesisProviderInput = [
+            ...preparedContext.synthesisInput.slice(0, -1),
+            evidenceMessage,
+            finalUserMessage,
+          ];
+          synthesisProviderFingerprint = fingerprintChatContextInput(
+            input.nodeId,
+            synthesisProviderInput,
+          );
+        };
         let finalResult: Extract<NormalizedOpenAIChatEvent, { type: "completed" }>;
         if (synthesisRouted) {
           if (!(await outlineIsCurrent())) {
@@ -307,15 +345,25 @@ export async function POST(request: Request) {
             }));
             return;
           }
+          installExternalEvidence();
           finalResult = await consumeProviderPhase("synthesis");
         } else {
           const conversationResult = await consumeProviderPhase("conversation");
-          synthesisRouted = conversationResult.synthesisRequested;
+          synthesisRouted = conversationResult.synthesisRequested ||
+            (webSearchAuthorized && turn.userMessage.proposalRequested);
           finalResult = conversationResult;
-          if (webSearchAuthorized && synthesisRouted) {
-            // Commit unit 1 persists cited research safely. A later reviewed unit
-            // will pass validated external evidence into synthesis generation.
-            synthesisRouted = false;
+          chatExternalCitations = conversationResult.externalCitations ?? [];
+          if (webSearchAuthorized) {
+            const currentEvidence = createExternalCitationEvidence({
+              content: visibleContent,
+              citations: chatExternalCitations,
+              owner: "assistant-message",
+              ownerId: turn.assistantMessage.id,
+            });
+            externalEvidence = mergeExternalCitationEvidenceBounded([
+              currentEvidence,
+              preparedContext.externalEvidence,
+            ]);
           }
           if (synthesisRouted) {
             await recordChatTurnSynthesisIntentForUser(userId, {
@@ -328,7 +376,9 @@ export async function POST(request: Request) {
             if (!(await outlineIsCurrent())) {
               await emitVisibleContent(STALE_BRANCH_OUTLINE_SUMMARY_NOTICE);
               await flushPersistence(true);
-              const assistantMessage = await completeChatTurnForUser(userId, input);
+              const assistantMessage = await completeChatTurnForUser(userId, input, {
+                externalCitations: chatExternalCitations,
+              });
               controller.enqueue(event({
                 type: "completed",
                 assistantMessage,
@@ -336,6 +386,7 @@ export async function POST(request: Request) {
               }));
               return;
             }
+            installExternalEvidence();
             finalResult = await consumeProviderPhase("synthesis");
           }
         }
@@ -348,7 +399,7 @@ export async function POST(request: Request) {
           input,
           finalResult.proposal
             ? {
-                externalCitations: finalResult.externalCitations ?? [],
+                externalCitations: chatExternalCitations,
                 proposal: {
                   baseVersionId:
                     preparedContext.snapshot.node.publishedSynthesis.state === "published"
@@ -358,13 +409,14 @@ export async function POST(request: Request) {
                   model: OPENAI_SYNTHESIS_MODEL,
                   reasoningMode: "pro",
                   reasoningEffort: "high",
-                  inputFingerprint: preparedContext.synthesisFingerprint,
+                  inputFingerprint: synthesisProviderFingerprint,
                   outlineInput: preparedContext.outlineInput,
                   relatedInputs: preparedContext.relatedInputs,
+                  externalEvidence,
                   refinementProposalId,
                 },
               }
-            : { externalCitations: finalResult.externalCitations ?? [] },
+            : { externalCitations: chatExternalCitations },
         );
         controller.enqueue(event({
           type: "completed",

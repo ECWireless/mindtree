@@ -14,6 +14,7 @@ import ReactMarkdown from "react-markdown";
 import type {
   ExternalCitationView,
   InternalCitationView,
+  SynthesisCitationView,
 } from "@/lib/citations/contracts";
 
 const allowedElements = ["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "em", "strong", "a"];
@@ -181,7 +182,40 @@ export function ChatMessageContent({
   );
 }
 
+export function ExternalReferences({
+  citations,
+  headingLevel = 3,
+}: {
+  citations: readonly ExternalCitationView[];
+  headingLevel?: 2 | 3 | 4;
+}) {
+  const ordered = [...citations].sort((left, right) =>
+    left.startUtf16 - right.startUtf16 || left.ordinal - right.ordinal
+  );
+  const references = [...new Map(
+    ordered.map((citation) => [citation.url, citation]),
+  ).values()];
+  if (references.length === 0) return null;
+  const Heading = `h${headingLevel}` as "h2" | "h3" | "h4";
+  return (
+    <section className="external-references" aria-label="External references">
+      <Heading>References</Heading>
+      <ol>
+        {references.map((reference) => (
+          <li key={reference.url} value={reference.ordinal}>
+            <a href={reference.url} target="_blank" rel="noreferrer noopener">
+              {reference.title}
+            </a>
+            <span>External source · may change</span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 const internalLinkPrefix = "#mindtree-internal-link-";
+const internalCitationProperty = "data-mindtree-internal-citation";
 
 type MarkdownAstNode = {
   type?: string;
@@ -251,17 +285,38 @@ function createInternalLinkPlugin(
             const linkEnd = citation.endUtf16 - start;
             if (linkStart < cursor) continue;
             if (linkStart > cursor) {
-              replacement.push({ type: "text", value: child.value.slice(cursor, linkStart) });
+              replacement.push({
+                type: "text",
+                value: child.value.slice(cursor, linkStart),
+                position: {
+                  start: { ...child.position?.start, offset: start + cursor },
+                  end: { ...child.position?.end, offset: start + linkStart },
+                },
+              });
             }
             replacement.push({
               type: "link",
               url: `${internalLinkPrefix}${citation.ordinal}`,
+              data: {
+                hProperties: { [internalCitationProperty]: citation.ordinal },
+              },
               children: [{ type: "text", value: child.value.slice(linkStart, linkEnd) }],
+              position: {
+                start: { ...child.position?.start, offset: start + linkStart },
+                end: { ...child.position?.end, offset: start + linkEnd },
+              },
             });
             cursor = linkEnd;
           }
           if (cursor < child.value.length) {
-            replacement.push({ type: "text", value: child.value.slice(cursor) });
+            replacement.push({
+              type: "text",
+              value: child.value.slice(cursor),
+              position: {
+                start: { ...child.position?.start, offset: start + cursor },
+                end: { ...child.position?.end, offset: end },
+              },
+            });
           }
           node.children.splice(index, 1, ...replacement);
           index += replacement.length - 1;
@@ -269,6 +324,21 @@ function createInternalLinkPlugin(
       };
 
       visit(tree as MarkdownAstNode);
+    };
+  };
+}
+
+function createSynthesisCitationPlugin(
+  content: string,
+  internalCitations: readonly InternalCitationView[],
+  externalCitations: readonly ExternalCitationView[],
+) {
+  const applyInternal = createInternalLinkPlugin(content, internalCitations)();
+  const applyExternal = createExternalCitationPlugin(content, externalCitations)();
+  return function synthesisCitationPlugin() {
+    return (tree: unknown) => {
+      applyInternal(tree);
+      applyExternal(tree);
     };
   };
 }
@@ -490,22 +560,60 @@ export function SynthesisDocumentContent({
   citations = [],
 }: {
   content: string;
-  citations?: readonly InternalCitationView[];
+  citations?: readonly SynthesisCitationView[];
 }) {
-  const byOrdinal = new Map(citations.map((citation) => [citation.ordinal, citation]));
+  const internalCitations = citations.filter(
+    (citation): citation is InternalCitationView => citation.kind === "internal",
+  );
+  const externalCitations = citations.filter(
+    (citation): citation is ExternalCitationView => citation.kind === "external",
+  );
+  const internalByOrdinal = new Map(
+    internalCitations.map((citation) => [citation.ordinal, citation]),
+  );
   const descriptionPrefix = useId();
   return (
     <>
       <ReactMarkdown
         allowedElements={allowedElements}
-        remarkPlugins={[createInternalLinkPlugin(content, citations)]}
+        remarkPlugins={[
+          createSynthesisCitationPlugin(content, internalCitations, externalCitations),
+        ]}
         skipHtml
         components={{
-          a: ({ children, href }) => {
-            const ordinal = href?.startsWith(internalLinkPrefix)
-              ? Number(href.slice(internalLinkPrefix.length))
+          a: ({ children, href, node }) => {
+            const trustedExternal = node?.properties?.[externalCitationProperty];
+            const externalOccurrence = typeof trustedExternal === "number"
+              ? trustedExternal
               : Number.NaN;
-            const citation = Number.isInteger(ordinal) ? byOrdinal.get(ordinal) : undefined;
+            const externalCitation = Number.isInteger(externalOccurrence)
+              ? externalCitations[externalOccurrence]
+              : undefined;
+            if (
+              externalCitation &&
+              href === `${externalCitationPrefix}${externalOccurrence}`
+            ) {
+              return (
+                <a
+                  className="external-citation-link"
+                  href={externalCitation.url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  aria-label={`Source ${externalCitation.ordinal}: ${externalCitation.title}. Opens in a new tab.`}
+                  title={externalCitation.title}
+                >
+                  {children}
+                </a>
+              );
+            }
+            const trustedInternal = node?.properties?.[internalCitationProperty];
+            const ordinal = typeof trustedInternal === "number"
+              ? trustedInternal
+              : Number.NaN;
+            const citation = Number.isInteger(ordinal)
+              ? internalByOrdinal.get(ordinal)
+              : undefined;
+            if (href !== `${internalLinkPrefix}${ordinal}`) return <>{children}</>;
             if (!citation) return <>{children}</>;
             const description = citation.target.state === "available"
               ? `Linked thought: ${citation.target.title}. ${internalLinkStateLabel(citation)}. Linked revision ${citation.snapshot.synthesisVersionId.slice(0, 8)}`

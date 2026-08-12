@@ -21,7 +21,19 @@ export const internalCitationMentionSchema = z.object({
     .refine((text) => !markdownBlockPrefix.test(text)),
 }).strict();
 
+export const externalCitationMentionSchema = z.object({
+  sourceAlias: z.string().regex(/^W[1-9][0-9]*$/).max(8),
+  citedText: z
+    .string()
+    .min(1)
+    .max(MAX_CITED_TEXT_LENGTH)
+    .refine((text) => text.trim() === text)
+    .refine((text) => !unsupportedInternalLinkPhrase.test(text))
+    .refine((text) => !markdownBlockPrefix.test(text)),
+}).strict();
+
 export type InternalCitationMention = z.infer<typeof internalCitationMentionSchema>;
+export type ExternalCitationMention = z.infer<typeof externalCitationMentionSchema>;
 
 export type InternalCitationView = {
   kind: "internal";
@@ -55,3 +67,5 @@ export type ExternalCitationView = {
   title: string;
   url: string;
 };
+
+export type SynthesisCitationView = InternalCitationView | ExternalCitationView;

@@ -2,16 +2,24 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 
-import { and, desc, eq, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 
 import { db } from "@/db/client";
 import {
   branchOutlineVersions,
   chatMessages,
+  citations,
   nodes,
   synthesisVersions,
 } from "@/db/schema";
 import type { RetryChatTurnInput } from "@/lib/chat/contracts";
+import type { ExternalCitationView } from "@/lib/citations/contracts";
+import {
+  createExternalCitationEvidence,
+  ExternalCitationValidationError,
+  mergeExternalCitationEvidence,
+  type ExternalCitationEvidence,
+} from "@/lib/server/external-citations";
 import {
   assignInternalEvidenceAliases,
   type InternalCitationEvidence,
@@ -35,7 +43,7 @@ export type ChatContextMessage = {
 };
 
 export type ChatContextSnapshot = {
-  version: 6;
+  version: 7;
   node: {
     id: string;
     title: string;
@@ -63,6 +71,7 @@ export type ChatContextSnapshot = {
         };
   };
   relatedEvidence: InternalCitationEvidence[];
+  externalEvidence: ExternalCitationEvidence[];
   messages: ChatContextMessage[];
 };
 
@@ -73,18 +82,19 @@ export type PreparedChatContext = {
   synthesisFingerprint: string;
   synthesisInput: Array<{ role: "user" | "assistant"; content: string }>;
   relatedInputs: InternalCitationEvidence[];
+  externalEvidence: ExternalCitationEvidence[];
   outlineInput: {
     versionId: string;
     sourceStateFingerprint: string;
   } | null;
 };
 
-function fingerprintPreparedInput(
-  snapshot: ChatContextSnapshot,
+export function fingerprintChatContextInput(
+  nodeId: string,
   input: PreparedChatContext["input"],
 ) {
   return createHash("sha256")
-    .update(JSON.stringify({ version: 1, nodeId: snapshot.node.id, input }), "utf8")
+    .update(JSON.stringify({ version: 1, nodeId, input }), "utf8")
     .digest("hex");
 }
 
@@ -435,8 +445,109 @@ export async function prepareChatContextForUser(
       characterCount += message.content.length;
     }
 
+    const synthesisEvidenceOwner = refinementProposal.state === "pending"
+      ? {
+          ownerId: refinementProposal.versionId,
+          content: refinementProposal.content,
+        }
+      : publishedSynthesis.state === "published"
+        ? {
+            ownerId: publishedSynthesis.versionId,
+            content: publishedSynthesis.content,
+          }
+        : null;
+    const assistantEvidenceOwners = boundedNewestFirst
+      .filter((message) => message.role === "assistant")
+      .map((message) => ({ ownerId: message.id, content: message.content }));
+    const ownerConditions = [
+      ...(synthesisEvidenceOwner
+        ? [eq(citations.synthesisVersionId, synthesisEvidenceOwner.ownerId)]
+        : []),
+      ...(assistantEvidenceOwners.length > 0
+        ? [inArray(
+            citations.assistantMessageId,
+            assistantEvidenceOwners.map(({ ownerId }) => ownerId),
+          )]
+        : []),
+    ];
+    const externalRows = ownerConditions.length > 0
+      ? await tx
+          .select({
+            assistantMessageId: citations.assistantMessageId,
+            synthesisVersionId: citations.synthesisVersionId,
+            ordinal: citations.ordinal,
+            startUtf16: citations.startUtf16,
+            endUtf16: citations.endUtf16,
+            title: citations.externalTitle,
+            url: citations.externalUrl,
+          })
+          .from(citations)
+          .where(and(
+            eq(citations.userId, userId),
+            eq(citations.ownerNodeId, input.nodeId),
+            eq(citations.kind, "external"),
+            or(...ownerConditions),
+          ))
+          .orderBy(asc(citations.createdAt), asc(citations.startUtf16))
+      : [];
+    const evidenceGroups: ExternalCitationEvidence[][] = [];
+    const addEvidenceOwner = (
+      owner: "assistant-message" | "synthesis-version",
+      ownerId: string,
+      content: string,
+    ) => {
+      const ownerRows = externalRows.filter((row) =>
+        owner === "assistant-message"
+          ? row.assistantMessageId === ownerId
+          : row.synthesisVersionId === ownerId
+      );
+      if (ownerRows.length === 0) return;
+      const citationViews: ExternalCitationView[] = ownerRows.map((row) => {
+        if (row.title === null || row.url === null) {
+          throw new Error("chat context external citation is invalid");
+        }
+        return {
+          kind: "external",
+          ordinal: row.ordinal,
+          startUtf16: row.startUtf16,
+          endUtf16: row.endUtf16,
+          title: row.title,
+          url: row.url,
+        };
+      });
+      const group = createExternalCitationEvidence({
+        content,
+        citations: citationViews,
+        owner,
+        ownerId,
+      });
+      try {
+        mergeExternalCitationEvidence([...evidenceGroups, group]);
+        evidenceGroups.push(group);
+      } catch (error) {
+        if (
+          error instanceof ExternalCitationValidationError &&
+          (error.reason === "invalid-count" || error.reason === "too-many-sources")
+        ) {
+          return;
+        }
+        throw error;
+      }
+    };
+    if (synthesisEvidenceOwner) {
+      addEvidenceOwner(
+        "synthesis-version",
+        synthesisEvidenceOwner.ownerId,
+        synthesisEvidenceOwner.content,
+      );
+    }
+    for (const owner of assistantEvidenceOwners) {
+      addEvidenceOwner("assistant-message", owner.ownerId, owner.content);
+    }
+    const externalEvidence = mergeExternalCitationEvidence(evidenceGroups);
+
     return {
-      version: 6,
+      version: 7,
       node: {
         id: target.id,
         title: target.title,
@@ -451,6 +562,7 @@ export async function prepareChatContextForUser(
       },
       relatedEvidence: [],
       messages: boundedNewestFirst.reverse(),
+      externalEvidence,
     } satisfies ChatContextSnapshot;
   }, {
     isolationLevel: "repeatable read",
@@ -468,11 +580,12 @@ export async function prepareChatContextForUser(
   const synthesisInput = toContextInput(snapshot, { includeRelatedEvidence: true });
   return {
     snapshot,
-    fingerprint: fingerprintPreparedInput(snapshot, providerInput),
+    fingerprint: fingerprintChatContextInput(snapshot.node.id, providerInput),
     input: providerInput,
-    synthesisFingerprint: fingerprintPreparedInput(snapshot, synthesisInput),
+    synthesisFingerprint: fingerprintChatContextInput(snapshot.node.id, synthesisInput),
     synthesisInput,
     relatedInputs,
+    externalEvidence: snapshot.externalEvidence,
     outlineInput: snapshot.node.branchOutline.state === "current"
       ? {
           versionId: snapshot.node.branchOutline.versionId,

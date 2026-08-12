@@ -1718,6 +1718,42 @@ button:not(:disabled) {
   text-decoration: underline;
 }
 
+.external-references {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1.25rem 0;
+  border-top: 1px solid var(--color-line);
+}
+
+.external-references h2,
+.external-references h3,
+.external-references h4 {
+  margin: 0;
+}
+
+.external-references ol {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+  padding-left: 1.5rem;
+}
+
+.external-references li {
+  padding-left: 0.2rem;
+}
+
+.external-references a {
+  color: var(--color-blue-bright);
+  overflow-wrap: anywhere;
+}
+
+.external-references li > span {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--color-muted);
+  font-size: 0.75rem;
+}
+
 .internal-node-link--changed {
   text-decoration-style: dotted;
 }

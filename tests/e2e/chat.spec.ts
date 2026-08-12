@@ -187,6 +187,66 @@ test("authorizes web sources for one message and renders validated citations", a
   }
 });
 
+test("publishes cited web research with durable inline markers and References", async ({ context, page }) => {
+  const seeded = await seedBrowserSession(pool);
+  const nodeId = randomUUID();
+
+  try {
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values ($1, $2, null, 0, 'Cited research synthesis')`,
+      [nodeId, seeded.userId],
+    );
+    await installBrowserSessionCookie(context, seeded.cookie);
+    await page.goto(`/?node=${nodeId}`);
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+
+    const chatDialog = page.getByRole("dialog", { name: "Chat about Cited research synthesis" });
+    await chatDialog.getByRole("checkbox", { name: "Use web sources" }).check();
+    await chatDialog.getByRole("textbox", { name: "Message" })
+      .fill("Research and propose a synthesis");
+    await chatDialog.getByRole("button", { name: "Send" }).click();
+
+    const proposal = chatDialog.getByRole("region", { name: "Proposed synthesis" });
+    await expect(proposal).toBeVisible({ timeout: 10_000 });
+    const inlineCitation = proposal.getByRole("link", {
+      name: "Source 1: Synthetic research source. Opens in a new tab.",
+    });
+    await expect(inlineCitation).toHaveText("[1]");
+    await expect(inlineCitation).toHaveAttribute("href", "https://example.test/research");
+    const proposalReferences = proposal.getByRole("region", { name: "External references" });
+    await expect(proposalReferences.getByRole("heading", { name: "References" })).toBeVisible();
+    await expect(proposalReferences.getByRole("link", { name: "Synthetic research source" }))
+      .toHaveAttribute("href", "https://example.test/research");
+    await expect(proposalReferences.getByText("External source · may change", { exact: true }))
+      .toBeVisible();
+
+    await proposal.getByRole("button", { name: "Approve and publish" }).click();
+    await expect(chatDialog).not.toBeVisible();
+    const published = page.getByRole("region", { name: "Summary" });
+    await expect(published.getByRole("link", {
+      name: "Source 1: Synthetic research source. Opens in a new tab.",
+    })).toHaveText("[1]");
+    const publishedReferences = page.getByRole("region", { name: "External references" });
+    await expect(publishedReferences.getByRole("link", { name: "Synthetic research source" }))
+      .toHaveAttribute("href", "https://example.test/research");
+    await expect(publishedReferences.evaluate((references) => {
+      const outline = document.querySelector(".branch-outline");
+      return Boolean(
+        outline &&
+        (outline.compareDocumentPosition(references) & Node.DOCUMENT_POSITION_FOLLOWING),
+      );
+    })).resolves.toBe(true);
+
+    await page.reload();
+    await expect(page.getByRole("region", { name: "External references" })
+      .getByRole("link", { name: "Synthetic research source" }))
+      .toHaveAttribute("href", "https://example.test/research");
+  } finally {
+    await seeded.cleanup();
+  }
+});
+
 test("loads, retries, streams, persists, and isolates per-node conversation history", async ({ context, page }, testInfo) => {
   const seeded = await seedBrowserSession(pool);
   const firstNodeId = randomUUID();

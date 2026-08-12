@@ -381,12 +381,18 @@ describe("OpenAI Responses chat stream", () => {
         strict: true,
       }],
     });
+    expect(request.tools?.[0]).toMatchObject({
+      parameters: {
+        type: "object",
+        required: ["content", "citations", "externalCitations"],
+      },
+    });
     expect(request.instructions).toContain("advisory generated content");
     expect(request.instructions).toContain("wiki-style node links");
     expect(request.instructions).toContain("without surrounding whitespace");
     expect(request.instructions).toContain("not numbered source citations");
     expect(request.instructions).toContain(
-      "Numbered citation markers and References are reserved for validated external sources",
+      "externalCitations array is reserved for numbered citations",
     );
     expect(request.instructions).not.toContain("request_synthesis");
   });
@@ -425,6 +431,7 @@ describe("OpenAI Responses chat stream", () => {
           evidenceAlias: "E1",
           citedText: "A bounded proposal",
         }],
+        externalCitations: [],
       },
     });
   });
@@ -459,6 +466,7 @@ describe("OpenAI Responses chat stream", () => {
         proposal: {
           content: "# Tool-only synthesis\n\nA bounded proposal.",
           citations: [],
+          externalCitations: [],
         },
       },
     ]);

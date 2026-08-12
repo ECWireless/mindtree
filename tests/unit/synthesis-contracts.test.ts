@@ -13,7 +13,23 @@ describe("synthesis proposal contracts", () => {
     })).toEqual({
       content: "# Direction\n\n- **First** point\n- *Second* point",
       citations: [],
+      externalCitations: [],
     });
+  });
+
+  it("accepts bounded external citation mentions and rejects raw URLs", () => {
+    expect(synthesisProposalDraftSchema.parse({
+      content: "A supported external claim.",
+      citations: [],
+      externalCitations: [{ sourceAlias: "W1", citedText: "external claim" }],
+    }).externalCitations).toEqual([
+      { sourceAlias: "W1", citedText: "external claim" },
+    ]);
+    expect(synthesisProposalDraftSchema.safeParse({
+      content: "See https://example.test/source for details.",
+      citations: [],
+      externalCitations: [],
+    }).success).toBe(false);
   });
 
   it.each([

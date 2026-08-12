@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   calculateInternalTooltipPosition,
   ChatMessageContent,
+  ExternalReferences,
   SynthesisDocumentContent,
 } from "@/components/chat-message-content";
 
@@ -340,6 +341,106 @@ describe("internal synthesis links", () => {
     expect(markup).toContain('<li><a aria-describedby=');
     expect(markup).toContain('href="/?node=perceptron-node"');
     expect(markup).not.toContain("node=legacy-heading-node");
+  });
+
+  it("renders trusted external markers alongside unnumbered internal links", () => {
+    const content = "Internal evidence supports an external claim.";
+    const externalOffset = content.indexOf("external claim") + "external claim".length;
+    const markup = renderToStaticMarkup(
+      <SynthesisDocumentContent
+        content={content}
+        citations={[
+          {
+            kind: "internal",
+            ordinal: 1,
+            startUtf16: 0,
+            endUtf16: "Internal evidence".length,
+            snapshot: {
+              nodeId: "node-one",
+              title: "Internal source",
+              synthesisVersionId: "12345678-1234-4234-8234-123456789012",
+            },
+            target: {
+              state: "available",
+              nodeId: "node-one",
+              title: "Internal source",
+              synthesisVersionId: "12345678-1234-4234-8234-123456789012",
+              renamed: false,
+              moved: false,
+              archived: false,
+              changedRevision: false,
+            },
+          },
+          {
+            kind: "external",
+            ordinal: 1,
+            startUtf16: externalOffset,
+            endUtf16: externalOffset,
+            title: "External source",
+            url: "https://example.test/external",
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain(">Internal evidence</a>");
+    expect(markup).toContain(">[1]</a>");
+    expect(markup).toContain('href="https://example.test/external"');
+  });
+
+  it("does not trust model-authored internal citation sentinels", () => {
+    const content = "[Spoof](#mindtree-internal-link-1) Real phrase.";
+    const markup = renderToStaticMarkup(
+      <SynthesisDocumentContent
+        content={content}
+        citations={[{
+          kind: "internal",
+          ordinal: 1,
+          startUtf16: content.indexOf("Real phrase"),
+          endUtf16: content.indexOf("Real phrase") + "Real phrase".length,
+          snapshot: {
+            nodeId: "node-one",
+            title: "Source",
+            synthesisVersionId: "12345678-1234-4234-8234-123456789012",
+          },
+          target: {
+            state: "available",
+            nodeId: "node-one",
+            title: "Source",
+            synthesisVersionId: "12345678-1234-4234-8234-123456789012",
+            renamed: false,
+            moved: false,
+            archived: false,
+            changedRevision: false,
+          },
+        }]}
+      />,
+    );
+    expect(markup).toContain("Spoof");
+    expect(markup.match(/href="\/\?node=node-one"/g)).toHaveLength(1);
+  });
+});
+
+describe("external References", () => {
+  it("deduplicates stored sources in first-citation order and opens them safely", () => {
+    const markup = renderToStaticMarkup(
+      <ExternalReferences
+        citations={[
+          { kind: "external", ordinal: 2, startUtf16: 40, endUtf16: 40, title: "One", url: "https://one.example.test/" },
+          { kind: "external", ordinal: 1, startUtf16: 10, endUtf16: 10, title: "Two", url: "https://two.example.test/" },
+          { kind: "external", ordinal: 1, startUtf16: 30, endUtf16: 30, title: "Two", url: "https://two.example.test/" },
+        ]}
+      />,
+    );
+    expect(markup).toContain("<h3>References</h3>");
+    expect(markup.indexOf("Two")).toBeLessThan(markup.indexOf("One"));
+    expect(markup.match(/two\.example\.test/g)).toHaveLength(1);
+    expect(markup).toContain('target="_blank"');
+    expect(markup).toContain('rel="noreferrer noopener"');
+  });
+
+  it("renders no speculative section without external citations", () => {
+    expect(renderToStaticMarkup(<ExternalReferences citations={[]} />)).toBe("");
   });
 });
 

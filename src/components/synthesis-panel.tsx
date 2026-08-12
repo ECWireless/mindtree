@@ -7,7 +7,11 @@ import {
   approveSynthesisProposal,
   rejectSynthesisProposal,
 } from "@/app/actions/synthesis";
-import { SynthesisDocumentContent } from "@/components/chat-message-content";
+import {
+  ExternalReferences,
+  SynthesisDocumentContent,
+} from "@/components/chat-message-content";
+import type { ExternalCitationView } from "@/lib/citations/contracts";
 import { createSynthesisDiff } from "@/lib/synthesis/diff";
 import type {
   SynthesisDecisionSummary,
@@ -27,6 +31,12 @@ export function synthesisStatusLabel(status: SynthesisDecisionSummary["status"])
   if (status === "approved") return "Proposal approved";
   if (status === "rejected") return "Proposal rejected";
   return "Proposal superseded";
+}
+
+function externalCitations(citations: SynthesisVersion["citations"]) {
+  return citations.filter(
+    (citation): citation is ExternalCitationView => citation.kind === "external",
+  );
 }
 
 export function PublishedSynthesisArtifact({
@@ -162,6 +172,7 @@ export function SynthesisProposalArtifact({
       <div className="synthesis-document__content">
         <SynthesisDocumentContent content={proposal.content} citations={proposal.citations} />
       </div>
+      <ExternalReferences citations={externalCitations(proposal.citations)} headingLevel={4} />
       <SynthesisDiff
         id={proposal.id}
         baseContent={published?.content ?? null}
@@ -220,6 +231,7 @@ export function SynthesisDecidedArtifact({
           <div className="synthesis-document__content">
             <SynthesisDocumentContent content={decision.content} citations={decision.citations} />
           </div>
+          <ExternalReferences citations={externalCitations(decision.citations)} headingLevel={4} />
           <SynthesisDiff
             id={decision.id}
             baseContent={decision.baseContent}
