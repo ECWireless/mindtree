@@ -39,7 +39,7 @@ test("proposes, refines, rejects, and explicitly publishes a synthesis", async (
     await expect(chatDialog).toBeVisible();
     const composer = chatDialog.getByRole("textbox", { name: "Message" });
     await composer.fill("Propose a synthesis while Chat is closed");
-    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { name: "Send message" }).click();
     await expect(page.getByText("Thinking…").last()).toBeVisible();
     await page.getByRole("button", { name: "Close chat" }).click();
     await expect(chatDialog).not.toBeVisible();
@@ -87,7 +87,7 @@ test("proposes, refines, rejects, and explicitly publishes a synthesis", async (
       { exact: true },
     )).toBeVisible();
     await composer.fill("Make the proposal shorter and more direct");
-    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { name: "Send message" }).click();
 
     const refinedReview = page.getByRole("region", { name: "Proposed synthesis" });
     await expect(refinedReview.locator(".synthesis-diff__part--added")).toContainText(
@@ -128,11 +128,11 @@ test("proposes, refines, rejects, and explicitly publishes a synthesis", async (
     await rejectedArtifact.locator("summary").click();
 
     await composer.fill("Propose an approved synthesis candidate");
-    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { name: "Send message" }).click();
     const approvalReview = page.getByRole("region", { name: "Proposed synthesis" });
     await expect(approvalReview).toBeVisible();
     await composer.fill("Approve it");
-    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { name: "Send message" }).click();
     await expect(
       page.locator(".chat-panel > .sr-only[role='status']"),
     ).toHaveText("Assistant response completed.");

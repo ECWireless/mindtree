@@ -129,7 +129,7 @@ test("recovers a stale Summary through Branch Outline regeneration and approval"
     const chat = page.getByRole("dialog", { name: "Chat about Recursive QA child" });
     const composer = chat.getByRole("textbox", { name: "Message" });
     await composer.fill("Create a synthesis Summary from this stale branch");
-    await chat.getByRole("button", { name: "Send" }).click();
+    await chat.getByRole("button", { name: "Send message" }).click();
     await expect(chat.getByText(
       "Regenerate the stale Branch Outline before requesting a new Summary. You can still discuss the existing outline here.",
       { exact: true },
@@ -163,7 +163,7 @@ test("recovers a stale Summary through Branch Outline regeneration and approval"
 
     await page.getByRole("button", { name: "Chat", exact: true }).click();
     await composer.fill("Create a synthesis Summary after Branch Outline regeneration");
-    await chat.getByRole("button", { name: "Send" }).click();
+    await chat.getByRole("button", { name: "Send message" }).click();
     const proposal = page.getByRole("region", { name: "Proposed synthesis" });
     await expect(proposal).toBeVisible();
     await expect(page.locator(".chat-panel > .sr-only[role='status']"))

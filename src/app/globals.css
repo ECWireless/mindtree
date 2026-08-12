@@ -1720,38 +1720,59 @@ button:not(:disabled) {
 
 .external-references {
   display: grid;
-  gap: 0.75rem;
-  padding: 1.25rem 0;
-  border-top: 1px solid var(--color-line);
+  gap: 0.55rem;
+  padding: 1.1rem 0;
 }
 
 .external-references h2,
 .external-references h3,
 .external-references h4 {
   margin: 0;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid rgb(154 166 178 / 22%);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.2rem;
+  font-weight: 400;
+  line-height: 1.3;
 }
 
 .external-references ol {
   display: grid;
-  gap: 0.65rem;
+  gap: 0.45rem;
   margin: 0;
-  padding-left: 1.5rem;
+  padding-left: 2.25rem;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  list-style: decimal outside;
 }
 
 .external-references li {
-  padding-left: 0.2rem;
+  display: list-item;
+  padding-left: 0.25rem;
+}
+
+.external-references li::marker {
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .external-references a {
   color: var(--color-blue-bright);
   overflow-wrap: anywhere;
+  text-decoration: none;
 }
 
-.external-references li > span {
-  display: block;
-  margin-top: 0.15rem;
-  color: var(--color-muted);
-  font-size: 0.75rem;
+.external-references a:hover,
+.external-references a:focus-visible {
+  text-decoration: underline;
+}
+
+.external-references cite {
+  font-style: normal;
+}
+
+.external-references__site {
+  color: #c4ccd4;
 }
 
 .internal-node-link--changed {
@@ -2208,12 +2229,39 @@ button:not(:disabled) {
   flex: 0 0 auto;
 }
 
+.chat-composer__control,
+.chat-message__stop {
+  display: inline-flex;
+  width: 2.75rem;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 0;
+}
+
+.chat-composer__control svg,
+.chat-message__stop svg {
+  display: block;
+  flex: none;
+}
+
+.chat-composer__stop {
+  border-color: rgb(255 118 105 / 48%);
+  color: #ffaaa2;
+}
+
+.chat-composer__stop:hover {
+  border-color: rgb(255 118 105 / 75%);
+  background: rgb(167 47 42 / 20%);
+}
+
 .chat-composer__send {
   border: 1px solid var(--color-blue);
   border-radius: 999px;
   background: var(--color-blue);
   color: var(--color-ink);
-  font-weight: 750;
 }
 
 .chat-composer__send:hover:not(:disabled) {

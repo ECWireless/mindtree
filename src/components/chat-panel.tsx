@@ -50,6 +50,22 @@ function CloseIcon() {
   );
 }
 
+function SendIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m5 12 7-7 7 7M12 19V5" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor">
+      <rect x="7" y="7" width="10" height="10" rx="1" />
+    </svg>
+  );
+}
+
 function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]) {
   const orderedIds = [...current, ...incoming].map((message) => message.id);
   const byId = new Map([...current, ...incoming].map((message) => [message.id, message]));
@@ -577,7 +593,14 @@ export function ChatPanel({
                       : "Thinking…"}
                   </p>
                   {message.clientMessageId !== activeClientMessageId ? (
-                    <button type="button" onClick={() => void stop(message.clientMessageId)}>Stop response</button>
+                    <button
+                      type="button"
+                      className="icon-button chat-message__stop"
+                      aria-label="Stop response"
+                      onClick={() => void stop(message.clientMessageId)}
+                    >
+                      <StopIcon />
+                    </button>
                   ) : null}
                 </div>
               ) : null}
@@ -674,14 +697,22 @@ export function ChatPanel({
               )}
             </small>
             {activeClientMessageId ? (
-              <button type="button" className="secondary-button" onClick={() => void stop()}>Stop</button>
+              <button
+                type="button"
+                className="icon-button chat-composer__control chat-composer__stop"
+                aria-label="Stop response"
+                onClick={() => void stop()}
+              >
+                <StopIcon />
+              </button>
             ) : (
               <button
-                className="chat-composer__send"
+                className="icon-button icon-button--primary chat-composer__control chat-composer__send"
                 type="submit"
+                aria-label="Send message"
                 disabled={!generationEnabled || draft.trim().length === 0}
               >
-                Send
+                <SendIcon />
               </button>
             )}
           </div>

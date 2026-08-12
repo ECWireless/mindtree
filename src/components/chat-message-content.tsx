@@ -201,14 +201,23 @@ export function ExternalReferences({
     <section className="external-references" aria-label="External references">
       <Heading>References</Heading>
       <ol>
-        {references.map((reference) => (
-          <li key={reference.url} value={reference.ordinal}>
-            <a href={reference.url} target="_blank" rel="noreferrer noopener">
-              {reference.title}
-            </a>
-            <span>External source · may change</span>
-          </li>
-        ))}
+        {references.map((reference) => {
+          const url = new URL(reference.url);
+          const site = url.hostname.replace(/^www\./u, "");
+          const isPdf = url.pathname.toLowerCase().endsWith(".pdf");
+          return (
+            <li key={reference.url} value={reference.ordinal}>
+              <span>
+                <cite>
+                  “<a href={reference.url} target="_blank" rel="noreferrer noopener">
+                    {reference.title}
+                  </a>”
+                </cite>
+                {isPdf ? " (PDF)" : ""}. <span className="external-references__site">{site}</span>.
+              </span>
+            </li>
+          );
+        })}
       </ol>
     </section>
   );

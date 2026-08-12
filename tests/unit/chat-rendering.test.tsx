@@ -434,13 +434,34 @@ describe("external References", () => {
     );
     expect(markup).toContain("<h3>References</h3>");
     expect(markup.indexOf("Two")).toBeLessThan(markup.indexOf("One"));
-    expect(markup.match(/two\.example\.test/g)).toHaveLength(1);
+    expect(markup.match(/href="https:\/\/two\.example\.test\/"/g)).toHaveLength(1);
     expect(markup).toContain('target="_blank"');
     expect(markup).toContain('rel="noreferrer noopener"');
+    expect(markup).not.toContain("External source · may change");
+    expect(markup).toContain("“<a");
+    expect(markup).toContain("</a>”");
+    expect(markup).toContain("two.example.test");
+    expect(markup).not.toContain("(PDF)");
   });
 
   it("renders no speculative section without external citations", () => {
     expect(renderToStaticMarkup(<ExternalReferences citations={[]} />)).toBe("");
+  });
+
+  it("labels PDF references without inventing unavailable bibliographic fields", () => {
+    const markup = renderToStaticMarkup(
+      <ExternalReferences citations={[{
+        kind: "external",
+        ordinal: 1,
+        startUtf16: 10,
+        endUtf16: 10,
+        title: "rosenblatt-1957.pdf",
+        url: "https://websites.umass.edu/papers/rosenblatt-1957.pdf",
+      }]} />,
+    );
+
+    expect(markup).toContain("rosenblatt-1957.pdf</a>”</cite> (PDF). ");
+    expect(markup).toContain("websites.umass.edu</span>.");
   });
 });
 

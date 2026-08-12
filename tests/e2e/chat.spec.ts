@@ -15,6 +15,21 @@ async function expectTouchTarget(locator: import("@playwright/test").Locator) {
   expect(box?.width ?? 0).toBeGreaterThanOrEqual(44);
 }
 
+async function expectIconCentered(locator: import("@playwright/test").Locator) {
+  const offset = await locator.evaluate((button) => {
+    const icon = button.querySelector("svg");
+    if (!icon) throw new Error("Icon is unavailable.");
+    const buttonRect = button.getBoundingClientRect();
+    const iconRect = icon.getBoundingClientRect();
+    return {
+      x: (iconRect.left + iconRect.width / 2) - (buttonRect.left + buttonRect.width / 2),
+      y: (iconRect.top + iconRect.height / 2) - (buttonRect.top + buttonRect.height / 2),
+    };
+  });
+  expect(Math.abs(offset.x)).toBeLessThanOrEqual(0.5);
+  expect(Math.abs(offset.y)).toBeLessThanOrEqual(0.5);
+}
+
 async function expectHistoryScrollChaining(
   page: import("@playwright/test").Page,
   outerSelector: string | null,
@@ -123,7 +138,7 @@ test("authorizes web sources for one message and renders validated citations", a
     await expect(useWebSources).not.toBeChecked();
     await useWebSources.check();
     await composer.fill("Research a synthetic topic");
-    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { name: "Send message" }).click();
 
     await expect(useWebSources).not.toBeChecked();
     await expect(page.getByText("External sources enabled for this message.")).toBeVisible();
@@ -155,7 +170,7 @@ test("authorizes web sources for one message and renders validated citations", a
     });
     await useWebSources.check();
     await composer.fill("Retry web research before acknowledgement");
-    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { name: "Send message" }).click();
     await expect(useWebSources).not.toBeChecked();
     await expect(page.locator(".chat-message__failure").getByText(
       "External research was interrupted. Try again.",
@@ -273,7 +288,7 @@ test("attaches one explicitly supplied PDF and renders its validated destination
     await page.getByRole("textbox", { name: "Message" }).fill(
       `Give me one short supported claim from ${pdfUrl}`,
     );
-    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { name: "Send message" }).click();
 
     const citation = page.getByRole("link", {
       name: "Source 1: rosenblatt-1957.pdf. Opens in a new tab.",
@@ -311,7 +326,7 @@ test("shows a concise durable error when web research cannot verify a source", a
 
     await useWebSources.check();
     await composer.fill("Research an unverifiable synthetic source");
-    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { name: "Send message" }).click();
     await expect(page.locator(".chat-message__state").getByText(progress, { exact: true }))
       .toBeVisible();
     await expect(liveStatus).toHaveText(progress);
@@ -421,7 +436,7 @@ test("recovers acknowledged web research after the downstream stream disconnects
     await page.getByRole("checkbox", { name: "Use external sources" }).check();
     await page.getByRole("textbox", { name: "Message" })
       .fill("Research a synthetic topic");
-    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { name: "Send message" }).click();
     await expect(page.locator(".chat-message__failure").getByText(
       failure,
       { exact: true },
@@ -482,7 +497,9 @@ test("publishes cited web research with durable inline markers and References", 
     await chatDialog.getByRole("checkbox", { name: "Use external sources" }).check();
     await chatDialog.getByRole("textbox", { name: "Message" })
       .fill("Research and propose a synthesis");
-    await chatDialog.getByRole("button", { name: "Send" }).click();
+    const sendButton = chatDialog.getByRole("button", { name: "Send message" });
+    await expectIconCentered(sendButton);
+    await sendButton.click();
 
     const proposal = chatDialog.getByRole("region", { name: "Proposed synthesis" });
     await expect(proposal).toBeVisible({ timeout: 10_000 });
@@ -493,10 +510,14 @@ test("publishes cited web research with durable inline markers and References", 
     await expect(inlineCitation).toHaveAttribute("href", "https://example.test/research");
     const proposalReferences = proposal.getByRole("region", { name: "External references" });
     await expect(proposalReferences.getByRole("heading", { name: "References" })).toBeVisible();
+    const firstReference = proposalReferences.locator("li").first();
+    await expect(firstReference).toHaveJSProperty("value", 1);
+    await expect(firstReference.evaluate((element) => getComputedStyle(element).listStyleType))
+      .resolves.toBe("decimal");
     await expect(proposalReferences.getByRole("link", { name: "Synthetic research source" }))
       .toHaveAttribute("href", "https://example.test/research");
     await expect(proposalReferences.getByText("External source · may change", { exact: true }))
-      .toBeVisible();
+      .toHaveCount(0);
 
     await proposal.getByRole("button", { name: "Approve and publish" }).click();
     await expect(chatDialog).not.toBeVisible();
@@ -548,7 +569,7 @@ test("publishes a cited PDF-backed proposal with durable References", async ({
     await chatDialog.getByRole("textbox", { name: "Message" }).fill(
       `Propose a short synthesis grounded in ${pdfUrl}`,
     );
-    await chatDialog.getByRole("button", { name: "Send" }).click();
+    await chatDialog.getByRole("button", { name: "Send message" }).click();
 
     const proposal = chatDialog.getByRole("region", { name: "Proposed synthesis" });
     await expect(proposal).toBeVisible({ timeout: 10_000 });
@@ -712,7 +733,7 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
       "Next message only. Supports web research or one HTTPS PDF; sources may change.",
     );
     await page.keyboard.press("Tab");
-    const send = page.getByRole("button", { name: "Send" });
+    const send = page.getByRole("button", { name: "Send message" });
     await expect(send).toBeFocused();
     await expectTouchTarget(send);
     await send.click();
@@ -722,7 +743,7 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
     await expect(chatButton).toBeFocused();
     await chatButton.click();
     await expect(page.getByText("Thinking…").last()).toBeVisible();
-    const stop = page.getByRole("button", { name: "Stop" });
+    const stop = page.getByRole("button", { name: "Stop response", exact: true });
     await expectTouchTarget(stop);
     await stop.click();
     await expect(page.getByText("Response stopped.").last()).toBeVisible();
@@ -731,7 +752,7 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
     await expect(page.getByText("Response stopped.").last()).toBeVisible();
 
     await page.getByRole("textbox", { name: "Message" }).fill("A fresh angle");
-    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { name: "Send message" }).click();
     const freshUserMessage = page.locator(".chat-message--user").getByText("A fresh angle", { exact: true });
     await expect(freshUserMessage).toBeVisible();
     await expect(page.getByText("Assistant response completed.")).toBeAttached();
