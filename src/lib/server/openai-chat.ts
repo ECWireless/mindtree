@@ -213,7 +213,7 @@ export async function* normalizeOpenAIChatEvents(
       case "response.refusal.done":
         throw new OpenAIChatError("provider-refusal");
       case "response.incomplete":
-        throw new OpenAIChatError("response-invalid");
+        throw new OpenAIChatError("generation-failed");
       case "response.failed":
       case "error":
         throw new OpenAIChatError(pdfResearch ? "response-invalid" : "generation-failed");

@@ -1738,6 +1738,7 @@ button:not(:disabled) {
 
 .external-references ol {
   display: grid;
+  min-width: 0;
   gap: 0.45rem;
   margin: 0;
   padding-left: 2.25rem;
@@ -1748,7 +1749,9 @@ button:not(:disabled) {
 
 .external-references li {
   display: list-item;
+  min-width: 0;
   padding-left: 0.25rem;
+  overflow-wrap: anywhere;
 }
 
 .external-references li::marker {
@@ -1773,6 +1776,7 @@ button:not(:disabled) {
 
 .external-references__site {
   color: #c4ccd4;
+  overflow-wrap: anywhere;
 }
 
 .internal-node-link--changed {

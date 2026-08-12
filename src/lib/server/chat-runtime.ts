@@ -98,6 +98,12 @@ async function* streamDeterministicChatFixture(input: {
       }
       throw new OpenAIChatError("response-invalid");
     }
+    if (topic === "Research a synthetic refusal") {
+      throw new OpenAIChatError("provider-refusal");
+    }
+    if (topic === "Research a synthetic incomplete result") {
+      throw new OpenAIChatError("generation-failed");
+    }
     await new Promise((resolve) => setTimeout(resolve, 1_000));
     if (input.signal.aborted) {
       throw new OpenAIChatAbortError();
@@ -114,7 +120,9 @@ async function* streamDeterministicChatFixture(input: {
         startUtf16: content.length,
         endUtf16: content.length,
         title: input.externalPdfSource?.title ?? "Synthetic research source",
-        url: input.externalPdfSource?.url ?? "https://example.test/research",
+        url: input.externalPdfSource?.url ?? (topic.includes("synthetic long hostname")
+          ? `https://${"a".repeat(63)}.example.test/research`
+          : "https://example.test/research"),
       }],
     };
     return;

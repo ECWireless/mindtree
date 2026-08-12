@@ -18,6 +18,14 @@ describe("chat failure presentation", () => {
       "response-invalid",
       "Couldn’t verify that source. Try one webpage or HTTPS PDF.",
     ],
+    [
+      "provider-refusal",
+      "External research couldn’t answer that request. Try rephrasing it.",
+    ],
+    [
+      "generation-failed",
+      "External research returned no verified result. Try again.",
+    ],
     ["provider-timeout", "External research timed out. Try again."],
     ["stream-disconnected", "External research was interrupted. Try again."],
   ] as const)("maps an external %s failure to actionable copy", (failureCode, expected) => {

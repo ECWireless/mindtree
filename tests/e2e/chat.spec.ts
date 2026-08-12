@@ -357,6 +357,125 @@ test("shows a concise durable error when web research cannot verify a source", a
   }
 });
 
+test("presents durable refusal and incomplete research recovery", async ({
+  context,
+  page,
+}) => {
+  const seeded = await seedBrowserSession(pool);
+  const nodeId = randomUUID();
+  const cases = [
+    {
+      content: "Research a synthetic refusal",
+      failureCode: "provider-refusal",
+      message: "External research couldn’t answer that request. Try rephrasing it.",
+    },
+    {
+      content: "Research a synthetic incomplete result",
+      failureCode: "generation-failed",
+      message: "External research returned no verified result. Try again.",
+    },
+  ] as const;
+
+  try {
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values ($1, $2, null, 0, 'Research recovery states')`,
+      [nodeId, seeded.userId],
+    );
+    await installBrowserSessionCookie(context, seeded.cookie);
+    await page.goto(`/?node=${nodeId}`);
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+
+    const chatDialog = page.getByRole("dialog", {
+      name: "Chat about Research recovery states",
+    });
+    const liveStatus = chatDialog.locator(".chat-panel > .sr-only[role='status']");
+    for (const testCase of cases) {
+      await chatDialog.getByRole("checkbox", { name: "Use external sources" }).check();
+      await chatDialog.getByRole("textbox", { name: "Message" }).fill(testCase.content);
+      await chatDialog.getByRole("button", { name: "Send message" }).click();
+      await expect(chatDialog.locator(".chat-message__failure").getByText(
+        testCase.message,
+        { exact: true },
+      )).toBeVisible();
+      await expect(liveStatus).toHaveText(testCase.message);
+    }
+    await expect(chatDialog.getByText("That response didn’t finish.", { exact: true }))
+      .toHaveCount(0);
+
+    await page.reload();
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+    for (const testCase of cases) {
+      await expect(chatDialog.locator(".chat-message__failure").getByText(
+        testCase.message,
+        { exact: true },
+      )).toBeVisible();
+    }
+    await chatDialog.getByRole("button", { name: "Retry" }).last().click();
+    await expect(liveStatus).toHaveText(cases[1].message);
+    await expect(chatDialog.locator(".chat-message__failure").getByText(
+      cases[1].message,
+      { exact: true },
+    )).toBeVisible();
+
+    const failures = await pool.query<{ content: string; failure_code: string | null }>(
+      `select u.content, a.failure_code
+       from chat_messages u
+       join chat_messages a on a.user_id = u.user_id
+         and a.node_id = u.node_id
+         and a.client_message_id = u.client_message_id
+         and a.role = 'assistant'
+       where u.user_id = $1 and u.node_id = $2 and u.role = 'user'
+       order by u.sequence`,
+      [seeded.userId, nodeId],
+    );
+    expect(failures.rows).toEqual(cases.map(({ content, failureCode }) => ({
+      content,
+      failure_code: failureCode,
+    })));
+  } finally {
+    await seeded.cleanup();
+  }
+});
+
+test("contains long external reference hosts without horizontal overflow", async ({
+  context,
+  page,
+}) => {
+  const seeded = await seedBrowserSession(pool);
+  const nodeId = randomUUID();
+  const hostname = `${"a".repeat(63)}.example.test`;
+
+  try {
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values ($1, $2, null, 0, 'Long reference host')`,
+      [nodeId, seeded.userId],
+    );
+    await installBrowserSessionCookie(context, seeded.cookie);
+    await page.goto(`/?node=${nodeId}`);
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+
+    const chatDialog = page.getByRole("dialog", { name: "Chat about Long reference host" });
+    await chatDialog.getByRole("checkbox", { name: "Use external sources" }).check();
+    await chatDialog.getByRole("textbox", { name: "Message" })
+      .fill("Research and propose a synthesis for a synthetic long hostname");
+    await chatDialog.getByRole("button", { name: "Send message" }).click();
+
+    const proposal = chatDialog.getByRole("region", { name: "Proposed synthesis" });
+    await expect(proposal).toBeVisible();
+    const references = proposal.getByRole("region", { name: "External references" });
+    await expect(references.getByText(hostname, { exact: true })).toBeVisible();
+    await expect(references.evaluate((element) => ({
+      referenceOverflow: element.scrollWidth - element.clientWidth,
+      viewportOverflow:
+        document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    }))).resolves.toEqual({ referenceOverflow: 0, viewportOverflow: 0 });
+  } finally {
+    await seeded.cleanup();
+  }
+});
+
 test("recovers acknowledged web research after the downstream stream disconnects", async ({
   context,
   page,

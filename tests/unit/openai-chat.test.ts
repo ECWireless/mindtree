@@ -427,7 +427,7 @@ describe("OpenAI Responses chat stream", () => {
 
   it.each([
     ["refusal", { type: "response.refusal.done", sequence_number: 3 }, "provider-refusal"],
-    ["incomplete response", { type: "response.incomplete", sequence_number: 3 }, "response-invalid"],
+    ["incomplete response", { type: "response.incomplete", sequence_number: 3 }, "generation-failed"],
   ] as const)(
     "does not expose buffered partial research after a %s",
     async (_label, terminalEvent, failureCode) => {
@@ -725,7 +725,7 @@ describe("OpenAI Responses chat stream", () => {
   it.each([
     ["response.refusal.delta", "provider-refusal"],
     ["response.refusal.done", "provider-refusal"],
-    ["response.incomplete", "response-invalid"],
+    ["response.incomplete", "generation-failed"],
     ["response.failed", "generation-failed"],
     ["error", "generation-failed"],
   ] as const)("maps %s to %s", async (type, failureCode) => {
