@@ -30,6 +30,82 @@ describe("assistant chat Markdown", () => {
     expect(markup).not.toContain("<img");
     expect(markup).not.toContain("example.test");
   });
+
+  it("renders repeated application-owned external citation markers accessibly", () => {
+    const content = "First supported claim. Second supported claim.";
+    const markup = renderToStaticMarkup(
+      <ChatMessageContent
+        content={content}
+        citations={[
+          {
+            kind: "external",
+            ordinal: 1,
+            startUtf16: "First supported claim.".length,
+            endUtf16: "First supported claim.".length,
+            title: "Synthetic source",
+            url: "https://example.test/source",
+          },
+          {
+            kind: "external",
+            ordinal: 1,
+            startUtf16: content.length,
+            endUtf16: content.length,
+            title: "Synthetic source",
+            url: "https://example.test/source",
+          },
+        ]}
+      />,
+    );
+
+    expect(markup.match(/>\[1\]<\/a>/g)).toHaveLength(2);
+    expect(markup.match(/href="https:\/\/example\.test\/source"/g)).toHaveLength(2);
+    expect(markup).toContain('target="_blank"');
+    expect(markup).toContain('rel="noreferrer noopener"');
+    expect(markup).toContain(
+      'aria-label="Source 1: Synthetic source. Opens in a new tab."',
+    );
+  });
+
+  it("renders an external citation after a formatted Markdown span", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMessageContent
+        content="A **formatted claim** follows."
+        citations={[{
+          kind: "external",
+          ordinal: 1,
+          startUtf16: 21,
+          endUtf16: 21,
+          title: "Boundary source",
+          url: "https://example.test/boundary",
+        }]}
+      />,
+    );
+
+    expect(markup).toContain("<strong>formatted claim</strong>");
+    expect(markup).toContain("href=\"https://example.test/boundary\"");
+    expect(markup).toContain(">[1]</a> follows.");
+  });
+
+  it("does not trust a model-authored link that spoofs the citation sentinel", () => {
+    const content = "[Misleading claim](#mindtree-external-citation-0) Supported claim.";
+    const markup = renderToStaticMarkup(
+      <ChatMessageContent
+        content={content}
+        citations={[{
+          kind: "external",
+          ordinal: 1,
+          startUtf16: content.length,
+          endUtf16: content.length,
+          title: "Validated source",
+          url: "https://example.test/validated",
+        }]}
+      />,
+    );
+
+    expect(markup).toContain("Misleading claim");
+    expect(markup).not.toContain("<a>Misleading claim</a>");
+    expect(markup.match(/href="https:\/\/example\.test\/validated"/g)).toHaveLength(1);
+  });
 });
 
 describe("internal synthesis links", () => {

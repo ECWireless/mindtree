@@ -3,7 +3,7 @@ import "server-only";
 import { and, asc, desc, eq, inArray, lt, max } from "drizzle-orm";
 import { DrizzleError, DrizzleQueryError } from "drizzle-orm/errors";
 
-import { chatMessages, nodes, synthesisVersions } from "@/db/schema";
+import { chatMessages, citations, nodes, synthesisVersions } from "@/db/schema";
 import { db } from "@/db/client";
 import {
   CHAT_PAGE_SIZE,
@@ -15,6 +15,7 @@ import {
   type FailChatTurnInput,
   type RetryChatTurnInput,
 } from "@/lib/chat/contracts";
+import type { ExternalCitationView } from "@/lib/citations/contracts";
 import {
   insertPendingSynthesisProposal,
   type PendingSynthesisProposalInput,
@@ -50,7 +51,10 @@ export class ChatServiceError extends Error {
   }
 }
 
-function toChatMessage(row: typeof chatMessages.$inferSelect): ChatMessage {
+function toChatMessage(
+  row: typeof chatMessages.$inferSelect,
+  externalCitations: ExternalCitationView[] = [],
+): ChatMessage {
   return {
     id: row.id,
     nodeId: row.nodeId,
@@ -67,7 +71,53 @@ function toChatMessage(row: typeof chatMessages.$inferSelect): ChatMessage {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     completedAt: row.completedAt?.toISOString() ?? null,
+    citations: externalCitations,
   };
+}
+
+async function getExternalCitationViewsForMessages(
+  tx: ChatTransaction,
+  userId: string,
+  messageIds: readonly string[],
+) {
+  const byMessageId = new Map<string, ExternalCitationView[]>();
+  if (messageIds.length === 0) return byMessageId;
+  const rows = await tx
+    .select({
+      assistantMessageId: citations.assistantMessageId,
+      ordinal: citations.ordinal,
+      startUtf16: citations.startUtf16,
+      endUtf16: citations.endUtf16,
+      title: citations.externalTitle,
+      url: citations.externalUrl,
+    })
+    .from(citations)
+    .where(and(
+      eq(citations.userId, userId),
+      eq(citations.kind, "external"),
+      inArray(citations.assistantMessageId, [...messageIds]),
+    ))
+    .orderBy(
+      asc(citations.assistantMessageId),
+      asc(citations.startUtf16),
+      asc(citations.ordinal),
+    );
+  for (const row of rows) {
+    if (row.assistantMessageId === null || row.title === null || row.url === null) {
+      throw new ChatServiceError("unavailable");
+    }
+    const views = byMessageId.get(row.assistantMessageId) ?? [];
+    views.push({
+      kind: "external",
+      ordinal: row.ordinal,
+      startUtf16: row.startUtf16,
+      endUtf16: row.endUtf16,
+      title: row.title,
+      url: row.url,
+    });
+    byMessageId.set(row.assistantMessageId, views);
+  }
+  return byMessageId;
 }
 
 function encodeCursor(cursor: ChatCursor) {
@@ -267,9 +317,16 @@ export async function getChatMessagesForUser(
       const hasMore = rows.length > limit;
       const pageRows = rows.slice(0, limit);
       const oldest = pageRows.at(-1);
+      const citationViews = await getExternalCitationViewsForMessages(
+        tx,
+        userId,
+        pageRows.filter(({ role }) => role === "assistant").map(({ id }) => id),
+      );
 
       return {
-        messages: pageRows.reverse().map(toChatMessage),
+        messages: pageRows.reverse().map((row) =>
+          toChatMessage(row, citationViews.get(row.id) ?? [])
+        ),
         nextCursor:
           hasMore && oldest
             ? encodeCursor({ sequence: oldest.sequence })
@@ -330,7 +387,15 @@ export async function getChatTurnForUser(userId: string, input: RetryChatTurnInp
         )
         .orderBy(asc(chatMessages.sequence));
       if (messages.length !== 2) throw new ChatServiceError("turn-not-found");
-      return messages.map(toChatMessage);
+      const assistantMessage = messages.find(({ role }) => role === "assistant");
+      const citationViews = await getExternalCitationViewsForMessages(
+        tx,
+        userId,
+        assistantMessage ? [assistantMessage.id] : [],
+      );
+      return messages.map((row) =>
+        toChatMessage(row, citationViews.get(row.id) ?? [])
+      );
     });
   } catch (error) {
     throw sanitizeChatServiceError(error);
@@ -384,9 +449,17 @@ export async function createChatTurnForUser(
           returnedAssistant = claimed;
           generationClaimed = true;
         }
+        const citationViews = await getExternalCitationViewsForMessages(
+          tx,
+          userId,
+          returnedAssistant.status === "completed" ? [returnedAssistant.id] : [],
+        );
         return {
           userMessage: toChatMessage(userMessage),
-          assistantMessage: toChatMessage(returnedAssistant),
+          assistantMessage: toChatMessage(
+            returnedAssistant,
+            citationViews.get(returnedAssistant.id) ?? [],
+          ),
           replayed: true,
           generationClaimed,
         };
@@ -759,7 +832,10 @@ export function startChatTurnForUser(userId: string, input: RetryChatTurnInput) 
 export async function completeChatTurnForUser(
   userId: string,
   input: RetryChatTurnInput,
-  options: { proposal?: PendingSynthesisProposalInput } = {},
+  options: {
+    proposal?: PendingSynthesisProposalInput;
+    externalCitations?: ExternalCitationView[];
+  } = {},
 ) {
   try {
     return await db.transaction(async (tx) => {
@@ -785,6 +861,45 @@ export async function completeChatTurnForUser(
         (assistantMessage.status !== "pending" && assistantMessage.status !== "streaming") ||
         assistantMessage.content.length === 0
       ) {
+        throw new ChatServiceError("retry-unavailable");
+      }
+
+      const externalCitations = options.externalCitations ?? [];
+      if (externalCitations.length > 0) {
+        if (!userMessage.webSearchAuthorized) {
+          throw new ChatServiceError("retry-unavailable");
+        }
+        const seenOccurrences = new Set<string>();
+        for (const citation of externalCitations) {
+          const occurrence = `${citation.ordinal}:${citation.startUtf16}:${citation.endUtf16}`;
+          if (
+            citation.kind !== "external" ||
+            !Number.isSafeInteger(citation.ordinal) ||
+            citation.ordinal < 1 ||
+            citation.ordinal > 32 ||
+            !Number.isSafeInteger(citation.startUtf16) ||
+            citation.startUtf16 < 0 ||
+            citation.endUtf16 !== citation.startUtf16 ||
+            citation.endUtf16 > assistantMessage.content.length ||
+            seenOccurrences.has(occurrence)
+          ) {
+            throw new ChatServiceError("retry-unavailable");
+          }
+          seenOccurrences.add(occurrence);
+        }
+        await tx.insert(citations).values(externalCitations.map((citation) => ({
+          userId,
+          ownerNodeId: input.nodeId,
+          assistantMessageId: assistantMessage.id,
+          synthesisVersionId: null,
+          kind: "external" as const,
+          ordinal: citation.ordinal,
+          startUtf16: citation.startUtf16,
+          endUtf16: citation.endUtf16,
+          externalUrl: citation.url,
+          externalTitle: citation.title,
+        })));
+      } else if (userMessage.webSearchAuthorized) {
         throw new ChatServiceError("retry-unavailable");
       }
 
@@ -818,7 +933,7 @@ export async function completeChatTurnForUser(
         })
         .where(eq(chatMessages.id, assistantMessage.id))
         .returning();
-      return toChatMessage(completed);
+      return toChatMessage(completed, externalCitations);
     });
   } catch (error) {
     throw sanitizeChatServiceError(error);

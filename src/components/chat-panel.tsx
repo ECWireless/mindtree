@@ -75,6 +75,7 @@ function createOptimisticTurn(
   nodeId: string,
   clientMessageId: string,
   content: string,
+  webSearchAuthorized: boolean,
 ) {
   const createdAt = new Date().toISOString();
   const base = {
@@ -95,6 +96,7 @@ function createOptimisticTurn(
       role: "user",
       status: "completed",
       content,
+      webSearchAuthorized,
       proposalRequested: false,
       refinementProposalId: null,
       completedAt: createdAt,
@@ -124,12 +126,15 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const router = useRouter();
   const composerHelpId = `chat-composer-help-${nodeId}`;
+  const webDisclosureId = `chat-web-disclosure-${nodeId}`;
   const [messages, setMessages] = useState(initialPage.messages);
   const [cursor, setCursor] = useState(initialPage.nextCursor);
   const [draft, setDraft] = useState("");
+  const [useWebSources, setUseWebSources] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [activeClientMessageId, setActiveClientMessageId] = useState<string | null>(null);
+  const [researchingClientMessageId, setResearchingClientMessageId] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [loadedDecisions, setLoadedDecisions] = useState<SynthesisDecisionSummary[]>([]);
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -143,7 +148,10 @@ export function ChatPanel({
   const paginationHeight = useRef<number | null>(null);
   const previousPendingProposalId = useRef(synthesisWorkspace.pending?.id ?? null);
   const decisionFocus = useRef<"approve" | "reject" | null>(null);
-  const unacknowledgedTurns = useRef(new Map<string, { content: string }>());
+  const unacknowledgedTurns = useRef(new Map<
+    string,
+    { content: string; webSearchAuthorized: boolean }
+  >());
 
   useEffect(() => () => abortController.current?.abort(), []);
   useEffect(() => {
@@ -287,6 +295,9 @@ export function ChatPanel({
                 ? { ...message, content: `${message.content}${streamEvent.content}`, status: "streaming" }
                 : message,
             ));
+          } else if (streamEvent.type === "research-status") {
+            setResearchingClientMessageId(clientMessageId);
+            setAnnouncement("Researching web sources.");
           } else {
             terminalReceived = true;
             setMessages((current) => replaceMessage(current, streamEvent.assistantMessage));
@@ -337,6 +348,7 @@ export function ChatPanel({
     } finally {
       abortController.current = null;
       setActiveClientMessageId(null);
+      setResearchingClientMessageId(null);
     }
   }
 
@@ -345,17 +357,19 @@ export function ChatPanel({
     const content = draft.trim();
     if (!content || activeClientMessageId || !generationEnabled) return;
     const clientMessageId = crypto.randomUUID();
-    unacknowledgedTurns.current.set(clientMessageId, { content });
+    const webSearchAuthorized = useWebSources;
+    unacknowledgedTurns.current.set(clientMessageId, { content, webSearchAuthorized });
     setMessages((current) => mergeMessages(
       current,
-      createOptimisticTurn(nodeId, clientMessageId, content),
+      createOptimisticTurn(nodeId, clientMessageId, content, webSearchAuthorized),
     ));
     setDraft("");
+    setUseWebSources(false);
     void streamTurn({
       nodeId,
       clientMessageId,
       content,
-      webSearchAuthorized: false,
+      webSearchAuthorized,
     });
   }
 
@@ -380,7 +394,7 @@ export function ChatPanel({
           nodeId,
           clientMessageId: message.clientMessageId,
           content: unacknowledged.content,
-          webSearchAuthorized: false,
+          webSearchAuthorized: unacknowledged.webSearchAuthorized,
         }
       : { nodeId, clientMessageId: message.clientMessageId, retry: true });
   }
@@ -496,10 +510,26 @@ export function ChatPanel({
           <article className={`chat-message chat-message--${message.role}`} key={message.id}>
             <p className="chat-message__label">{message.role === "user" ? "You" : "Assistant"}</p>
             <div className="chat-message__content">
-              {message.role === "assistant" ? <ChatMessageContent content={message.content} /> : <p>{message.content}</p>}
+              {message.role === "assistant" ? (
+                <ChatMessageContent
+                  content={message.content}
+                  citations={message.citations ?? []}
+                />
+              ) : (
+                <>
+                  <p>{message.content}</p>
+                  {message.webSearchAuthorized ? (
+                    <p className="chat-message__source-note">Web sources enabled for this message.</p>
+                  ) : null}
+                </>
+              )}
               {message.role === "assistant" && (message.status === "pending" || message.status === "streaming") ? (
                 <div className="chat-message__failure">
-                  <p className="chat-message__state">Thinking…</p>
+                  <p className="chat-message__state">
+                    {message.clientMessageId === researchingClientMessageId
+                      ? "Researching web sources…"
+                      : "Thinking…"}
+                  </p>
                   {message.clientMessageId !== activeClientMessageId ? (
                     <button type="button" onClick={() => void stop(message.clientMessageId)}>Stop response</button>
                   ) : null}
@@ -567,6 +597,16 @@ export function ChatPanel({
             onKeyDown={keyDown}
           />
           <div className="chat-composer__actions">
+            <label className="chat-composer__web-toggle">
+              <input
+                type="checkbox"
+                checked={useWebSources}
+                disabled={!generationEnabled || Boolean(activeClientMessageId)}
+                aria-describedby={webDisclosureId}
+                onChange={(event) => setUseWebSources(event.target.checked)}
+              />
+              <span>Use web sources</span>
+            </label>
             <small aria-hidden="true">
               {generationEnabled ? (
                 <>
@@ -589,6 +629,9 @@ export function ChatPanel({
               </button>
             )}
           </div>
+          <p className="chat-composer__web-disclosure" id={webDisclosureId}>
+            Applies to the next message only. External sources may change.
+          </p>
         </form>
         </div>
         <p className="sr-only" aria-live="polite" role="status">{announcement}</p>

@@ -109,15 +109,34 @@ describe("chat authorization boundaries", () => {
         webSearchAuthorized: true,
       }),
     }));
-    expect(webRequest.status).toBe(400);
-    await expect(webRequest.json()).resolves.toEqual({
-      message: "Web sources are not available yet.",
+    expect(webRequest.status).toBe(200);
+    const webEvents = (await webRequest.text()).trim().split("\n").map((line) =>
+      JSON.parse(line) as { type: string; status?: string; assistantMessage?: { citations?: unknown[] } }
+    );
+    expect(webEvents.some(({ type, status }) =>
+      type === "research-status" && status === "searching"
+    )).toBe(true);
+    expect(webEvents.at(-1)).toMatchObject({
+      type: "completed",
+      assistantMessage: {
+        citations: [{
+          kind: "external",
+          ordinal: 1,
+          title: "Synthetic research source",
+          url: "https://example.test/research",
+        }],
+      },
     });
-    const rejectedWebRows = await pool.query<{ count: number }>(
+    const persistedWebRows = await pool.query<{ count: number }>(
       `select count(*)::int as count from chat_messages where user_id = $1 and node_id = $2`,
       [userId, ownedNodeId],
     );
-    expect(rejectedWebRows.rows[0]?.count).toBe(0);
+    expect(persistedWebRows.rows[0]?.count).toBe(2);
+    const persistedCitations = await pool.query<{ count: number }>(
+      `select count(*)::int as count from citations where user_id = $1 and owner_node_id = $2`,
+      [userId, ownedNodeId],
+    );
+    expect(persistedCitations.rows[0]?.count).toBe(1);
 
     foreignUserId = `foreign-chat-boundary-${randomUUID()}`;
     const foreignNodeId = randomUUID();

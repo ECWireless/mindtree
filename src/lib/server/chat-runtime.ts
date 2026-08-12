@@ -59,6 +59,7 @@ async function* streamDeterministicChatFixture(input: {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   phase: OpenAIChatPhase;
   signal: AbortSignal;
+  webSearchAuthorized: boolean;
 }): AsyncGenerator<NormalizedOpenAIChatEvent> {
   const topic = [...input.messages]
     .reverse()
@@ -81,6 +82,30 @@ async function* streamDeterministicChatFixture(input: {
     : 80;
 
   yield { type: "started", providerResponseId };
+  if (input.phase === "conversation" && input.webSearchAuthorized) {
+    const content = `Researching **${topic}** found a current synthetic source.`;
+    yield { type: "research-status", status: "searching" };
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    if (input.signal.aborted) {
+      throw new OpenAIChatAbortError();
+    }
+    yield { type: "text-delta", content };
+    yield {
+      type: "completed",
+      providerResponseId,
+      synthesisRequested,
+      proposal: null,
+      externalCitations: [{
+        kind: "external",
+        ordinal: 1,
+        startUtf16: content.length,
+        endUtf16: content.length,
+        title: "Synthetic research source",
+        url: "https://example.test/research",
+      }],
+    };
+    return;
+  }
   if (input.phase === "conversation" && synthesisRequested) {
     yield {
       type: "completed",
@@ -115,10 +140,14 @@ export function streamChatResponse(input: {
   phase: OpenAIChatPhase;
   safetyIdentifier: string;
   signal: AbortSignal;
+  webSearchAuthorized?: boolean;
 }): AsyncGenerator<NormalizedOpenAIChatEvent> {
   const mode = getChatGenerationMode();
   if (mode === "deterministic-fixture") {
-    return streamDeterministicChatFixture(input);
+    return streamDeterministicChatFixture({
+      ...input,
+      webSearchAuthorized: input.webSearchAuthorized === true,
+    });
   }
   if (mode === "openai") {
     const environment = getServerEnvironment(["openai"]);
@@ -128,6 +157,7 @@ export function streamChatResponse(input: {
       phase: input.phase,
       safetyIdentifier: input.safetyIdentifier,
       signal: input.signal,
+      webSearchAuthorized: input.webSearchAuthorized,
     });
   }
   throw new Error("chat generation is unavailable");

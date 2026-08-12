@@ -11,17 +11,169 @@ import {
 } from "react";
 import ReactMarkdown from "react-markdown";
 
-import type { InternalCitationView } from "@/lib/citations/contracts";
+import type {
+  ExternalCitationView,
+  InternalCitationView,
+} from "@/lib/citations/contracts";
 
 const allowedElements = ["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "em", "strong", "a"];
 
-export function ChatMessageContent({ content }: { content: string }) {
+const externalCitationPrefix = "#mindtree-external-citation-";
+const externalCitationProperty = "data-mindtree-external-citation";
+
+function createExternalCitationNode(
+  occurrenceIndex: number,
+  citation: ExternalCitationView,
+): MarkdownAstNode {
+  return {
+    type: "link",
+    url: `${externalCitationPrefix}${occurrenceIndex}`,
+    data: {
+      hProperties: { [externalCitationProperty]: occurrenceIndex },
+    },
+    children: [{ type: "text", value: `[${citation.ordinal}]` }],
+  };
+}
+
+function createExternalCitationPlugin(
+  content: string,
+  citations: readonly ExternalCitationView[],
+) {
+  const occurrences = [...citations]
+    .map((citation, index) => ({ citation, index }))
+    .sort((left, right) =>
+      left.citation.startUtf16 - right.citation.startUtf16 ||
+      left.citation.ordinal - right.citation.ordinal ||
+      left.index - right.index
+    );
+
+  return function externalCitationPlugin() {
+    return (tree: unknown) => {
+      const inserted = new Set<number>();
+      const visit = (node: MarkdownAstNode) => {
+        if (
+          node.type === "link" ||
+          node.type === "linkReference" ||
+          node.type === "image" ||
+          node.type === "imageReference" ||
+          node.type === "code" ||
+          node.type === "inlineCode" ||
+          !node.children
+        ) {
+          return;
+        }
+
+        for (let index = 0; index < node.children.length; index += 1) {
+          const child = node.children[index]!;
+          const start = child.position?.start?.offset;
+          const end = child.position?.end?.offset;
+          if (
+            child.type !== "text" ||
+            typeof child.value !== "string" ||
+            typeof start !== "number" ||
+            typeof end !== "number" ||
+            content.slice(start, end) !== child.value
+          ) {
+            visit(child);
+            if (typeof end === "number") {
+              const atChildEnd = occurrences.filter(({ citation, index: occurrenceIndex }) =>
+                !inserted.has(occurrenceIndex) &&
+                citation.startUtf16 === citation.endUtf16 &&
+                citation.startUtf16 === end
+              );
+              if (atChildEnd.length > 0) {
+                const links = atChildEnd.map((occurrence) => {
+                  inserted.add(occurrence.index);
+                  return createExternalCitationNode(
+                    occurrence.index,
+                    occurrence.citation,
+                  );
+                });
+                node.children.splice(index + 1, 0, ...links);
+                index += links.length;
+              }
+            }
+            continue;
+          }
+
+          const withinTextNode = occurrences.filter(({ citation, index: occurrenceIndex }) =>
+            !inserted.has(occurrenceIndex) &&
+            citation.startUtf16 === citation.endUtf16 &&
+            citation.startUtf16 >= start &&
+            citation.startUtf16 <= end &&
+            (citation.startUtf16 > start || start === 0)
+          );
+          if (withinTextNode.length === 0) continue;
+
+          const replacement: MarkdownAstNode[] = [];
+          let cursor = 0;
+          for (const occurrence of withinTextNode) {
+            const insertion = occurrence.citation.startUtf16 - start;
+            if (insertion > cursor) {
+              replacement.push({ type: "text", value: child.value.slice(cursor, insertion) });
+            }
+            replacement.push(createExternalCitationNode(
+              occurrence.index,
+              occurrence.citation,
+            ));
+            inserted.add(occurrence.index);
+            cursor = insertion;
+          }
+          if (cursor < child.value.length) {
+            replacement.push({ type: "text", value: child.value.slice(cursor) });
+          }
+          node.children.splice(index, 1, ...replacement);
+          index += replacement.length - 1;
+        }
+      };
+
+      visit(tree as MarkdownAstNode);
+    };
+  };
+}
+
+export function ChatMessageContent({
+  content,
+  citations = [],
+}: {
+  content: string;
+  citations?: readonly ExternalCitationView[];
+}) {
   return (
     <ReactMarkdown
       allowedElements={allowedElements}
+      remarkPlugins={citations.length > 0
+        ? [createExternalCitationPlugin(content, citations)]
+        : []}
       skipHtml
       components={{
-        a: ({ children }) => <>{children}</>,
+        a: ({ children, href, node }) => {
+          const trustedOccurrence = node?.properties?.[externalCitationProperty];
+          const occurrenceIndex = typeof trustedOccurrence === "number"
+            ? trustedOccurrence
+            : Number.NaN;
+          const citation = Number.isInteger(occurrenceIndex)
+            ? citations[occurrenceIndex]
+            : undefined;
+          if (
+            !citation ||
+            href !== `${externalCitationPrefix}${occurrenceIndex}`
+          ) {
+            return <>{children}</>;
+          }
+          return (
+            <a
+              className="external-citation-link"
+              href={citation.url}
+              target="_blank"
+              rel="noreferrer noopener"
+              aria-label={`Source ${citation.ordinal}: ${citation.title}. Opens in a new tab.`}
+              title={citation.title}
+            >
+              {children}
+            </a>
+          );
+        },
       }}
     >
       {content}
@@ -35,6 +187,9 @@ type MarkdownAstNode = {
   type?: string;
   value?: string;
   url?: string;
+  data?: {
+    hProperties?: Record<string, string | number>;
+  };
   children?: MarkdownAstNode[];
   position?: {
     start?: { offset?: number };

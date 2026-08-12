@@ -403,12 +403,15 @@ export const citations = pgTable(
       columns: [table.userId, table.ownerNodeId, table.assistantMessageId],
       foreignColumns: [chatMessages.userId, chatMessages.nodeId, chatMessages.id],
     }).onDelete("cascade"),
-    uniqueIndex("citations_synthesis_ordinal_unique")
+    uniqueIndex("citations_synthesis_internal_ordinal_unique")
       .on(table.synthesisVersionId, table.ordinal)
-      .where(sql`${table.synthesisVersionId} is not null`),
-    uniqueIndex("citations_message_ordinal_unique")
-      .on(table.assistantMessageId, table.ordinal)
-      .where(sql`${table.assistantMessageId} is not null`),
+      .where(sql`${table.synthesisVersionId} is not null and ${table.kind} = 'internal'`),
+    uniqueIndex("citations_synthesis_external_occurrence_unique")
+      .on(table.synthesisVersionId, table.ordinal, table.startUtf16, table.endUtf16)
+      .where(sql`${table.synthesisVersionId} is not null and ${table.kind} = 'external'`),
+    uniqueIndex("citations_message_external_occurrence_unique")
+      .on(table.assistantMessageId, table.ordinal, table.startUtf16, table.endUtf16)
+      .where(sql`${table.assistantMessageId} is not null and ${table.kind} = 'external'`),
     index("citations_live_target_idx").on(table.userId, table.liveTargetNodeId),
     check(
       "citations_owner_check",
@@ -424,9 +427,17 @@ export const citations = pgTable(
     ),
     check(
       "citations_location_check",
-      sql`${table.startUtf16} >= 0
+      sql`(
+        ${table.kind} = 'internal'
+        and ${table.startUtf16} >= 0
         and ${table.endUtf16} > ${table.startUtf16}
-        and ${table.endUtf16} <= 64000`,
+        and ${table.endUtf16} <= 64000
+      ) or (
+        ${table.kind} = 'external'
+        and ${table.startUtf16} >= 0
+        and ${table.endUtf16} = ${table.startUtf16}
+        and ${table.endUtf16} <= 64000
+      )`,
     ),
     check(
       "citations_kind_fields_check",
@@ -459,6 +470,15 @@ export const citations = pgTable(
         and ${table.targetDeletedAt} is null
         and ${table.externalUrl} is not null
         and ${table.externalTitle} is not null
+      )`,
+    ),
+    check(
+      "citations_external_bounds_check",
+      sql`${table.kind} <> 'external' or (
+        char_length(${table.externalUrl}) between 1 and 2048
+        and ${table.externalUrl} ~ '^https?://'
+        and char_length(${table.externalTitle}) between 1 and 500
+        and btrim(${table.externalTitle}) <> ''
       )`,
     ),
   ],

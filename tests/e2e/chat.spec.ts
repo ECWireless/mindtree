@@ -103,6 +103,90 @@ test("requires authentication before chat request validation", async ({ request 
   await expect(response.json()).resolves.toEqual({ message: "Authentication is required." });
 });
 
+test("authorizes web sources for one message and renders validated citations", async ({ context, page }) => {
+  const seeded = await seedBrowserSession(pool);
+  const nodeId = randomUUID();
+
+  try {
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values ($1, $2, null, 0, 'Web research node')`,
+      [nodeId, seeded.userId],
+    );
+    await installBrowserSessionCookie(context, seeded.cookie);
+    await page.goto(`/?node=${nodeId}`);
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+
+    const useWebSources = page.getByRole("checkbox", { name: "Use web sources" });
+    const composer = page.getByRole("textbox", { name: "Message" });
+    await expectTouchTarget(page.locator(".chat-composer__web-toggle"));
+    await expect(useWebSources).not.toBeChecked();
+    await useWebSources.check();
+    await composer.fill("Research a synthetic topic");
+    await page.getByRole("button", { name: "Send" }).click();
+
+    await expect(useWebSources).not.toBeChecked();
+    await expect(page.getByText("Web sources enabled for this message.")).toBeVisible();
+    const liveStatus = page.locator(".chat-panel > .sr-only[role='status']");
+    await expect(page.getByText("Researching web sources…")).toBeVisible();
+    await expect(liveStatus).toHaveText("Researching web sources.");
+    await expect(liveStatus)
+      .toHaveText("Assistant response completed.");
+    const citation = page.getByRole("link", {
+      name: "Source 1: Synthetic research source. Opens in a new tab.",
+    });
+    await expect(citation).toHaveText("[1]");
+    await expect(citation).toHaveAttribute("href", "https://example.test/research");
+    await expect(citation).toHaveAttribute("target", "_blank");
+
+    let disconnected = false;
+    await page.route("**/api/chat", async (route) => {
+      if (route.request().method() === "POST" && !disconnected) {
+        disconnected = true;
+        await route.abort();
+        return;
+      }
+      await route.continue();
+    });
+    await useWebSources.check();
+    await composer.fill("Retry web research before acknowledgement");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(useWebSources).not.toBeChecked();
+    await expect(page.getByText("That response didn’t finish.")).toBeVisible();
+    await page.unroute("**/api/chat");
+    await page.getByRole("button", { name: "Retry" }).last().click();
+    await expect(page.getByText("Researching web sources…")).toBeVisible();
+    await expect(liveStatus).toHaveText("Assistant response completed.");
+
+    const persistedRetryId = randomUUID();
+    await pool.query(
+      `insert into chat_messages
+        (user_id, node_id, client_message_id, sequence, role, status, content,
+         web_search_authorized, completed_at, failure_code)
+       values
+        ($1, $2, $3, 4, 'user', 'completed', 'Retry persisted web research', true, now(), null),
+        ($1, $2, $3, 5, 'assistant', 'failed', '', false, null, 'generation-failed')`,
+      [seeded.userId, nodeId, persistedRetryId],
+    );
+    await page.reload();
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+    await expect(useWebSources).not.toBeChecked();
+    await page.getByRole("button", { name: "Retry" }).last().click();
+    await expect(page.getByText("Researching web sources…")).toBeVisible();
+    await expect(liveStatus).toHaveText("Assistant response completed.");
+    await expect(citation).toHaveCount(3);
+
+    await page.reload();
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+    await expect(page.getByText("Web sources enabled for this message.")).toHaveCount(3);
+    await expect(page.getByRole("link", {
+      name: "Source 1: Synthetic research source. Opens in a new tab.",
+    })).toHaveCount(3);
+  } finally {
+    await pool.query(`delete from "user" where id = $1`, [seeded.userId]);
+  }
+});
+
 test("loads, retries, streams, persists, and isolates per-node conversation history", async ({ context, page }, testInfo) => {
   const seeded = await seedBrowserSession(pool);
   const firstNodeId = randomUUID();
@@ -223,6 +307,12 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
 
     await composer.fill("Keep this fixture response open");
     await composer.focus();
+    await page.keyboard.press("Tab");
+    const webToggle = page.getByRole("checkbox", { name: "Use web sources" });
+    await expect(webToggle).toBeFocused();
+    await expect(webToggle).toHaveAccessibleDescription(
+      "Applies to the next message only. External sources may change.",
+    );
     await page.keyboard.press("Tab");
     const send = page.getByRole("button", { name: "Send" });
     await expect(send).toBeFocused();

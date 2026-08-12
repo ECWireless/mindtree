@@ -11,6 +11,7 @@ import { z } from "zod";
 import type {
   ResponseInput,
   ResponseCreateParamsStreaming,
+  ResponseOutputText,
   ResponseStreamEvent,
 } from "openai/resources/responses/responses";
 
@@ -20,6 +21,8 @@ import {
   OPENAI_CHAT_MODEL,
   OPENAI_CHAT_REASONING,
   OPENAI_CHAT_TIMEOUT_MS,
+  OPENAI_RESEARCH_INSTRUCTIONS,
+  OPENAI_RESEARCH_REASONING,
   OPENAI_SYNTHESIS_INSTRUCTIONS,
   OPENAI_SYNTHESIS_REASONING,
 } from "@/lib/ai/openai-profiles";
@@ -27,6 +30,12 @@ import {
   MAX_ASSISTANT_MESSAGE_LENGTH,
   type ChatFailureCode,
 } from "@/lib/chat/contracts";
+import type { ExternalCitationView } from "@/lib/citations/contracts";
+import {
+  ExternalCitationValidationError,
+  normalizeExternalCitationAnnotations,
+  type ProviderUrlCitation,
+} from "@/lib/server/external-citations";
 import {
   synthesisProposalDraftSchema,
   type SynthesisProposalDraft,
@@ -48,12 +57,14 @@ const synthesisProposalTool = zodResponsesFunction({
 
 export type NormalizedOpenAIChatEvent =
   | { type: "started"; providerResponseId: string }
+  | { type: "research-status"; status: "searching" }
   | { type: "text-delta"; content: string }
   | {
       type: "completed";
       providerResponseId: string;
       synthesisRequested: boolean;
       proposal: SynthesisProposalDraft | null;
+      externalCitations?: ExternalCitationView[];
     };
 
 export type OpenAIChatPhase = "conversation" | "synthesis";
@@ -81,14 +92,22 @@ function requireResponseId(value: unknown) {
 
 export async function* normalizeOpenAIChatEvents(
   events: AsyncIterable<ResponseStreamEvent>,
-  options: { phase?: OpenAIChatPhase } = {},
+  options: { phase?: OpenAIChatPhase; webSearchAuthorized?: boolean } = {},
 ): AsyncGenerator<NormalizedOpenAIChatEvent> {
   const phase = options.phase ?? "conversation";
+  const webSearchAuthorized = options.webSearchAuthorized === true;
+  if (phase === "synthesis" && webSearchAuthorized) {
+    throw new OpenAIChatError("response-invalid");
+  }
   let providerResponseId: string | null = null;
   let completedResponseId: string | null = null;
   let visibleCharacterCount = 0;
+  let bufferedResearchText = "";
+  let researchStatusEmitted = false;
+  let completedWebSearchCalls = 0;
   let synthesisRequested = false;
   let proposal: SynthesisProposalDraft | null = null;
+  let externalCitations: ExternalCitationView[] = [];
 
   for await (const event of events) {
     if (completedResponseId !== null) {
@@ -115,7 +134,33 @@ export async function* normalizeOpenAIChatEvents(
             throw new OpenAIChatError("response-invalid");
           }
           visibleCharacterCount += event.delta.length;
-          yield { type: "text-delta", content: event.delta };
+          if (webSearchAuthorized) {
+            bufferedResearchText += event.delta;
+          } else {
+            yield { type: "text-delta", content: event.delta };
+          }
+        }
+        break;
+      }
+      case "response.web_search_call.in_progress":
+      case "response.web_search_call.searching": {
+        if (!webSearchAuthorized || providerResponseId === null) {
+          throw new OpenAIChatError("response-invalid");
+        }
+        if (!researchStatusEmitted) {
+          researchStatusEmitted = true;
+          yield { type: "research-status", status: "searching" };
+        }
+        break;
+      }
+      case "response.web_search_call.completed": {
+        if (!webSearchAuthorized || providerResponseId === null) {
+          throw new OpenAIChatError("response-invalid");
+        }
+        completedWebSearchCalls += 1;
+        if (!researchStatusEmitted) {
+          researchStatusEmitted = true;
+          yield { type: "research-status", status: "searching" };
         }
         break;
       }
@@ -138,6 +183,8 @@ export async function* normalizeOpenAIChatEvents(
           throw new OpenAIChatError("response-invalid");
         }
         const functionCalls = [];
+        const outputTextParts: ResponseOutputText[] = [];
+        let responseWebSearchCalls = 0;
         for (const item of event.response.output) {
           if (item.type === "function_call") {
             if (item.status !== "completed") {
@@ -151,9 +198,53 @@ export async function* normalizeOpenAIChatEvents(
             if (item.content.some((content) => content.type === "refusal")) {
               throw new OpenAIChatError("provider-refusal");
             }
+            outputTextParts.push(...item.content.filter((content) =>
+              content.type === "output_text"
+            ));
+          } else if (item.type === "web_search_call") {
+            if (!webSearchAuthorized || item.status !== "completed") {
+              throw new OpenAIChatError("response-invalid");
+            }
+            responseWebSearchCalls += 1;
           } else if (item.type !== "reasoning") {
             throw new OpenAIChatError("response-invalid");
           }
+        }
+        if (webSearchAuthorized) {
+          if (
+            responseWebSearchCalls < 1 ||
+            completedWebSearchCalls < 1 ||
+            outputTextParts.length !== 1
+          ) {
+            throw new OpenAIChatError("response-invalid");
+          }
+          const outputText = outputTextParts[0]!;
+          if (outputText.text !== bufferedResearchText) {
+            throw new OpenAIChatError("response-invalid");
+          }
+          if (outputText.annotations.some((annotation) =>
+            annotation.type !== "url_citation"
+          )) {
+            throw new OpenAIChatError("response-invalid");
+          }
+          try {
+            const normalized = normalizeExternalCitationAnnotations({
+              content: outputText.text,
+              annotations: outputText.annotations as ProviderUrlCitation[],
+            });
+            if (normalized.content.length > MAX_ASSISTANT_MESSAGE_LENGTH) {
+              throw new ExternalCitationValidationError("content-too-long");
+            }
+            bufferedResearchText = normalized.content;
+            externalCitations = normalized.citations;
+          } catch (error) {
+            if (error instanceof ExternalCitationValidationError) {
+              throw new OpenAIChatError("response-invalid");
+            }
+            throw error;
+          }
+        } else if (responseWebSearchCalls > 0) {
+          throw new OpenAIChatError("response-invalid");
         }
         if (functionCalls.length > 1) {
           throw new OpenAIChatError("response-invalid");
@@ -189,6 +280,10 @@ export async function* normalizeOpenAIChatEvents(
   if (completedResponseId === null || providerResponseId === null) {
     throw new OpenAIChatError("response-invalid");
   }
+  if (webSearchAuthorized) {
+    visibleCharacterCount = bufferedResearchText.length;
+    yield { type: "text-delta", content: bufferedResearchText };
+  }
   if (visibleCharacterCount === 0) {
     if (phase === "conversation" && synthesisRequested) {
       // The synthesis profile will provide the visible response after this
@@ -208,30 +303,46 @@ export async function* normalizeOpenAIChatEvents(
   ) {
     throw new OpenAIChatError("response-invalid");
   }
-  yield { type: "completed", providerResponseId, synthesisRequested, proposal };
+  yield {
+    type: "completed",
+    providerResponseId,
+    synthesisRequested,
+    proposal,
+    ...(webSearchAuthorized ? { externalCitations } : {}),
+  };
 }
 
 export function createOpenAIChatRequest(input: {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   phase?: OpenAIChatPhase;
   safetyIdentifier: string;
+  webSearchAuthorized?: boolean;
 }): ResponseCreateParamsStreaming {
   const phase = input.phase ?? "conversation";
   const synthesis = phase === "synthesis";
+  const research = !synthesis && input.webSearchAuthorized === true;
   return {
     model: OPENAI_CHAT_MODEL,
     instructions: synthesis
       ? OPENAI_SYNTHESIS_INSTRUCTIONS
-      : OPENAI_CHAT_INSTRUCTIONS,
+      : research
+        ? OPENAI_RESEARCH_INSTRUCTIONS
+        : OPENAI_CHAT_INSTRUCTIONS,
     input: input.messages satisfies ResponseInput,
     max_output_tokens: OPENAI_CHAT_MAX_OUTPUT_TOKENS,
     reasoning: synthesis
       ? OPENAI_SYNTHESIS_REASONING
-      : OPENAI_CHAT_REASONING,
+      : research
+        ? OPENAI_RESEARCH_REASONING
+        : OPENAI_CHAT_REASONING,
     safety_identifier: input.safetyIdentifier,
     store: false,
     stream: true,
-    tools: synthesis ? [synthesisProposalTool] : [synthesisRequestTool],
+    tools: synthesis
+      ? [synthesisProposalTool]
+      : research
+        ? [{ type: "web_search" as const }, synthesisRequestTool]
+        : [synthesisRequestTool],
     tool_choice: synthesis ? "required" : "auto",
     parallel_tool_calls: false,
   };
@@ -281,6 +392,7 @@ export async function* streamOpenAIChat(input: {
   phase?: OpenAIChatPhase;
   safetyIdentifier: string;
   signal: AbortSignal;
+  webSearchAuthorized?: boolean;
 }): AsyncGenerator<NormalizedOpenAIChatEvent> {
   const client = new OpenAI({
     apiKey: input.apiKey,
@@ -306,6 +418,7 @@ export async function* streamOpenAIChat(input: {
     );
     for await (const event of normalizeOpenAIChatEvents(stream, {
       phase: input.phase,
+      webSearchAuthorized: input.webSearchAuthorized,
     })) {
       if (input.signal.aborted) {
         throw new OpenAIChatAbortError();

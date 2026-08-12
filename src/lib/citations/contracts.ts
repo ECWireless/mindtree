@@ -1,7 +1,11 @@
 import { z } from "zod";
 
 export const MAX_INTERNAL_CITATIONS = 32;
+export const MAX_EXTERNAL_CITATION_SOURCES = 32;
+export const MAX_EXTERNAL_CITATION_OCCURRENCES = 64;
 export const MAX_CITED_TEXT_LENGTH = 160;
+export const MAX_EXTERNAL_CITATION_TITLE_LENGTH = 500;
+export const MAX_EXTERNAL_CITATION_URL_LENGTH = 2_048;
 
 const unsupportedInternalLinkPhrase = /[\t\r\n*_\\`]/;
 const markdownBlockPrefix = /^(?: {0,3}(?:#{1,6}|[-+>]|\d{1,9}[.)])[ \t]| {4}|~{3})/;
@@ -41,4 +45,13 @@ export type InternalCitationView = {
         changedRevision: boolean;
       }
     | { state: "unavailable"; deletedAt: string };
+};
+
+export type ExternalCitationView = {
+  kind: "external";
+  ordinal: number;
+  startUtf16: number;
+  endUtf16: number;
+  title: string;
+  url: string;
 };

@@ -1025,6 +1025,101 @@ describe("persistent chat ledger", () => {
     ).rejects.toEqual(new ChatServiceError("turn-conflict"));
   });
 
+  it("persists and reloads validated external citation occurrences only for web turns", async () => {
+    const userId = await insertUser();
+    const nodeId = await insertNode(userId);
+    const clientMessageId = randomUUID();
+    await createChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId,
+      content: "Research a synthetic topic.",
+      webSearchAuthorized: true,
+    }, { claimAssistant: true });
+    await recordChatTurnContextForUser(userId, {
+      nodeId,
+      clientMessageId,
+      model: "gpt-5.6-sol",
+      contextFingerprint: "a".repeat(64),
+    });
+    const content = "First claim. Second claim.";
+    await persistChatTurnContentPrefixForUser(userId, {
+      nodeId,
+      clientMessageId,
+      contentPrefix: content,
+    });
+    const completed = await completeChatTurnForUser(userId, {
+      nodeId,
+      clientMessageId,
+    }, {
+      externalCitations: [
+        {
+          kind: "external",
+          ordinal: 1,
+          startUtf16: "First claim.".length,
+          endUtf16: "First claim.".length,
+          title: "Synthetic source",
+          url: "https://example.test/source",
+        },
+        {
+          kind: "external",
+          ordinal: 1,
+          startUtf16: content.length,
+          endUtf16: content.length,
+          title: "Synthetic source",
+          url: "https://example.test/source",
+        },
+      ],
+    });
+
+    expect(completed.citations).toHaveLength(2);
+    const turn = await getChatTurnForUser(userId, { nodeId, clientMessageId });
+    expect(turn.find(({ role }) => role === "assistant")?.citations).toEqual(
+      completed.citations,
+    );
+    const page = await getChatMessagesForUser(userId, { nodeId });
+    expect(page.messages.find(({ role }) => role === "assistant")?.citations).toEqual(
+      completed.citations,
+    );
+  });
+
+  it("rejects completed web turns without citations and citations on no-web turns", async () => {
+    for (const webSearchAuthorized of [true, false]) {
+      const userId = await insertUser();
+      const nodeId = await insertNode(userId);
+      const clientMessageId = randomUUID();
+      await createChatTurnForUser(userId, {
+        nodeId,
+        clientMessageId,
+        content: "Synthetic request.",
+        webSearchAuthorized,
+      }, { claimAssistant: true });
+      await recordChatTurnContextForUser(userId, {
+        nodeId,
+        clientMessageId,
+        model: "gpt-5.6-sol",
+        contextFingerprint: "b".repeat(64),
+      });
+      await persistChatTurnContentPrefixForUser(userId, {
+        nodeId,
+        clientMessageId,
+        contentPrefix: "Synthetic response.",
+      });
+
+      await expect(completeChatTurnForUser(userId, { nodeId, clientMessageId }, {
+        externalCitations: webSearchAuthorized
+          ? []
+          : [{
+              kind: "external",
+              ordinal: 1,
+              startUtf16: 19,
+              endUtf16: 19,
+              title: "Synthetic source",
+              url: "https://example.test/source",
+            }],
+      })).rejects.toEqual(new ChatServiceError("retry-unavailable"));
+    }
+  });
+
   it("does not distinguish foreign nodes from missing nodes", async () => {
     const userId = await insertUser();
     const otherUserId = await insertUser();

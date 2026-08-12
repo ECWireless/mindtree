@@ -149,9 +149,6 @@ export async function POST(request: Request) {
       if (!parsed.success) {
         return jsonError(400, "The message is invalid.");
       }
-      if (parsed.data.webSearchAuthorized) {
-        return jsonError(400, "Web sources are not available yet.");
-      }
       input = {
         nodeId: parsed.data.nodeId,
         clientMessageId: parsed.data.clientMessageId,
@@ -166,6 +163,7 @@ export async function POST(request: Request) {
     return await terminalResponse(userId, turn) ??
       jsonError(409, "The message is already in progress.");
   }
+  const webSearchAuthorized = turn.userMessage.webSearchAuthorized;
 
   let preparedContext;
   try {
@@ -254,6 +252,7 @@ export async function POST(request: Request) {
             phase,
             safetyIdentifier,
             signal: generationSignal,
+            webSearchAuthorized: phase === "conversation" && webSearchAuthorized,
           })) {
             if (generationSignal.aborted) {
               throw new OpenAIChatAbortError();
@@ -269,6 +268,11 @@ export async function POST(request: Request) {
               }
             } else if (providerEvent.type === "text-delta") {
               await emitVisibleContent(providerEvent.content);
+            } else if (providerEvent.type === "research-status") {
+              controller.enqueue(event({
+                type: "research-status",
+                status: providerEvent.status,
+              }));
             } else {
               completedEvent = providerEvent;
             }
@@ -308,6 +312,11 @@ export async function POST(request: Request) {
           const conversationResult = await consumeProviderPhase("conversation");
           synthesisRouted = conversationResult.synthesisRequested;
           finalResult = conversationResult;
+          if (webSearchAuthorized && synthesisRouted) {
+            // Commit unit 1 persists cited research safely. A later reviewed unit
+            // will pass validated external evidence into synthesis generation.
+            synthesisRouted = false;
+          }
           if (synthesisRouted) {
             await recordChatTurnSynthesisIntentForUser(userId, {
               ...input,
@@ -339,6 +348,7 @@ export async function POST(request: Request) {
           input,
           finalResult.proposal
             ? {
+                externalCitations: finalResult.externalCitations ?? [],
                 proposal: {
                   baseVersionId:
                     preparedContext.snapshot.node.publishedSynthesis.state === "published"
@@ -354,7 +364,7 @@ export async function POST(request: Request) {
                   refinementProposalId,
                 },
               }
-            : undefined,
+            : { externalCitations: finalResult.externalCitations ?? [] },
         );
         controller.enqueue(event({
           type: "completed",
