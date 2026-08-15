@@ -17,6 +17,9 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.mts",
+    "test:eval:fixtures": "vitest run --config vitest.evaluation.config.mts",
+    "test:eval:live": "node --env-file-if-exists=.env node_modules/vitest/vitest.mjs run --config vitest.live-evaluation.config.mts",
+    "test:eval:score": "vitest run --config vitest.score-evaluation.config.mts",
     "test:watch": "vitest",
     "test:e2e": "playwright test"
   },
