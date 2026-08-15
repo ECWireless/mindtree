@@ -8,6 +8,7 @@ import {
   fingerprintBranchOutlineGeneration,
   fingerprintBranchOutlineSourceState,
 } from "../../src/lib/server/branch-outline-fingerprint";
+import { prepareBranchOutlineContextForUser } from "../../src/lib/server/branch-outline-context";
 import {
   claimBranchOutlineGenerationForUser,
   completeBranchOutlineGenerationForUser,
@@ -155,19 +156,21 @@ function childInput(input: {
   } satisfies BranchOutlineInputSnapshot;
 }
 
-function claimInput(input: {
+async function claimInput(userId: string, input: {
   nodeId: string;
   nodeTitle: string;
   baseSynthesisVersionId: string | null;
   inputs?: BranchOutlineInputSnapshot[];
 }) {
+  const prepared = await prepareBranchOutlineContextForUser(userId, input.nodeId);
   const inputs = input.inputs ?? [];
   return {
     nodeId: input.nodeId,
     clientRequestId: randomUUID(),
     baseSynthesisVersionId: input.baseSynthesisVersionId,
     inputs,
-    inputFingerprint: fingerprintBranchOutlineGeneration({
+    inputFingerprint: prepared.claim.inputFingerprint,
+    sourceStateFingerprint: fingerprintBranchOutlineGeneration({
       nodeId: input.nodeId,
       nodeTitle: input.nodeTitle,
       nodeArchivedAt: null,
@@ -185,7 +188,10 @@ async function installOutline(input: {
   inputs?: BranchOutlineInputSnapshot[];
   content: string;
 }) {
-  const claim = await claimBranchOutlineGenerationForUser(input.userId, claimInput(input));
+  const claim = await claimBranchOutlineGenerationForUser(
+    input.userId,
+    await claimInput(input.userId, input),
+  );
   const completed = await completeBranchOutlineGenerationForUser(input.userId, {
     nodeId: input.nodeId,
     generationId: claim.generation.id,
@@ -248,7 +254,7 @@ describe("Branch Outline cross-service races", () => {
       content: "Pending target Summary",
       status: "pending",
     });
-    const claim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const claim = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId,
       nodeTitle: "Target approval race",
       baseSynthesisVersionId: baseSummaryId,
@@ -322,7 +328,7 @@ describe("Branch Outline cross-service races", () => {
       title: "Child approval race",
       sourceSynthesisVersionId: childSummaryId,
     });
-    const claim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const claim = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId: parentId,
       nodeTitle: "Parent approval race",
       baseSynthesisVersionId: parentSummaryId,
@@ -419,7 +425,7 @@ describe("Branch Outline cross-service races", () => {
       });
       const replacementClaim = await claimBranchOutlineGenerationForUser(
         userId,
-        claimInput({
+        await claimInput(userId, {
           nodeId: parentId,
           nodeTitle: `${kind} source parent`,
           baseSynthesisVersionId: parentSummaryId,

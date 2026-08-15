@@ -124,27 +124,37 @@ describe("synthesis decision Server Actions", () => {
 
     const approvedNodeId = await insertNode(userId, 0);
     const approvedProposalId = await insertPendingProposal(userId, approvedNodeId);
-    expect(await approveSynthesisProposal({
-      nodeId: approvedNodeId,
-      proposalId: approvedProposalId,
-    })).toEqual({
+    const approvedResult = {
       ok: true,
       nodeId: approvedNodeId,
       proposalId: approvedProposalId,
       status: "approved",
-    });
+    } as const;
+    expect(await approveSynthesisProposal({
+      nodeId: approvedNodeId,
+      proposalId: approvedProposalId,
+    })).toEqual(approvedResult);
+    expect(await approveSynthesisProposal({
+      nodeId: approvedNodeId,
+      proposalId: approvedProposalId,
+    })).toEqual(approvedResult);
 
     const rejectedNodeId = await insertNode(userId, 1);
     const rejectedProposalId = await insertPendingProposal(userId, rejectedNodeId);
-    expect(await rejectSynthesisProposal({
-      nodeId: rejectedNodeId,
-      proposalId: rejectedProposalId,
-    })).toEqual({
+    const rejectedResult = {
       ok: true,
       nodeId: rejectedNodeId,
       proposalId: rejectedProposalId,
       status: "rejected",
-    });
+    } as const;
+    expect(await rejectSynthesisProposal({
+      nodeId: rejectedNodeId,
+      proposalId: rejectedProposalId,
+    })).toEqual(rejectedResult);
+    expect(await rejectSynthesisProposal({
+      nodeId: rejectedNodeId,
+      proposalId: rejectedProposalId,
+    })).toEqual(rejectedResult);
   });
 
   it("returns the same bounded result for missing and foreign proposals", async () => {

@@ -177,6 +177,14 @@ export async function deleteNode(input: NodeLifecycleInput): Promise<NodeActionR
       recoveryNodeId: deleted.recoveryNodeId,
     };
   } catch (error) {
+    if (error instanceof NodeMutationError && error.reason === "node-not-found") {
+      revalidatePath("/");
+      return {
+        ok: true,
+        nodeId: parsed.data.id,
+        recoveryNodeId: null,
+      };
+    }
     return mutationFailure(error);
   }
 }

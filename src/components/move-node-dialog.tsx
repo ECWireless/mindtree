@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useRouter } from "next/navigation";
 
 import { moveNode } from "@/app/actions/nodes";
 import {
@@ -90,6 +91,7 @@ export function MoveNodeDialog({
   onMoved: (parentId: string | null) => void;
   returnFocusRef: RefObject<HTMLButtonElement | null>;
 }) {
+  const router = useRouter();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const upOneLevelButtonRef = useRef<HTMLButtonElement>(null);
@@ -196,7 +198,10 @@ export function MoveNodeDialog({
       }
       onMoved(destination.parentId);
     } catch {
-      setError("MindTree couldn’t move that thought. Please try again.");
+      setError(
+        "MindTree couldn’t confirm the move. The tree was refreshed; check the thought’s current location before trying again.",
+      );
+      router.refresh();
     } finally {
       setPending(false);
     }

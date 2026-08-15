@@ -18,6 +18,7 @@ import {
   createExternalCitationEvidence,
   ExternalCitationValidationError,
   mergeExternalCitationEvidence,
+  toExternalResearchEvidence,
   type ExternalCitationEvidence,
 } from "@/lib/server/external-citations";
 import {
@@ -26,6 +27,12 @@ import {
 } from "@/lib/server/internal-citations";
 import { getRelatedNodesForUser } from "@/lib/server/related-node-retrieval";
 import { fingerprintSynthesisOutlineInput } from "@/lib/server/synthesis-input-fingerprint";
+import {
+  ContextBudgetError,
+  fitContextArtifacts,
+  truncateContextArtifact,
+  type ContextBudgetArtifact,
+} from "@/lib/server/context-budget";
 
 export const MAX_CHAT_CONTEXT_MESSAGES = 24;
 export const MAX_CHAT_CONTEXT_CHARACTERS = 48_000;
@@ -34,6 +41,7 @@ export const MAX_CHAT_BREADCRUMB_CHARACTERS = 8_000;
 export const MAX_CHAT_METADATA_CHARACTERS = 31_000;
 export const MAX_RELATED_EVIDENCE_CHARACTERS = 10_000;
 export const MAX_RELATED_EVIDENCE_ITEM_CHARACTERS = 2_500;
+export const MAX_EXTERNAL_RESEARCH_CONTEXT_CHARACTERS = 16_000;
 
 export type ChatContextMessage = {
   id: string;
@@ -43,7 +51,7 @@ export type ChatContextMessage = {
 };
 
 export type ChatContextSnapshot = {
-  version: 7;
+  version: 8;
   node: {
     id: string;
     title: string;
@@ -98,55 +106,51 @@ export function fingerprintChatContextInput(
     .digest("hex");
 }
 
-function truncateContextArtifact(content: string, limit: number) {
-  const marker = "\n\n[Context truncated]";
-  if (content.length <= limit) return content;
-  if (limit <= marker.length) return marker.slice(0, limit);
-  return `${content.slice(0, limit - marker.length)}${marker}`;
-}
-
 function contextMetadata(
   snapshot: ChatContextSnapshot,
-  artifactLimit: number,
   includeRelatedEvidence: boolean,
+  artifactContent: ReadonlyMap<string, string>,
+  truncatedArtifactIds: ReadonlySet<string>,
 ) {
-  const boundArtifact = <T extends { content: string }>(artifact: T): T => ({
-    ...artifact,
-    content: truncateContextArtifact(artifact.content, artifactLimit),
+  const boundedArtifact = (id: string) => ({
+    content: artifactContent.get(id)!,
+    truncated: truncatedArtifactIds.has(id),
   });
   const metadata = {
     node: {
       title: snapshot.node.title,
       breadcrumb: {
-        items: snapshot.node.breadcrumb.items.map(({ title }) => title),
+        items: snapshot.node.breadcrumb.items.map((_, index) => ({
+          title: boundedArtifact(`breadcrumb-${index}`),
+        })),
         hasOmittedAncestors: snapshot.node.breadcrumb.hasOmittedAncestors,
       },
     },
     publishedSynthesis: snapshot.node.publishedSynthesis.state === "published"
-      ? boundArtifact({
+      ? {
           state: snapshot.node.publishedSynthesis.state,
-          content: snapshot.node.publishedSynthesis.content,
-        })
+          content: boundedArtifact("published-synthesis"),
+        }
       : snapshot.node.publishedSynthesis,
     refinementProposal: snapshot.node.refinementProposal.state === "pending"
-      ? boundArtifact({
+      ? {
           state: snapshot.node.refinementProposal.state,
-          content: snapshot.node.refinementProposal.content,
-        })
+          content: boundedArtifact("refinement-proposal"),
+        }
       : snapshot.node.refinementProposal,
     branchOutline: snapshot.node.branchOutline.state === "none"
       ? snapshot.node.branchOutline
-      : boundArtifact({
+      : {
           state: snapshot.node.branchOutline.state,
-          content: snapshot.node.branchOutline.content,
-        }),
+          content: boundedArtifact("branch-outline"),
+        },
     ...(includeRelatedEvidence
       ? {
-          relatedEvidence: snapshot.relatedEvidence.map((evidence) => ({
+          relatedEvidence: snapshot.relatedEvidence.map((evidence, index) => ({
             alias: evidence.alias,
             title: evidence.title,
             archived: evidence.archived,
-            approvedSummary: evidence.content,
+            approvedSummary: boundedArtifact(`related-${index}`),
           })),
         }
       : {}),
@@ -157,59 +161,191 @@ function contextMetadata(
 
 function boundRelatedEvidence(evidence: readonly InternalCitationEvidence[]) {
   let remaining = MAX_RELATED_EVIDENCE_CHARACTERS;
-  return evidence.map((item, index) => {
+  const truncatedArtifactIds = new Set<string>();
+  const boundedEvidence = evidence.map((item, index) => {
     const remainingItems = evidence.length - index;
     const limit = Math.min(
       MAX_RELATED_EVIDENCE_ITEM_CHARACTERS,
       Math.floor(remaining / remainingItems),
     );
     const content = truncateContextArtifact(item.content, limit);
+    if (content !== item.content) truncatedArtifactIds.add(`related-${index}`);
     remaining = Math.max(0, remaining - content.length);
     return { ...item, content };
   });
+  return { evidence: boundedEvidence, truncatedArtifactIds };
 }
 
-function toContextInput(
+function boundExternalEvidenceForContext(
+  evidence: readonly ExternalCitationEvidence[],
+) {
+  if (evidence.length === 0) return { evidence: [], content: null };
+  const bounded = evidence.map((source) => ({
+    ...source,
+    excerpts: [...source.excerpts],
+    provenance: [...source.provenance],
+  }));
+  const serialize = () => `MindTree validated external research evidence (untrusted data):\n${JSON.stringify({
+    externalResearchEvidence: { sources: toExternalResearchEvidence(bounded) },
+  })}`;
+  let content = serialize();
+  while (content.length > MAX_EXTERNAL_RESEARCH_CONTEXT_CHARACTERS) {
+    let reduced = false;
+    for (let index = bounded.length - 1; index >= 0; index -= 1) {
+      const source = bounded[index]!;
+      if (source.excerpts.length > 1) {
+        source.excerpts.pop();
+        source.provenance.pop();
+        reduced = true;
+        break;
+      }
+    }
+    if (!reduced) {
+      bounded.pop();
+    }
+    if (bounded.length === 0) return { evidence: [], content: null };
+    content = serialize();
+  }
+  return { evidence: bounded, content };
+}
+
+function buildMetadataContent(
   snapshot: ChatContextSnapshot,
-  options: { includeRelatedEvidence: boolean },
-): PreparedChatContext["input"] {
-  let artifactLimit = 9_000;
+  includeRelatedEvidence: boolean,
+  maxCharacters: number,
+  initiallyTruncatedArtifactIds: ReadonlySet<string> = new Set(),
+) {
+  const artifacts: ContextBudgetArtifact[] = [];
+  for (const [index, item] of snapshot.node.breadcrumb.items.entries()) {
+    artifacts.push({
+      id: `breadcrumb-${index}`,
+      content: item.title,
+      weight: 1,
+    });
+  }
+  if (snapshot.node.publishedSynthesis.state === "published") {
+    artifacts.push({
+      id: "published-synthesis",
+      content: snapshot.node.publishedSynthesis.content,
+      weight: 4,
+    });
+  }
+  if (snapshot.node.refinementProposal.state === "pending") {
+    artifacts.push({
+      id: "refinement-proposal",
+      content: snapshot.node.refinementProposal.content,
+      weight: 4,
+    });
+  }
+  if (snapshot.node.branchOutline.state !== "none") {
+    artifacts.push({
+      id: "branch-outline",
+      content: snapshot.node.branchOutline.content,
+      weight: 3,
+    });
+  }
+  if (includeRelatedEvidence) {
+    for (const [index, evidence] of snapshot.relatedEvidence.entries()) {
+      artifacts.push({
+        id: `related-${index}`,
+        content: evidence.content,
+        weight: 1,
+      });
+    }
+  }
+  try {
+    return fitContextArtifacts({
+      artifacts,
+      maxCharacters,
+      render: (artifactContent, truncatedArtifactIds) =>
+        contextMetadata(
+          snapshot,
+          includeRelatedEvidence,
+          artifactContent,
+          new Set([...initiallyTruncatedArtifactIds, ...truncatedArtifactIds]),
+        ),
+    }).content;
+  } catch (error) {
+    if (error instanceof ContextBudgetError) {
+      throw new Error("chat context metadata is too large");
+    }
+    throw error;
+  }
+}
+
+function assembleContextInput(
+  snapshot: ChatContextSnapshot,
+  options: {
+    includeRelatedEvidence: boolean;
+    externalEvidence?: readonly ExternalCitationEvidence[];
+  },
+) {
+  const boundedRelated = options.includeRelatedEvidence
+    ? boundRelatedEvidence(snapshot.relatedEvidence)
+    : { evidence: snapshot.relatedEvidence, truncatedArtifactIds: new Set<string>() };
   const boundedSnapshot = options.includeRelatedEvidence
-    ? { ...snapshot, relatedEvidence: boundRelatedEvidence(snapshot.relatedEvidence) }
+    ? { ...snapshot, relatedEvidence: boundedRelated.evidence }
     : snapshot;
-  let metadataContent = contextMetadata(
-    boundedSnapshot,
-    artifactLimit,
-    options.includeRelatedEvidence,
+  const currentRequest = boundedSnapshot.messages.at(-1);
+  if (!currentRequest || currentRequest.role !== "user") {
+    throw new Error("chat context current request is unavailable");
+  }
+  const external = options.externalEvidence
+    ? boundExternalEvidenceForContext(options.externalEvidence)
+    : { evidence: [] as ExternalCitationEvidence[], content: null };
+  const mandatoryCharacterCount = currentRequest.content.length +
+    (external.content?.length ?? 0);
+  const metadataLimit = Math.min(
+    MAX_CHAT_METADATA_CHARACTERS,
+    MAX_CHAT_CONTEXT_CHARACTERS - mandatoryCharacterCount,
   );
-  while (metadataContent.length > MAX_CHAT_METADATA_CHARACTERS && artifactLimit > 0) {
-    const excess = metadataContent.length - MAX_CHAT_METADATA_CHARACTERS;
-    artifactLimit = Math.max(0, artifactLimit - Math.max(256, Math.ceil(excess / 3)));
-    metadataContent = contextMetadata(
-      boundedSnapshot,
-      artifactLimit,
-      options.includeRelatedEvidence,
-    );
-  }
-  if (metadataContent.length > MAX_CHAT_METADATA_CHARACTERS) {
-    throw new Error("chat context metadata is too large");
-  }
+  const metadataContent = buildMetadataContent(
+    boundedSnapshot,
+    options.includeRelatedEvidence,
+    metadataLimit,
+    boundedRelated.truncatedArtifactIds,
+  );
 
   const newestFirst: ChatContextMessage[] = [];
-  let characterCount = metadataContent.length;
-  for (const message of [...snapshot.messages].reverse()) {
+  let characterCount = metadataContent.length + mandatoryCharacterCount;
+  for (const message of boundedSnapshot.messages.slice(0, -1).reverse()) {
     if (characterCount + message.content.length > MAX_CHAT_CONTEXT_CHARACTERS) break;
     newestFirst.push(message);
     characterCount += message.content.length;
   }
 
-  return [
+  const input: PreparedChatContext["input"] = [
     {
       role: "user",
       content: metadataContent,
     },
     ...newestFirst.reverse().map(({ role, content }) => ({ role, content })),
+    ...(external.content ? [{ role: "user" as const, content: external.content }] : []),
+    { role: currentRequest.role, content: currentRequest.content },
   ];
+  return { input, externalEvidence: external.evidence };
+}
+
+export function buildChatModelInput(
+  snapshot: ChatContextSnapshot,
+  options: { includeRelatedEvidence: boolean },
+): PreparedChatContext["input"] {
+  return assembleContextInput(snapshot, options).input;
+}
+
+export function buildSynthesisInputWithExternalEvidence(
+  snapshot: ChatContextSnapshot,
+  evidence: readonly ExternalCitationEvidence[],
+) {
+  const prepared = assembleContextInput(snapshot, {
+    includeRelatedEvidence: true,
+    externalEvidence: evidence,
+  });
+  return {
+    input: prepared.input,
+    fingerprint: fingerprintChatContextInput(snapshot.node.id, prepared.input),
+    externalEvidence: prepared.externalEvidence,
+  };
 }
 
 export async function prepareChatContextForUser(
@@ -547,7 +683,7 @@ export async function prepareChatContextForUser(
     const externalEvidence = mergeExternalCitationEvidence(evidenceGroups);
 
     return {
-      version: 7,
+      version: 8,
       node: {
         id: target.id,
         title: target.title,
@@ -576,8 +712,8 @@ export async function prepareChatContextForUser(
     }),
   );
   const snapshot: ChatContextSnapshot = { ...baseSnapshot, relatedEvidence: relatedInputs };
-  const providerInput = toContextInput(snapshot, { includeRelatedEvidence: false });
-  const synthesisInput = toContextInput(snapshot, { includeRelatedEvidence: true });
+  const providerInput = buildChatModelInput(snapshot, { includeRelatedEvidence: false });
+  const synthesisInput = buildChatModelInput(snapshot, { includeRelatedEvidence: true });
   return {
     snapshot,
     fingerprint: fingerprintChatContextInput(snapshot.node.id, providerInput),

@@ -8,6 +8,7 @@ import {
   fingerprintBranchOutlineGeneration,
   fingerprintBranchOutlineSourceState,
 } from "../../src/lib/server/branch-outline-fingerprint";
+import { prepareBranchOutlineContextForUser } from "../../src/lib/server/branch-outline-context";
 import {
   BranchOutlineServiceError,
   BRANCH_OUTLINE_GENERATION_LEASE_MS,
@@ -130,7 +131,7 @@ async function insertPendingSummaryProposal(
   return proposalId;
 }
 
-function claimInput(input: {
+async function claimInput(userId: string, input: {
   nodeId: string;
   nodeTitle: string;
   nodeArchivedAt?: string | null;
@@ -138,6 +139,7 @@ function claimInput(input: {
   baseSynthesisVersionId?: string | null;
   inputs?: BranchOutlineInputSnapshot[];
 }) {
+  const prepared = await prepareBranchOutlineContextForUser(userId, input.nodeId);
   const inputs = input.inputs ?? [];
   const baseSynthesisVersionId = input.baseSynthesisVersionId ?? null;
   return {
@@ -145,7 +147,8 @@ function claimInput(input: {
     clientRequestId: input.clientRequestId ?? randomUUID(),
     baseSynthesisVersionId,
     inputs,
-    inputFingerprint: fingerprintBranchOutlineGeneration({
+    inputFingerprint: prepared.claim.inputFingerprint,
+    sourceStateFingerprint: fingerprintBranchOutlineGeneration({
       nodeId: input.nodeId,
       nodeTitle: input.nodeTitle,
       nodeArchivedAt: input.nodeArchivedAt ?? null,
@@ -204,7 +207,7 @@ describe("Branch Outline persistence", () => {
   it("claims a replay-safe generation and rejects conflicting or competing claims", async () => {
     const userId = await insertUser();
     const nodeId = await insertNode(userId, "Replay node");
-    const input = claimInput({ nodeId, nodeTitle: "Replay node" });
+    const input = await claimInput(userId, { nodeId, nodeTitle: "Replay node" });
 
     const claimed = await claimBranchOutlineGenerationForUser(userId, input);
     expect(claimed).toMatchObject({
@@ -220,7 +223,7 @@ describe("Branch Outline persistence", () => {
       ...input,
       inputFingerprint: "c".repeat(64),
     })).rejects.toEqual(new BranchOutlineServiceError("request-conflict"));
-    await expect(claimBranchOutlineGenerationForUser(userId, claimInput({
+    await expect(claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId,
       nodeTitle: "Replay node",
     })))
@@ -231,7 +234,7 @@ describe("Branch Outline persistence", () => {
     const userId = await insertUser();
     const nodeId = await insertNode(userId, "Completion node");
     const summaryId = await insertApprovedSummary(userId, nodeId, "Approved Summary");
-    const claim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const claim = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId,
       nodeTitle: "Completion node",
       baseSynthesisVersionId: summaryId,
@@ -322,7 +325,7 @@ describe("Branch Outline persistence", () => {
     );
     const initialParentClaim = await claimBranchOutlineGenerationForUser(
       userId,
-      claimInput({
+      await claimInput(userId, {
         nodeId: parentId,
         nodeTitle: "Recursive parent",
         baseSynthesisVersionId: parentSummaryId,
@@ -340,7 +343,7 @@ describe("Branch Outline persistence", () => {
     });
     expect(initialParent.installed).toBe(true);
 
-    const firstChildClaim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const firstChildClaim = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId: childId,
       nodeTitle: "Recursive child",
       baseSynthesisVersionId: childSummaryId,
@@ -385,7 +388,7 @@ describe("Branch Outline persistence", () => {
       sourceBranchOutlineVersionId: firstChild.generation.id,
       outlineState: "current",
     });
-    const parentClaim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const parentClaim = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId: parentId,
       nodeTitle: "Recursive parent",
       baseSynthesisVersionId: parentSummaryId,
@@ -406,7 +409,7 @@ describe("Branch Outline persistence", () => {
       [parentId],
     );
 
-    const replacementClaim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const replacementClaim = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId: childId,
       nodeTitle: "Recursive child",
       baseSynthesisVersionId: parentInput.sourceSynthesisVersionId,
@@ -469,7 +472,7 @@ describe("Branch Outline persistence", () => {
     const parentSummaryId = await insertApprovedSummary(userId, parentId, "Parent Summary");
     const childSummaryId = await insertApprovedSummary(userId, childId, "Child Summary");
 
-    const firstChildClaim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const firstChildClaim = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId: childId,
       nodeTitle: "Racing child",
       baseSynthesisVersionId: childSummaryId,
@@ -486,7 +489,7 @@ describe("Branch Outline persistence", () => {
       sourceBranchOutlineVersionId: firstChildClaim.generation.id,
       outlineState: "current",
     });
-    const firstParentClaim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const firstParentClaim = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId: parentId,
       nodeTitle: "Racing parent",
       baseSynthesisVersionId: parentSummaryId,
@@ -507,13 +510,13 @@ describe("Branch Outline persistence", () => {
       [parentId],
     );
 
-    const pendingParent = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const pendingParent = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId: parentId,
       nodeTitle: "Racing parent",
       baseSynthesisVersionId: parentSummaryId,
       inputs: [firstParentInput],
     }));
-    const replacementChild = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const replacementChild = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId: childId,
       nodeTitle: "Racing child",
       baseSynthesisVersionId: childSummaryId,
@@ -556,7 +559,7 @@ describe("Branch Outline persistence", () => {
     const parentSummaryId = await insertApprovedSummary(userId, parentId, "Parent Summary");
     const childSummaryId = await insertApprovedSummary(userId, childId, "Child Summary");
 
-    const firstChildClaim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const firstChildClaim = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId: childId,
       nodeTitle: "Contended child",
       baseSynthesisVersionId: childSummaryId,
@@ -573,7 +576,7 @@ describe("Branch Outline persistence", () => {
       sourceBranchOutlineVersionId: firstChildClaim.generation.id,
       outlineState: "current",
     });
-    const firstParentClaim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const firstParentClaim = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId: parentId,
       nodeTitle: "Contended parent",
       baseSynthesisVersionId: parentSummaryId,
@@ -594,13 +597,13 @@ describe("Branch Outline persistence", () => {
       [parentId],
     );
 
-    const pendingParent = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const pendingParent = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId: parentId,
       nodeTitle: "Contended parent",
       baseSynthesisVersionId: parentSummaryId,
       inputs: [firstParentInput],
     }));
-    const replacementChild = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const replacementChild = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId: childId,
       nodeTitle: "Contended child",
       baseSynthesisVersionId: childSummaryId,
@@ -671,7 +674,7 @@ describe("Branch Outline persistence", () => {
   it("preserves the current outline when a later generation fails", async () => {
     const userId = await insertUser();
     const nodeId = await insertNode(userId, "Failure node");
-    const first = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const first = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId,
       nodeTitle: "Failure node",
     }));
@@ -680,7 +683,7 @@ describe("Branch Outline persistence", () => {
       generationId: first.generation.id,
       draft: { content: "Current outline" },
     });
-    const second = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const second = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId,
       nodeTitle: "Failure node",
     }));
@@ -700,7 +703,7 @@ describe("Branch Outline persistence", () => {
   it("fails and replaces an expired pending generation without allowing late installation", async () => {
     const userId = await insertUser();
     const nodeId = await insertNode(userId, "Expired generation");
-    const abandoned = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const abandoned = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId,
       nodeTitle: "Expired generation",
     }));
@@ -709,7 +712,7 @@ describe("Branch Outline persistence", () => {
       [new Date(Date.now() - BRANCH_OUTLINE_GENERATION_LEASE_MS - 1_000), abandoned.generation.id],
     );
 
-    const replacement = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const replacement = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId,
       nodeTitle: "Expired generation",
     }));
@@ -742,7 +745,7 @@ describe("Branch Outline persistence", () => {
     const userId = await insertUser();
     const nodeId = await insertNode(userId, "Sealed provenance");
     const childId = await insertNode(userId, "Input child", nodeId);
-    const claim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const claim = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId,
       nodeTitle: "Sealed provenance",
       inputs: [childInput({ sourceNodeId: childId, title: "Input child" })],
@@ -810,7 +813,7 @@ describe("Branch Outline persistence", () => {
   it("serializes late provenance inserts against terminal transitions", async () => {
     const userId = await insertUser();
     const nodeId = await insertNode(userId, "Provenance race");
-    const claim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const claim = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId,
       nodeTitle: "Provenance race",
     }));
@@ -884,7 +887,7 @@ describe("Branch Outline persistence", () => {
     const parentId = await insertNode(userId, "Parent");
     const childId = await insertNode(userId, "Child", parentId);
     const input = childInput({ sourceNodeId: childId, title: "Child" });
-    const claim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const claim = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId: parentId,
       nodeTitle: "Parent",
       inputs: [input],
@@ -911,7 +914,7 @@ describe("Branch Outline persistence", () => {
     const userId = await insertUser();
     const nodeId = await insertNode(userId, "Summary race node");
     const firstSummaryId = await insertApprovedSummary(userId, nodeId, "First Summary");
-    const claim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const claim = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId,
       nodeTitle: "Summary race node",
       baseSynthesisVersionId: firstSummaryId,
@@ -931,7 +934,7 @@ describe("Branch Outline persistence", () => {
   it("fails installation when the target archive state changes", async () => {
     const userId = await insertUser();
     const nodeId = await insertNode(userId, "Archive race node");
-    const claim = await claimBranchOutlineGenerationForUser(userId, claimInput({
+    const claim = await claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
       nodeId,
       nodeTitle: "Archive race node",
     }));
@@ -952,11 +955,11 @@ describe("Branch Outline persistence", () => {
     const otherUserId = await insertUser();
     const nodeId = await insertNode(userId, "Race node");
     const results = await Promise.allSettled([
-      claimBranchOutlineGenerationForUser(userId, claimInput({
+      claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
         nodeId,
         nodeTitle: "Race node",
       })),
-      claimBranchOutlineGenerationForUser(userId, claimInput({
+      claimBranchOutlineGenerationForUser(userId, await claimInput(userId, {
         nodeId,
         nodeTitle: "Race node",
       })),

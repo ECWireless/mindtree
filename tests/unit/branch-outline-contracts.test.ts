@@ -9,6 +9,7 @@ import {
 } from "../../src/lib/branch-outlines/contracts";
 import {
   fingerprintBranchOutlineGeneration,
+  fingerprintBranchOutlineModelInput,
   fingerprintBranchOutlineSourceState,
 } from "../../src/lib/server/branch-outline-fingerprint";
 
@@ -117,8 +118,33 @@ describe("Branch Outline contracts", () => {
       nodeId,
       clientRequestId: "00000000-0000-4000-8000-000000000004",
       baseSynthesisVersionId: null,
-      inputFingerprint: fingerprint,
+      inputFingerprint: fingerprintBranchOutlineModelInput(nodeId, [{
+        role: "user",
+        content: "Exact bounded provider input",
+      }], fingerprint),
+      sourceStateFingerprint: fingerprint,
       inputs,
     }).success).toBe(true);
+  });
+
+  it("fingerprints the exact bounded Branch Outline provider input", () => {
+    const sourceFingerprint = "f".repeat(64);
+    const first = fingerprintBranchOutlineModelInput(nodeId, [{
+      role: "user",
+      content: "Bounded input A",
+    }], sourceFingerprint);
+    expect(first).toMatch(/^[0-9a-f]{64}$/);
+    expect(fingerprintBranchOutlineModelInput(nodeId, [{
+      role: "user",
+      content: "Bounded input A",
+    }], sourceFingerprint)).toBe(first);
+    expect(fingerprintBranchOutlineModelInput(nodeId, [{
+      role: "user",
+      content: "Bounded input B",
+    }], sourceFingerprint)).not.toBe(first);
+    expect(fingerprintBranchOutlineModelInput(nodeId, [{
+      role: "user",
+      content: "Bounded input A",
+    }], "e".repeat(64))).not.toBe(first);
   });
 });

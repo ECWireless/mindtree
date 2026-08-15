@@ -155,7 +155,9 @@ export function SynthesisProposalArtifact({
       onDecisionSettled(decision);
       router.refresh();
     } catch {
-      setDecisionError("MindTree couldn’t save that synthesis decision. Please try again.");
+      setDecisionError(
+        "MindTree couldn’t confirm that synthesis decision. Its current state was refreshed; check it before trying again.",
+      );
       setDecisionPending(null);
       router.refresh();
     }

@@ -4,6 +4,8 @@ import { makeSignature } from "better-auth/crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 
+import { MAX_CHAT_CONTEXT_CHARACTERS } from "../../src/lib/server/chat-context";
+
 const runtime = vi.hoisted(() => ({
   invocations: 0,
   generationMode: "deterministic-fixture" as "deterministic-fixture" | "openai",
@@ -17,6 +19,10 @@ const runtime = vi.hoisted(() => ({
     url: string;
   }>,
   beforeRouteComplete: null as null | (() => Promise<void>),
+  providerInputs: [] as Array<{
+    phase: "conversation" | "synthesis";
+    messages: Array<{ role: "user" | "assistant"; content: string }>;
+  }>,
   scenarios: [] as Array<
     | "disconnect-after-delta"
     | "generic-failure"
@@ -29,6 +35,7 @@ const runtime = vi.hoisted(() => ({
     | "timeout"
     | "wait-for-abort"
     | "web-provider-refusal"
+    | "web-synthesis"
     | "web-wait-for-abort"
     | "web-success"
     | "web-timeout"
@@ -86,6 +93,7 @@ vi.mock("@/lib/server/chat-runtime", async () => {
     getChatGenerationMode: () => runtime.generationMode,
     streamChatResponse: (input: {
       phase: "conversation" | "synthesis";
+      messages: Array<{ role: "user" | "assistant"; content: string }>;
       signal: AbortSignal;
       webSearchAuthorized?: boolean;
       externalPdfSource?: null | {
@@ -97,6 +105,7 @@ vi.mock("@/lib/server/chat-runtime", async () => {
       };
     }) => {
       runtime.invocations += 1;
+      runtime.providerInputs.push({ phase: input.phase, messages: input.messages });
       runtime.externalPdfSources.push(input.externalPdfSource ?? null);
       const scenario = runtime.scenarios.shift();
       return (async function* () {
@@ -141,7 +150,7 @@ vi.mock("@/lib/server/chat-runtime", async () => {
           yield {
             type: "completed" as const,
             providerResponseId,
-            synthesisRequested: false,
+            synthesisRequested: scenario === "web-synthesis",
             proposal: null,
             externalCitations: [{
               kind: "external" as const,
@@ -348,6 +357,7 @@ describe("chat generation failure boundaries", () => {
     runtime.pdfFetchInvocations.length = 0;
     runtime.externalPdfSources.length = 0;
     runtime.beforeRouteComplete = null;
+    runtime.providerInputs.length = 0;
     await pool.query(`delete from nodes where user_id = $1`, [userId]);
     nodeId = randomUUID();
     await pool.query(
@@ -579,6 +589,37 @@ describe("chat generation failure boundaries", () => {
     const replayed = await readEvents(await post(createBody));
     expect(replayed.map(({ type }) => type)).toEqual(["turn", "completed"]);
     expect(runtime.invocations).toBe(2);
+  });
+
+  it("rebuilds a web-backed synthesis input inside the combined context budget", async () => {
+    runtime.scenarios.push("web-synthesis", "proposal-success");
+    const clientMessageId = randomUUID();
+    const content = "Research one synthetic claim and propose a synthesis from it";
+    const events = await readEvents(await post({
+      nodeId,
+      clientMessageId,
+      content,
+      webSearchAuthorized: true,
+    }));
+
+    expect(events.at(-1)).toMatchObject({
+      type: "completed",
+      proposalCreated: true,
+    });
+    expect(runtime.providerInputs).toHaveLength(2);
+    const synthesisInput = runtime.providerInputs[1];
+    expect(synthesisInput?.phase).toBe("synthesis");
+    expect(synthesisInput?.messages.at(-1)).toEqual({ role: "user", content });
+    expect(synthesisInput?.messages.at(-2)?.content).toContain(
+      '"externalResearchEvidence"',
+    );
+    expect(synthesisInput?.messages.reduce(
+      (count, message) => count + message.content.length,
+      0,
+    )).toBeLessThanOrEqual(MAX_CHAT_CONTEXT_CHARACTERS);
+    expect(synthesisInput?.messages.at(-2)?.content).not.toContain(
+      "https://example.test/retry-source",
+    );
   });
 
   it("passes only the explicitly supplied current-turn PDF to the provider and persists its provenance", async () => {

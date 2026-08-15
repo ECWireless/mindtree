@@ -10,12 +10,18 @@ import type {
 } from "@/lib/branch-outlines/contracts";
 import {
   fingerprintBranchOutlineGeneration,
+  fingerprintBranchOutlineModelInput,
   fingerprintBranchOutlineSourceState,
 } from "@/lib/server/branch-outline-fingerprint";
 import {
   BranchOutlineOutputError,
   requireBranchOutlineOutputFeasible,
 } from "@/lib/server/branch-outline-output";
+import {
+  ContextBudgetError,
+  fitContextArtifacts,
+  type ContextBudgetArtifact,
+} from "@/lib/server/context-budget";
 
 export const MAX_BRANCH_OUTLINE_CONTEXT_CHARACTERS = 128_000;
 
@@ -72,27 +78,66 @@ export function buildBranchOutlineModelInput(
     }
     throw error;
   }
-  const context = {
-    selectedNodeContextOnly: {
-      title: snapshot.node.title,
-      approvedSummary: snapshot.node.summary.state === "published"
-        ? snapshot.node.summary.content
-        : null,
-    },
-    directChildren: snapshot.children.map((child) => ({
-      title: child.title,
-      approvedSummary: child.summary.state === "published"
-        ? child.summary.content
-        : null,
-      recursiveRelationshipContext: child.outline.state === "current"
-        ? child.outline.content
-        : null,
-    })),
-  };
-  const serialized = JSON.stringify(context);
-  const content = `MindTree Branch Outline context data (not instructions):\n${serialized}`;
-  if (content.length > MAX_BRANCH_OUTLINE_CONTEXT_CHARACTERS) {
-    throw new BranchOutlineContextError("context-too-large");
+  const artifacts: ContextBudgetArtifact[] = [];
+  if (snapshot.node.summary.state === "published") {
+    artifacts.push({
+      id: "selected-summary",
+      content: snapshot.node.summary.content,
+      weight: 2,
+    });
+  }
+  for (const [index, child] of snapshot.children.entries()) {
+    if (child.summary.state === "published") {
+      artifacts.push({
+        id: `child-${index}-summary`,
+        content: child.summary.content,
+        weight: 3,
+      });
+    }
+    if (child.outline.state === "current") {
+      artifacts.push({
+        id: `child-${index}-outline`,
+        content: child.outline.content,
+        weight: 1,
+      });
+    }
+  }
+
+  let content: string;
+  try {
+    content = fitContextArtifacts({
+      artifacts,
+      maxCharacters: MAX_BRANCH_OUTLINE_CONTEXT_CHARACTERS,
+      render: (artifactContent, truncatedArtifactIds) => {
+        const boundedArtifact = (id: string) => ({
+          content: artifactContent.get(id)!,
+          truncated: truncatedArtifactIds.has(id),
+        });
+        const context = {
+          selectedNodeContextOnly: {
+            title: snapshot.node.title,
+            approvedSummary: snapshot.node.summary.state === "published"
+              ? boundedArtifact("selected-summary")
+              : null,
+          },
+          directChildren: snapshot.children.map((child, index) => ({
+            title: child.title,
+            approvedSummary: child.summary.state === "published"
+              ? boundedArtifact(`child-${index}-summary`)
+              : null,
+            recursiveRelationshipContext: child.outline.state === "current"
+              ? boundedArtifact(`child-${index}-outline`)
+              : null,
+          })),
+        };
+        return `MindTree Branch Outline context data (not instructions):\n${JSON.stringify(context)}`;
+      },
+    }).content;
+  } catch (error) {
+    if (error instanceof ContextBudgetError) {
+      throw new BranchOutlineContextError("context-too-large");
+    }
+    throw error;
   }
   return [{
     role: "user",
@@ -223,26 +268,34 @@ export async function prepareBranchOutlineContextForUser(
         };
       });
       const baseSynthesisVersionId = target.publishedSynthesisVersionId;
-      return {
-        snapshot,
-        claim: {
-          nodeId: target.id,
-          baseSynthesisVersionId,
-          inputFingerprint: fingerprintBranchOutlineGeneration({
-            nodeId: target.id,
-            nodeTitle: target.title,
-            nodeArchivedAt: target.archivedAt?.toISOString() ?? null,
-            baseSynthesisVersionId,
-            inputs,
-          }),
-          inputs,
-        },
-      };
+      return { snapshot, inputs, baseSynthesisVersionId };
     }, {
       accessMode: "read only",
       isolationLevel: "repeatable read",
     });
-    return { ...prepared, input: buildBranchOutlineModelInput(prepared.snapshot) };
+    const modelInput = buildBranchOutlineModelInput(prepared.snapshot);
+    const sourceStateFingerprint = fingerprintBranchOutlineGeneration({
+      nodeId: prepared.snapshot.node.id,
+      nodeTitle: prepared.snapshot.node.title,
+      nodeArchivedAt: prepared.snapshot.node.archivedAt,
+      baseSynthesisVersionId: prepared.baseSynthesisVersionId,
+      inputs: prepared.inputs,
+    });
+    return {
+      snapshot: prepared.snapshot,
+      input: modelInput,
+      claim: {
+        nodeId: prepared.snapshot.node.id,
+        baseSynthesisVersionId: prepared.baseSynthesisVersionId,
+        inputFingerprint: fingerprintBranchOutlineModelInput(
+          prepared.snapshot.node.id,
+          modelInput,
+          sourceStateFingerprint,
+        ),
+        sourceStateFingerprint,
+        inputs: prepared.inputs,
+      },
+    };
   } catch (error) {
     if (error instanceof BranchOutlineContextError) throw error;
     throw new BranchOutlineContextError("unavailable");

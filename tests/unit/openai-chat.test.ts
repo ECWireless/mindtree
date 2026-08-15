@@ -860,6 +860,7 @@ describe("OpenAI Responses chat stream", () => {
     expect(request.instructions).toContain(
       "externalCitations array is reserved for numbered citations",
     );
+    expect(request.instructions).toContain("structured truncated: true field");
     expect(request.instructions).not.toContain("request_synthesis");
   });
 

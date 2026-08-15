@@ -52,6 +52,13 @@ describe("synthesis proposal contracts", () => {
     expect(synthesisProposalDraftSchema.safeParse({ content, citations: [] }).success).toBe(false);
   });
 
+  it("does not assign application semantics to ordinary truncation language", () => {
+    expect(synthesisProposalDraftSchema.safeParse({
+      content: "Copied context truncated boundary",
+      citations: [],
+    }).success).toBe(true);
+  });
+
   it("rejects empty and oversized synthesis content", () => {
     expect(synthesisProposalDraftSchema.safeParse({ content: "   ", citations: [] }).success)
       .toBe(false);

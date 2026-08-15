@@ -306,6 +306,55 @@ test("archives a subtree, reveals it, and unarchives only a reachable path", asy
   }
 });
 
+test("reconciles an archive whose committed Server Action response is lost", async ({
+  context,
+  page,
+}) => {
+  const seeded = await seedBrowserSession(pool);
+  const nodeId = randomUUID();
+
+  try {
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values ($1, $2, null, 0, 'Uncertain archive result')`,
+      [nodeId, seeded.userId],
+    );
+    await installBrowserSessionCookie(context, seeded.cookie);
+    await page.goto(`/?node=${nodeId}`);
+
+    let intercepted = false;
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      if (
+        !intercepted &&
+        request.method() === "POST" &&
+        request.headers()["next-action"]
+      ) {
+        intercepted = true;
+        await route.fetch();
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.getByRole("button", { name: "Archive", exact: true }).click();
+    await expect(page.getByRole("alert").filter({
+      hasText: "MindTree couldn’t confirm the archive",
+    })).toContainText("The tree was refreshed");
+    await expect(page.getByRole("button", { name: "Unarchive", exact: true })).toBeVisible();
+    expect(intercepted).toBe(true);
+    const stored = await pool.query<{ archived_at: Date | null }>(
+      `select archived_at from nodes where user_id = $1 and id = $2`,
+      [seeded.userId, nodeId],
+    );
+    expect(stored.rows).toEqual([{ archived_at: expect.any(Date) }]);
+  } finally {
+    await page.unroute("**/*");
+    await seeded.cleanup();
+  }
+});
+
 test("confirms permanent subtree deletion and recovers selection and focus", async ({
   context,
   page,
@@ -441,7 +490,7 @@ test("confirms permanent subtree deletion and recovers selection and focus", asy
   }
 });
 
-test("keeps archived delete warnings and error recovery accessible in a short viewport", async ({
+test("keeps archived delete recovery accessible in a short viewport", async ({
   context,
   page,
 }, testInfo) => {
@@ -489,10 +538,10 @@ test("keeps archived delete warnings and error recovery accessible in a short vi
       missingArchivedId,
     ]);
     await dialog.getByRole("button", { name: "Delete permanently" }).click();
-    await expect(dialog.getByRole("alert")).toHaveText("That node is no longer available.");
-    await expect(dialog.getByRole("button", { name: "Delete permanently" })).toBeFocused();
-    await page.keyboard.press("Escape");
-    await expect(deleteTrigger).toBeFocused();
+    await expect(dialog).toHaveCount(0);
+    await expect(page).toHaveURL("/");
+    await expect(page.getByRole("button", { name: "New root thought" })).toBeFocused();
+    await expect(page.getByRole("link", { name: /Active recovery root/ })).toBeVisible();
 
     await page.goto(`/?node=${deletableArchivedId}`);
     const deletableTrigger = page.getByRole("button", { name: "Delete", exact: true });
