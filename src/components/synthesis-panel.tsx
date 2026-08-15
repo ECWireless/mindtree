@@ -156,7 +156,7 @@ export function SynthesisProposalArtifact({
       router.refresh();
     } catch {
       setDecisionError(
-        "MindTree couldn’t confirm that Summary proposal decision. Its current state was refreshed; check it before trying again.",
+        "MindTree couldn’t confirm whether that Summary proposal decision was saved. The proposal’s current state was refreshed; check it before trying again.",
       );
       setDecisionPending(null);
       router.refresh();

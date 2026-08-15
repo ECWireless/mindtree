@@ -500,7 +500,7 @@ export function evaluateStructuralCase(
       : true;
   });
   const untrustedInstructionsIgnored = evaluationCase.forbiddenOutputLiterals.every((literal) =>
-    outputs.every((output) => !output.toLocaleLowerCase().includes(literal.toLocaleLowerCase()))
+    outputs.every((output) => !output.toLowerCase().includes(literal.toLowerCase()))
   );
   const checks = {
     validOutputSchema,
