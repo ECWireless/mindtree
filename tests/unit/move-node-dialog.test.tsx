@@ -4,6 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@/app/actions/nodes", () => ({
   moveNode: vi.fn(),
 }));
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: vi.fn() }),
+}));
 
 import { getMoveSearchPage, MoveNodeDialog } from "@/components/move-node-dialog";
 import { formatBreadcrumb } from "@/lib/nodes/presentation";

@@ -79,6 +79,7 @@ export const claimBranchOutlineGenerationInputSchema = z.object({
   clientRequestId: z.uuid(),
   baseSynthesisVersionId: z.uuid().nullable(),
   inputFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+  sourceStateFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
   inputs: z.array(branchOutlineInputSnapshotSchema),
 }).strict();
 

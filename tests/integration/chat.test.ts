@@ -209,7 +209,7 @@ describe("persistent chat ledger", () => {
     const prepared = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
     const repeated = await prepareChatContextForUser(userId, { nodeId, clientMessageId });
     expect(prepared.snapshot).toMatchObject({
-      version: 7,
+      version: 8,
       node: {
         id: nodeId,
         title: "Context leaf",
@@ -1065,7 +1065,7 @@ describe("persistent chat ledger", () => {
     });
     expect(prepared.outlineInput).toBeNull();
     expect(prepared.input[0]?.content).toContain('"branchOutline":{"state":"stale"');
-    expect(prepared.input[0]?.content).toContain("[Context truncated]");
+    expect(prepared.input[0]?.content).toContain('"truncated":true');
     expect(prepared.input.reduce((total, message) => total + message.content.length, 0))
       .toBeLessThanOrEqual(MAX_CHAT_CONTEXT_CHARACTERS);
     expect(prepared.input.at(-1)?.content).toHaveLength(16_000);

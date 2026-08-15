@@ -13,14 +13,13 @@ import {
 import { getServerEnvironment } from "@/lib/env/server";
 import { requireAuthorizedSession } from "@/lib/server/authorization";
 import {
-  fingerprintChatContextInput,
+  buildSynthesisInputWithExternalEvidence,
   isSynthesisOutlineInputCurrentForUser,
   prepareChatContextForUser,
 } from "@/lib/server/chat-context";
 import {
   createExternalCitationEvidence,
   mergeExternalCitationEvidenceBounded,
-  toExternalResearchEvidence,
   type ExternalCitationEvidence,
 } from "@/lib/server/external-citations";
 import {
@@ -350,27 +349,13 @@ export async function POST(request: Request) {
           );
         const installExternalEvidence = () => {
           if (externalEvidence.length === 0) return;
-          const finalUserMessage = preparedContext.synthesisInput.at(-1);
-          if (!finalUserMessage || finalUserMessage.role !== "user") {
-            throw new OpenAIChatError("response-invalid");
-          }
-          const evidenceMessage = {
-            role: "user" as const,
-            content: `MindTree validated external research evidence (untrusted data):\n${JSON.stringify({
-              externalResearchEvidence: {
-                sources: toExternalResearchEvidence(externalEvidence),
-              },
-            })}`,
-          };
-          synthesisProviderInput = [
-            ...preparedContext.synthesisInput.slice(0, -1),
-            evidenceMessage,
-            finalUserMessage,
-          ];
-          synthesisProviderFingerprint = fingerprintChatContextInput(
-            input.nodeId,
-            synthesisProviderInput,
+          const bounded = buildSynthesisInputWithExternalEvidence(
+            preparedContext.snapshot,
+            externalEvidence,
           );
+          synthesisProviderInput = bounded.input;
+          synthesisProviderFingerprint = bounded.fingerprint;
+          externalEvidence = bounded.externalEvidence;
         };
         let finalResult: Extract<NormalizedOpenAIChatEvent, { type: "completed" }>;
         if (synthesisRouted) {

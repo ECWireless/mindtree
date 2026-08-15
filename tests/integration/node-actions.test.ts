@@ -129,7 +129,19 @@ describe("node Server Actions", () => {
       ok: true,
       nodeId: root.nodeId,
     });
+    expect(await moveNode({ id: root.nodeId, parentId: destination.nodeId })).toEqual({
+      ok: true,
+      nodeId: root.nodeId,
+    });
     expect(await archiveNode({ id: root.nodeId })).toEqual({
+      ok: true,
+      nodeId: root.nodeId,
+    });
+    expect(await archiveNode({ id: root.nodeId })).toEqual({
+      ok: true,
+      nodeId: root.nodeId,
+    });
+    expect(await unarchiveNode({ id: root.nodeId })).toEqual({
       ok: true,
       nodeId: root.nodeId,
     });
@@ -169,6 +181,11 @@ describe("node Server Actions", () => {
       ok: true,
       nodeId: doomed.nodeId,
       recoveryNodeId: destination.nodeId,
+    });
+    expect(await deleteNode({ id: doomed.nodeId })).toEqual({
+      ok: true,
+      nodeId: doomed.nodeId,
+      recoveryNodeId: null,
     });
     const deleted = await pool.query(`select id from nodes where id = $1`, [doomed.nodeId]);
     expect(deleted.rows).toEqual([]);
@@ -213,9 +230,16 @@ describe("node Server Actions", () => {
     expect(await unarchiveNode({ id: foreignNodeId })).toEqual(
       await unarchiveNode({ id: missingNodeId }),
     );
-    expect(await deleteNode({ id: foreignNodeId })).toEqual(
-      await deleteNode({ id: missingNodeId }),
-    );
+    const absentDeleteResult = {
+      ok: true,
+      nodeId: missingNodeId,
+      recoveryNodeId: null,
+    };
+    expect(await deleteNode({ id: missingNodeId })).toEqual(absentDeleteResult);
+    expect(await deleteNode({ id: foreignNodeId })).toEqual({
+      ...absentDeleteResult,
+      nodeId: foreignNodeId,
+    });
 
     const ownedRows = await pool.query<{ parent_id: string | null }>(
       `select parent_id from nodes where user_id = $1 and id = $2`,

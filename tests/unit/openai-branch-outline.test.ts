@@ -78,6 +78,7 @@ describe("OpenAI Branch Outline stream", () => {
     expect(request.instructions).toContain("server attaches trusted child titles");
     expect(request.instructions).toContain("consecutive one-based ordinals");
     expect(request.instructions).toContain("Return only one strict JSON object");
+    expect(request.instructions).toContain("structured truncated: true field");
   });
 
   it("normalizes one bounded plain-Markdown response", async () => {

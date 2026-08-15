@@ -9,6 +9,10 @@ const connectionString = process.env.DATABASE_URL_UNPOOLED || process.env.DATABA
 if (!connectionString) throw new Error("DATABASE_URL or DATABASE_URL_UNPOOLED is required.");
 const pool = new Pool({ connectionString });
 
+function usesNarrowLayout(page: import("@playwright/test").Page) {
+  return (page.viewportSize()?.width ?? 0) <= 760;
+}
+
 async function expectTouchTarget(locator: import("@playwright/test").Locator) {
   const box = await locator.boundingBox();
   expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
@@ -462,7 +466,7 @@ test("contains long external reference hosts without horizontal overflow", async
       .fill("Research and propose a synthesis for a synthetic long hostname");
     await chatDialog.getByRole("button", { name: "Send message" }).click();
 
-    const proposal = chatDialog.getByRole("region", { name: "Proposed synthesis" });
+    const proposal = chatDialog.getByRole("region", { name: "Proposed Summary" });
     await expect(proposal).toBeVisible();
     const references = proposal.getByRole("region", { name: "External references" });
     await expect(references.getByText(hostname, { exact: true })).toBeVisible();
@@ -620,9 +624,9 @@ test("publishes cited web research with durable inline markers and References", 
     await expectIconCentered(sendButton);
     await sendButton.click();
 
-    const proposal = chatDialog.getByRole("region", { name: "Proposed synthesis" });
+    const proposal = chatDialog.getByRole("region", { name: "Proposed Summary" });
     await expect(proposal).toBeVisible({ timeout: 10_000 });
-    const inlineCitation = proposal.getByRole("link", {
+    const inlineCitation = proposal.locator(".synthesis-document__content").getByRole("link", {
       name: "Source 1: Synthetic research source. Opens in a new tab.",
     });
     await expect(inlineCitation).toHaveText("[1]");
@@ -633,19 +637,23 @@ test("publishes cited web research with durable inline markers and References", 
     await expect(firstReference).toHaveJSProperty("value", 1);
     await expect(firstReference.evaluate((element) => getComputedStyle(element).listStyleType))
       .resolves.toBe("decimal");
-    await expect(proposalReferences.getByRole("link", { name: "Synthetic research source" }))
+    await expect(proposalReferences.getByRole("link", {
+      name: "Source 1: Synthetic research source. Opens in a new tab.",
+    }))
       .toHaveAttribute("href", "https://example.test/research");
     await expect(proposalReferences.getByText("External source · may change", { exact: true }))
       .toHaveCount(0);
 
-    await proposal.getByRole("button", { name: "Approve and publish" }).click();
+    await proposal.getByRole("button", { name: "Approve and publish Summary" }).click();
     await expect(chatDialog).not.toBeVisible();
     const published = page.getByRole("region", { name: "Summary" });
-    await expect(published.getByRole("link", {
+    await expect(published.locator(".synthesis-document__content").getByRole("link", {
       name: "Source 1: Synthetic research source. Opens in a new tab.",
     })).toHaveText("[1]");
     const publishedReferences = page.getByRole("region", { name: "External references" });
-    await expect(publishedReferences.getByRole("link", { name: "Synthetic research source" }))
+    await expect(publishedReferences.getByRole("link", {
+      name: "Source 1: Synthetic research source. Opens in a new tab.",
+    }))
       .toHaveAttribute("href", "https://example.test/research");
     await expect(publishedReferences.evaluate((references) => {
       const outline = document.querySelector(".branch-outline");
@@ -657,7 +665,9 @@ test("publishes cited web research with durable inline markers and References", 
 
     await page.reload();
     await expect(page.getByRole("region", { name: "External references" })
-      .getByRole("link", { name: "Synthetic research source" }))
+      .getByRole("link", {
+        name: "Source 1: Synthetic research source. Opens in a new tab.",
+      }))
       .toHaveAttribute("href", "https://example.test/research");
   } finally {
     await seeded.cleanup();
@@ -690,23 +700,27 @@ test("publishes a cited PDF-backed proposal with durable References", async ({
     );
     await chatDialog.getByRole("button", { name: "Send message" }).click();
 
-    const proposal = chatDialog.getByRole("region", { name: "Proposed synthesis" });
+    const proposal = chatDialog.getByRole("region", { name: "Proposed Summary" });
     await expect(proposal).toBeVisible({ timeout: 10_000 });
-    await expect(proposal.getByRole("link", {
+    await expect(proposal.locator(".synthesis-document__content").getByRole("link", {
       name: "Source 1: rosenblatt-1957.pdf. Opens in a new tab.",
     })).toHaveAttribute("href", pdfUrl);
     await expect(proposal.getByRole("region", { name: "External references" })
-      .getByRole("link", { name: "rosenblatt-1957.pdf" }))
+      .getByRole("link", {
+        name: "Source 1: rosenblatt-1957.pdf. Opens in a new tab.",
+      }))
       .toHaveAttribute("href", pdfUrl);
 
-    await proposal.getByRole("button", { name: "Approve and publish" }).click();
+    await proposal.getByRole("button", { name: "Approve and publish Summary" }).click();
     await expect(chatDialog).not.toBeVisible();
     const published = page.getByRole("region", { name: "Summary" });
-    await expect(published.getByRole("link", {
+    await expect(published.locator(".synthesis-document__content").getByRole("link", {
       name: "Source 1: rosenblatt-1957.pdf. Opens in a new tab.",
     })).toHaveAttribute("href", pdfUrl);
     const references = page.getByRole("region", { name: "External references" });
-    await expect(references.getByRole("link", { name: "rosenblatt-1957.pdf" }))
+    await expect(references.getByRole("link", {
+      name: "Source 1: rosenblatt-1957.pdf. Opens in a new tab.",
+    }))
       .toHaveAttribute("href", pdfUrl);
     await expect(references.evaluate((element) => {
       const outline = document.querySelector(".branch-outline");
@@ -725,7 +739,7 @@ test("publishes a cited PDF-backed proposal with durable References", async ({
   }
 });
 
-test("loads, retries, streams, persists, and isolates per-node conversation history", async ({ context, page }, testInfo) => {
+test("loads, retries, streams, persists, and isolates per-node conversation history", async ({ context, page }) => {
   const seeded = await seedBrowserSession(pool);
   const firstNodeId = randomUUID();
   const secondNodeId = randomUUID();
@@ -849,7 +863,7 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
     const webToggle = page.getByRole("checkbox", { name: "Use external sources" });
     await expect(webToggle).toBeFocused();
     await expect(webToggle).toHaveAccessibleDescription(
-      "Next message only. Supports web research or one HTTPS PDF; sources may change.",
+      "Next message only. Web or one HTTPS PDF; sources may change.",
     );
     await page.keyboard.press("Tab");
     const send = page.getByRole("button", { name: "Send message" });
@@ -922,7 +936,7 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
     }]);
 
     await page.getByRole("button", { name: "Close chat" }).click();
-    if (testInfo.project.name === "mobile") {
+    if (usesNarrowLayout(page)) {
       await page.getByRole("link", { name: "Back to thoughts" }).click();
     }
     await page.getByRole("link", { name: /Chat beta/ }).click();
@@ -940,6 +954,28 @@ test("loads, retries, streams, persists, and isolates per-node conversation hist
       emptyHistoryBox!.y + emptyHistoryBox!.height - 1,
     );
     expect(emptyComposerBox!.height).toBeLessThan(220);
+
+    if ((page.viewportSize()?.width ?? 0) <= 360) {
+      const actions = emptyChatDialog.locator(".chat-composer__actions");
+      const label = actions.locator(".chat-composer__web-toggle");
+      const availability = actions.locator("small");
+      await availability.evaluate((element) => {
+        element.classList.add("chat-composer__availability");
+        element.textContent =
+          "History remains available; configure OPENAI_API_KEY to generate replies.";
+      });
+      const labelBox = await label.boundingBox();
+      const availabilityBox = await availability.boundingBox();
+      expect(labelBox).not.toBeNull();
+      expect(availabilityBox).not.toBeNull();
+      expect(availabilityBox!.y).toBeGreaterThanOrEqual(
+        labelBox!.y + labelBox!.height - 1,
+      );
+      expect(availabilityBox!.x).toBeGreaterThanOrEqual(emptyComposerBox!.x);
+      expect(availabilityBox!.x + availabilityBox!.width).toBeLessThanOrEqual(
+        emptyComposerBox!.x + emptyComposerBox!.width,
+      );
+    }
 
     const dimensions = await page.evaluate(() => ({
       clientWidth: document.documentElement.clientWidth,

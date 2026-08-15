@@ -28,9 +28,9 @@ function formatDecisionTime(value: string) {
 }
 
 export function synthesisStatusLabel(status: SynthesisDecisionSummary["status"]) {
-  if (status === "approved") return "Proposal approved";
-  if (status === "rejected") return "Proposal rejected";
-  return "Proposal superseded";
+  if (status === "approved") return "Summary proposal approved";
+  if (status === "rejected") return "Summary proposal rejected";
+  return "Summary proposal superseded";
 }
 
 function externalCitations(citations: SynthesisVersion["citations"]) {
@@ -85,7 +85,7 @@ function SynthesisDiff({
     <div className="synthesis-diff" aria-labelledby={diffTitleId}>
       <div className="synthesis-diff__heading">
         <h4 id={diffTitleId}>
-          {baseContent === null ? "First proposal" : "Changes from published synthesis"}
+          {baseContent === null ? "First Summary proposal" : "Changes from published Summary"}
         </h4>
         <p>+ Added · − Removed · = Unchanged</p>
       </div>
@@ -155,7 +155,9 @@ export function SynthesisProposalArtifact({
       onDecisionSettled(decision);
       router.refresh();
     } catch {
-      setDecisionError("MindTree couldn’t save that synthesis decision. Please try again.");
+      setDecisionError(
+        "MindTree couldn’t confirm whether that Summary proposal decision was saved. The proposal’s current state was refreshed; check it before trying again.",
+      );
       setDecisionPending(null);
       router.refresh();
     }
@@ -165,8 +167,8 @@ export function SynthesisProposalArtifact({
     <section className="synthesis-proposal" aria-labelledby={titleId}>
       <div className="synthesis-proposal__heading">
         <div>
-          <p className="synthesis-proposal__state">Pending proposal</p>
-          <h3 id={titleId} ref={headingRef} tabIndex={-1}>Proposed synthesis</h3>
+          <p className="synthesis-proposal__state">Pending Summary proposal · Not published</p>
+          <h3 id={titleId} ref={headingRef} tabIndex={-1}>Proposed Summary</h3>
         </div>
       </div>
       <div className="synthesis-document__content">
@@ -180,21 +182,25 @@ export function SynthesisProposalArtifact({
       />
 
       <p className="synthesis-proposal__refine-hint">
-        To refine this proposal, describe the changes in your next message.
+        To refine this proposed Summary, describe the changes in your next message.
       </p>
       {generationBusy ? (
         <p className="synthesis-proposal__busy" role="status">
-          Finish or stop the current assistant response before deciding this proposal.
+          Finish or stop the current assistant response before deciding this Summary proposal.
         </p>
       ) : null}
-      <div className="synthesis-proposal__actions" aria-label="Proposal decision">
+      <div
+        className="synthesis-proposal__actions"
+        role="group"
+        aria-label="Summary proposal decision"
+      >
         <button
           className="button button--primary"
           type="button"
           disabled={decisionPending !== null || generationBusy}
           onClick={() => void decide("approve")}
         >
-          {decisionPending === "approve" ? "Approving…" : "Approve and publish"}
+          {decisionPending === "approve" ? "Approving…" : "Approve and publish Summary"}
         </button>
         <button
           className="button button--quiet"
@@ -202,7 +208,7 @@ export function SynthesisProposalArtifact({
           disabled={decisionPending !== null || generationBusy}
           onClick={() => void decide("reject")}
         >
-          {decisionPending === "reject" ? "Rejecting…" : "Reject proposal"}
+          {decisionPending === "reject" ? "Rejecting…" : "Reject Summary proposal"}
         </button>
       </div>
       {decisionError ? <p className="synthesis-panel__error" role="alert">{decisionError}</p> : null}
@@ -227,7 +233,7 @@ export function SynthesisDecidedArtifact({
       </summary>
       {open ? (
         <section aria-labelledby={titleId}>
-          <h3 id={titleId}>Proposed synthesis</h3>
+          <h3 id={titleId}>Proposed Summary</h3>
           <div className="synthesis-document__content">
             <SynthesisDocumentContent content={decision.content} citations={decision.citations} />
           </div>
@@ -247,7 +253,7 @@ export function SynthesisDecisionHistory({ history }: Pick<SynthesisWorkspace, "
   if (history.length === 0) return null;
   return (
     <details className="synthesis-history">
-      <summary>Recent synthesis decisions ({history.length})</summary>
+      <summary>Recent Summary decisions ({history.length})</summary>
       <ol className="synthesis-history__list">
         {history.map((decision) => (
           <li key={decision.id}>

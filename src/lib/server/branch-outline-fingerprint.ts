@@ -48,3 +48,17 @@ export function fingerprintBranchOutlineGeneration(input: {
     })),
   });
 }
+
+export function fingerprintBranchOutlineModelInput(
+  nodeId: string,
+  input: readonly { role: "user"; content: string }[],
+  sourceStateFingerprint: string,
+) {
+  return sha256({
+    version: 1,
+    policy: "branch-outline-context-v1",
+    nodeId,
+    input,
+    sourceStateFingerprint,
+  });
+}

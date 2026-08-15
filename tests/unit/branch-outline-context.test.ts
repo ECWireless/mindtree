@@ -71,8 +71,8 @@ describe("Branch Outline model context", () => {
     );
   });
 
-  it("rejects oversized context without silently omitting children", () => {
-    expect(() => buildBranchOutlineModelInput({
+  it("deterministically truncates oversized evidence without omitting child structure", () => {
+    const input = buildBranchOutlineModelInput({
       ...snapshot,
       node: {
         ...snapshot.node,
@@ -82,7 +82,37 @@ describe("Branch Outline model context", () => {
           content: "x".repeat(MAX_BRANCH_OUTLINE_CONTEXT_CHARACTERS),
         },
       },
-    })).toThrow(new BranchOutlineContextError("context-too-large"));
+      children: snapshot.children.map((child) => ({
+        ...child,
+        summary: {
+          state: "published" as const,
+          versionId: "00000000-0000-4000-8000-000000000010",
+          content: "y".repeat(MAX_BRANCH_OUTLINE_CONTEXT_CHARACTERS),
+        },
+      })),
+    });
+    expect(input[0]?.content.length).toBeLessThanOrEqual(
+      MAX_BRANCH_OUTLINE_CONTEXT_CHARACTERS,
+    );
+    expect(input[0]?.content).toContain('"truncated":true');
+    expect(input[0]?.content).toContain("Current child");
+    expect(input[0]?.content).toContain("Stale child");
+  });
+
+  it("treats marker-like source text as ordinary untruncated evidence", () => {
+    const input = buildBranchOutlineModelInput({
+      ...snapshot,
+      node: {
+        ...snapshot.node,
+        summary: {
+          state: "published",
+          versionId: "00000000-0000-4000-8000-000000000002",
+          content: "Literal [Context truncated] phrase",
+        },
+      },
+    });
+    expect(input[0]?.content).toContain("Literal [Context truncated] phrase");
+    expect(input[0]?.content).toContain('"truncated":false');
   });
 
   it("rejects a child set whose minimum required output cannot fit", () => {

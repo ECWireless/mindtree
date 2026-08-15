@@ -345,7 +345,7 @@ export function ChatPanel({
             setAnnouncement(
               streamEvent.type === "completed"
                 ? streamEvent.proposalCreated
-                  ? "Synthesis proposal request completed."
+                  ? "Summary proposal request completed."
                   : "Assistant response completed."
                 : streamEvent.type === "cancelled"
                   ? "Assistant response stopped."
@@ -375,7 +375,7 @@ export function ChatPanel({
         const reconciled = await reconcileTerminalTurn(clientMessageId);
         if (reconciled?.assistant?.status === "completed") {
           setAnnouncement(reconciled.proposalCreated
-            ? "Synthesis proposal request completed."
+            ? "Summary proposal request completed."
             : "Assistant response completed.");
           if (reconciled.proposalCreated) router.refresh();
         }
@@ -503,8 +503,8 @@ export function ChatPanel({
     decisionFocus.current = decision;
     setAnnouncement(
       decision === "approve"
-        ? "Proposal approved and published."
-        : "Proposal rejected. The published synthesis is unchanged.",
+        ? "Summary proposal approved and published."
+        : "Summary proposal rejected. The published Summary is unchanged.",
     );
     if (decision === "approve") {
       restoreFocusOnClose.current = false;
@@ -681,12 +681,16 @@ export function ChatPanel({
                 type="checkbox"
                 checked={useWebSources}
                 disabled={!generationEnabled || Boolean(activeClientMessageId)}
+                aria-label="Use external sources"
                 aria-describedby={webDisclosureId}
                 onChange={(event) => setUseWebSources(event.target.checked)}
               />
               <span>Use external sources</span>
             </label>
-            <small aria-hidden="true">
+            <small
+              className={!generationEnabled ? "chat-composer__availability" : undefined}
+              aria-hidden="true"
+            >
               {generationEnabled ? (
                 <>
                   <span className="chat-composer__hint">Enter to send · Shift+Enter for a new line</span>
@@ -717,7 +721,7 @@ export function ChatPanel({
             )}
           </div>
           <p className="chat-composer__web-disclosure" id={webDisclosureId}>
-            Next message only. Supports web research or one HTTPS PDF; sources may change.
+            Next message only. Web or one HTTPS PDF; sources may change.
           </p>
         </form>
         <p className="sr-only" aria-live="polite" role="status">{announcement}</p>

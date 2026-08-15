@@ -33,8 +33,13 @@ import {
 } from "@/lib/branch-outlines/contracts";
 import {
   fingerprintBranchOutlineGeneration,
+  fingerprintBranchOutlineModelInput,
   fingerprintBranchOutlineSourceState,
 } from "@/lib/server/branch-outline-fingerprint";
+import {
+  buildBranchOutlineModelInput,
+  type BranchOutlineContextSnapshot,
+} from "@/lib/server/branch-outline-context";
 import {
   collectAncestorPathIds,
   markArtifactsStale,
@@ -279,6 +284,104 @@ async function getCurrentInputSnapshots(
     });
 }
 
+async function getCurrentModelInput(
+  tx: BranchOutlineTransaction,
+  userId: string,
+  lockedNodes: readonly LockedNode[],
+  targetId: string,
+) {
+  const target = lockedNodes.find((node) => node.id === targetId);
+  if (!target) throw new BranchOutlineServiceError("node-not-found");
+  const sources = lockedNodes
+    .filter((node) => node.parentId === targetId)
+    .sort((left, right) =>
+      left.position - right.position || left.id.localeCompare(right.id)
+    );
+  const summaryIds = [...new Set(
+    [target, ...sources].flatMap((node) =>
+      node.publishedSynthesisVersionId ? [node.publishedSynthesisVersionId] : []
+    ),
+  )];
+  const outlineIds = [...new Set(sources.flatMap((node) =>
+    node.currentBranchOutlineVersionId ? [node.currentBranchOutlineVersionId] : []
+  ))];
+  const [summaryRows, outlineRows] = await Promise.all([
+    summaryIds.length === 0
+      ? []
+      : tx
+          .select({
+            id: synthesisVersions.id,
+            nodeId: synthesisVersions.nodeId,
+            status: synthesisVersions.status,
+            content: synthesisVersions.content,
+          })
+          .from(synthesisVersions)
+          .where(and(
+            eq(synthesisVersions.userId, userId),
+            inArray(synthesisVersions.id, summaryIds),
+          )),
+    outlineIds.length === 0
+      ? []
+      : tx
+          .select({
+            id: branchOutlineVersions.id,
+            nodeId: branchOutlineVersions.nodeId,
+            status: branchOutlineVersions.status,
+            content: branchOutlineVersions.content,
+          })
+          .from(branchOutlineVersions)
+          .where(and(
+            eq(branchOutlineVersions.userId, userId),
+            inArray(branchOutlineVersions.id, outlineIds),
+          )),
+  ]);
+  const summaries = new Map(summaryRows.map((summary) => [summary.id, summary]));
+  const outlines = new Map(outlineRows.map((outline) => [outline.id, outline]));
+  const summaryFor = (node: LockedNode) => {
+    if (!node.publishedSynthesisVersionId) return { state: "none" as const };
+    const summary = summaries.get(node.publishedSynthesisVersionId);
+    if (!summary || summary.nodeId !== node.id || summary.status !== "approved") {
+      throw new BranchOutlineServiceError("unavailable");
+    }
+    return {
+      state: "published" as const,
+      versionId: summary.id,
+      content: summary.content,
+    };
+  };
+  const outlineFor = (node: LockedNode) => {
+    if (!node.currentBranchOutlineVersionId) return { state: "none" as const };
+    const outline = outlines.get(node.currentBranchOutlineVersionId);
+    if (!outline || outline.nodeId !== node.id || outline.status !== "completed") {
+      throw new BranchOutlineServiceError("unavailable");
+    }
+    return node.branchOutlineStaleAt
+      ? { state: "stale" as const, versionId: outline.id }
+      : {
+          state: "current" as const,
+          versionId: outline.id,
+          content: outline.content,
+        };
+  };
+  const snapshot: BranchOutlineContextSnapshot = {
+    version: 1,
+    node: {
+      id: target.id,
+      title: target.title,
+      archivedAt: target.archivedAt?.toISOString() ?? null,
+      summary: summaryFor(target),
+    },
+    children: sources.map((source) => ({
+      id: source.id,
+      title: source.title,
+      archivedAt: source.archivedAt?.toISOString() ?? null,
+      summary: summaryFor(source),
+      outline: outlineFor(source),
+    })),
+  };
+  return buildBranchOutlineModelInput(snapshot);
+}
+
 function inputsMatch(
   left: readonly BranchOutlineInputSnapshot[],
   right: readonly BranchOutlineInputSnapshot[],
@@ -419,8 +522,20 @@ export async function claimBranchOutlineGenerationForUser(
         baseSynthesisVersionId: node.publishedSynthesisVersionId,
         inputs: currentInputs,
       });
+      const currentModelInput = await getCurrentModelInput(
+        tx,
+        userId,
+        lockedNodes,
+        node.id,
+      );
+      const currentInputFingerprint = fingerprintBranchOutlineModelInput(
+        node.id,
+        currentModelInput,
+        currentFingerprint,
+      );
       if (
-        currentFingerprint !== parsed.data.inputFingerprint ||
+        currentFingerprint !== parsed.data.sourceStateFingerprint ||
+        currentInputFingerprint !== parsed.data.inputFingerprint ||
         !inputsMatch(currentInputs, parsed.data.inputs)
       ) {
         throw new BranchOutlineServiceError("inputs-changed");
@@ -511,16 +626,27 @@ export async function completeBranchOutlineGenerationForUser(
         lockedNodes,
         node.id,
       );
-      const currentFingerprint = fingerprintBranchOutlineGeneration({
+      const currentSourceStateFingerprint = fingerprintBranchOutlineGeneration({
         nodeId: node.id,
         nodeTitle: node.title,
         nodeArchivedAt: node.archivedAt?.toISOString() ?? null,
         baseSynthesisVersionId: node.publishedSynthesisVersionId,
         inputs: currentInputs,
       });
+      const currentModelInput = await getCurrentModelInput(
+        tx,
+        userId,
+        lockedNodes,
+        node.id,
+      );
+      const currentInputFingerprint = fingerprintBranchOutlineModelInput(
+        node.id,
+        currentModelInput,
+        currentSourceStateFingerprint,
+      );
       if (
         generation.baseSynthesisVersionId !== node.publishedSynthesisVersionId ||
-        generation.inputFingerprint !== currentFingerprint ||
+        generation.inputFingerprint !== currentInputFingerprint ||
         !inputsMatch(recordedInputs, currentInputs)
       ) {
         const failedAt = new Date();

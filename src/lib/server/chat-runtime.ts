@@ -149,14 +149,14 @@ async function* streamDeterministicChatFixture(input: {
     synthesisRequested: false,
     proposal: input.phase === "synthesis"
       ? {
-          content: `# ${synthesisTopic}\n\nA concise synthetic synthesis proposal.`,
+          content: `# ${synthesisTopic}\n\nA concise synthetic Summary proposal.`,
           citations: [],
           externalCitations: input.messages.some(({ content }) =>
             content.includes('"externalResearchEvidence"')
           )
             ? [{
                 sourceAlias: "W1",
-                citedText: "A concise synthetic synthesis proposal.",
+                citedText: "A concise synthetic Summary proposal.",
               }]
             : [],
         }

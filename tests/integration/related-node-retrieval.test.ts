@@ -323,7 +323,7 @@ describe("owner-scoped related-node retrieval", () => {
       relatedEvidence: Array<{
         alias: string;
         title: string;
-        approvedSummary: string;
+        approvedSummary: { content: string; truncated: boolean };
       }>;
     };
 
@@ -347,7 +347,7 @@ describe("owner-scoped related-node retrieval", () => {
     expect(synthesisInput).not.toContain(evidence.synthesisVersionId);
     expect(synthesisInput).not.toContain(target.nodeId);
     expect(synthesisInput).not.toContain(target.synthesisVersionId);
-    expect(synthesisMetadata.relatedEvidence[0]?.approvedSummary.length)
+    expect(synthesisMetadata.relatedEvidence[0]?.approvedSummary.content.length)
       .toBeLessThanOrEqual(2_500);
     expect(prepared.synthesisFingerprint).not.toBe(prepared.fingerprint);
   });

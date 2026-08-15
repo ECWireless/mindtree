@@ -860,6 +860,7 @@ describe("OpenAI Responses chat stream", () => {
     expect(request.instructions).toContain(
       "externalCitations array is reserved for numbered citations",
     );
+    expect(request.instructions).toContain("structured truncated: true field");
     expect(request.instructions).not.toContain("request_synthesis");
   });
 
@@ -924,7 +925,7 @@ describe("OpenAI Responses chat stream", () => {
 
     expect(normalized).toEqual([
       { type: "started", providerResponseId: "resp_synthetic" },
-      { type: "text-delta", content: "I drafted a synthesis proposal for your review." },
+      { type: "text-delta", content: "I drafted a Summary proposal for your review." },
       {
         type: "completed",
         providerResponseId: "resp_synthetic",

@@ -59,13 +59,13 @@ function decisionFailure(error: unknown): SynthesisDecisionResult {
     switch (error.reason) {
       case "node-not-found":
       case "proposal-not-found":
-        return { ok: false, message: "That synthesis proposal is no longer available." };
+        return { ok: false, message: "That Summary proposal is no longer available." };
       case "proposal-not-pending":
-        return { ok: false, message: "That synthesis proposal was already decided." };
+        return { ok: false, message: "That Summary proposal was already decided." };
       case "stale-base":
         return {
           ok: false,
-          message: "The published synthesis changed. Request a fresh proposal before approving.",
+          message: "The published Summary changed. Request a fresh proposal before approving.",
         };
       case "stale-input":
         return {
@@ -76,7 +76,7 @@ function decisionFailure(error: unknown): SynthesisDecisionResult {
       case "unavailable":
         return {
           ok: false,
-          message: "MindTree couldn’t save that synthesis decision. Please try again.",
+          message: "MindTree couldn’t save that Summary proposal decision. Please try again.",
         };
     }
   }
@@ -89,7 +89,7 @@ export async function approveSynthesisProposal(
   const session = await requireAuthorizedSession();
   const parsed = synthesisDecisionInputSchema.safeParse(input);
   if (!parsed.success) {
-    return { ok: false, message: "That synthesis proposal is invalid." };
+    return { ok: false, message: "That Summary proposal is invalid." };
   }
 
   try {
@@ -126,7 +126,7 @@ export async function rejectSynthesisProposal(
   const session = await requireAuthorizedSession();
   const parsed = synthesisDecisionInputSchema.safeParse(input);
   if (!parsed.success) {
-    return { ok: false, message: "That synthesis proposal is invalid." };
+    return { ok: false, message: "That Summary proposal is invalid." };
   }
 
   try {

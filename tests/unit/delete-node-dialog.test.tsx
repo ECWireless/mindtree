@@ -5,6 +5,9 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@/app/actions/nodes", () => ({
   deleteNode: vi.fn(),
 }));
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: vi.fn() }),
+}));
 
 import { DeleteNodeDialog } from "@/components/delete-node-dialog";
 import { assembleNodeTree } from "@/lib/nodes/tree";

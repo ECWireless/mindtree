@@ -71,6 +71,14 @@ describe("Branch Outline model output", () => {
     );
   });
 
+  it("allows literal truncation language as ordinary output", () => {
+    expect(compileBranchOutlineModelOutput(JSON.stringify({
+      items: [{ ordinal: 1, description: "Discusses a context truncated boundary." }],
+    }), ["Child"])).toEqual({
+      content: "- Child — Discusses a context truncated boundary.",
+    });
+  });
+
   it("allows domain language that is not artifact or node status", () => {
     expect(compileBranchOutlineModelOutput(JSON.stringify({
       items: [{

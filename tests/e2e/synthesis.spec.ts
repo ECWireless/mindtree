@@ -31,7 +31,7 @@ test("proposes, refines, rejects, and explicitly publishes a synthesis", async (
     await page.goto(`/?node=${nodeId}`);
 
     await expect(page.getByText(
-      "No synthesis is published yet. Open Chat when this thought is ready to synthesize.",
+      "No Summary is published yet. Open Chat when this thought is ready to synthesize.",
       { exact: true },
     )).toBeVisible();
     await page.getByRole("button", { name: "Chat", exact: true }).click();
@@ -52,30 +52,38 @@ test("proposes, refines, rejects, and explicitly publishes a synthesis", async (
       return result.rows[0]?.count;
     }, { timeout: 10_000 }).toBe("1");
     await expect(page.locator(".chat-panel > .sr-only[role='status']"))
-      .toHaveText("Synthesis proposal request completed.", { timeout: 10_000 });
+      .toHaveText("Summary proposal request completed.", { timeout: 10_000 });
     await expect(page.getByRole("heading", {
-      name: "Proposed synthesis",
+      name: "Proposed Summary",
       includeHidden: true,
     })).toBeAttached();
     await page.getByRole("button", { name: "Chat", exact: true }).click();
 
-    const firstReview = page.getByRole("region", { name: "Proposed synthesis" });
+    const firstReview = page.getByRole("region", { name: "Proposed Summary" });
     await expect(firstReview).toBeVisible();
     await expect(firstReview.locator(
       "xpath=ancestor::article[contains(@class, 'chat-message--assistant')]",
     )).toBeVisible();
-    await expect(firstReview.getByRole("heading", { name: "Proposed synthesis" })).toBeFocused();
+    await expect(firstReview.getByRole("heading", { name: "Proposed Summary" })).toBeFocused();
     await expect(
       page.locator(".chat-panel > .sr-only[role='status']"),
-    ).toHaveText("Synthesis proposal request completed.");
+    ).toHaveText("Summary proposal request completed.");
     await expect(firstReview.getByRole("heading", {
-      name: "Proposed synthesis",
+      name: "Proposed Summary",
       exact: true,
     })).toBeVisible();
     await expect(firstReview.getByText(
-      "A concise synthetic synthesis proposal.",
+      "A concise synthetic Summary proposal.",
       { exact: true },
     )).toBeVisible();
+    await expect(firstReview.getByText(
+      "Pending Summary proposal · Not published",
+      { exact: true },
+    )).toBeVisible();
+    await expect(firstReview.getByRole("heading", {
+      name: "First Summary proposal",
+      exact: true,
+    })).toBeVisible();
     await expect(firstReview.locator(".synthesis-diff__part--added")).toContainText(
       "Propose a synthesis while Chat is closed",
     );
@@ -83,22 +91,22 @@ test("proposes, refines, rejects, and explicitly publishes a synthesis", async (
     await expect(firstReview.getByText("Added:", { exact: true })).toBeAttached();
 
     await expect(firstReview.getByText(
-      "To refine this proposal, describe the changes in your next message.",
+      "To refine this proposed Summary, describe the changes in your next message.",
       { exact: true },
     )).toBeVisible();
     await composer.fill("Make the proposal shorter and more direct");
     await page.getByRole("button", { name: "Send message" }).click();
 
-    const refinedReview = page.getByRole("region", { name: "Proposed synthesis" });
+    const refinedReview = page.getByRole("region", { name: "Proposed Summary" });
     await expect(refinedReview.locator(".synthesis-diff__part--added")).toContainText(
       "Make the proposal shorter and more direct",
     );
-    await expect(refinedReview.getByRole("heading", { name: "Proposed synthesis" })).toBeFocused();
+    await expect(refinedReview.getByRole("heading", { name: "Proposed Summary" })).toBeFocused();
     const supersededArtifact = page.locator("details.synthesis-proposal--decided", {
-      hasText: "Proposal superseded",
+      hasText: "Summary proposal superseded",
     });
     await supersededArtifact.locator("summary").click();
-    await expect(supersededArtifact.getByRole("heading", { name: "Proposed synthesis" }))
+    await expect(supersededArtifact.getByRole("heading", { name: "Proposed Summary" }))
       .toBeVisible();
     await expect(supersededArtifact.locator(".synthesis-diff")).toBeVisible();
     await supersededArtifact.locator("summary").click();
@@ -113,23 +121,23 @@ test("proposes, refines, rejects, and explicitly publishes a synthesis", async (
       { status: "superseded", count: "1" },
     ]);
 
-    const reject = refinedReview.getByRole("button", { name: "Reject proposal" });
+    const reject = refinedReview.getByRole("button", { name: "Reject Summary proposal" });
     await expectTouchTarget(reject);
     await reject.click();
     await expect(composer).toBeFocused();
-    await expect(page.getByText("Pending proposal", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Pending Summary proposal · Not published", { exact: true })).toHaveCount(0);
     const rejectedArtifact = page.locator("details.synthesis-proposal--decided", {
-      hasText: "Proposal rejected",
+      hasText: "Summary proposal rejected",
     });
     await rejectedArtifact.locator("summary").click();
-    await expect(rejectedArtifact.getByRole("heading", { name: "Proposed synthesis" }))
+    await expect(rejectedArtifact.getByRole("heading", { name: "Proposed Summary" }))
       .toBeVisible();
     await expect(rejectedArtifact.locator(".synthesis-diff")).toBeVisible();
     await rejectedArtifact.locator("summary").click();
 
     await composer.fill("Propose an approved synthesis candidate");
     await page.getByRole("button", { name: "Send message" }).click();
-    const approvalReview = page.getByRole("region", { name: "Proposed synthesis" });
+    const approvalReview = page.getByRole("region", { name: "Proposed Summary" });
     await expect(approvalReview).toBeVisible();
     await composer.fill("Approve it");
     await page.getByRole("button", { name: "Send message" }).click();
@@ -144,7 +152,7 @@ test("proposes, refines, rejects, and explicitly publishes a synthesis", async (
     );
     expect(beforeExplicitApproval.rows).toEqual([{ published_synthesis_version_id: null }]);
     await expect(approvalReview).toBeVisible();
-    const approve = approvalReview.getByRole("button", { name: "Approve and publish" });
+    const approve = approvalReview.getByRole("button", { name: "Approve and publish Summary" });
     await expectTouchTarget(approve);
     await approve.click();
 
@@ -154,7 +162,7 @@ test("proposes, refines, rejects, and explicitly publishes a synthesis", async (
     await expect(published.getByText("Propose an approved synthesis candidate", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Chat", exact: true }).click();
     await expect(page.locator("details.synthesis-proposal--decided", {
-      hasText: "Proposal approved",
+      hasText: "Summary proposal approved",
     }).locator("summary")).toBeVisible();
 
     const persisted = await pool.query<{
@@ -244,7 +252,7 @@ test("bounds adversarial diff work and recovers from a stale decision", async ({
     await installBrowserSessionCookie(context, seeded.cookie);
     await page.goto(`/?node=${nodeId}`);
     await page.getByRole("button", { name: "Chat", exact: true }).click();
-    const diff = page.getByRole("region", { name: "Proposed synthesis" })
+    const diff = page.getByRole("region", { name: "Proposed Summary" })
       .locator(".synthesis-diff");
     await expect(diff).toBeVisible();
     await expect(page.getByText("Detailed comparison was simplified", { exact: false })).toBeVisible();
@@ -265,9 +273,9 @@ test("bounds adversarial diff work and recovers from a stale decision", async ({
        where id = $1 and status = 'pending'`,
       [proposalId],
     );
-    await page.getByRole("button", { name: "Approve and publish" }).click();
+    await page.getByRole("button", { name: "Approve and publish Summary" }).click();
     await expect(page.getByRole("textbox", { name: "Message" })).toBeFocused();
-    await expect(page.getByRole("region", { name: "Proposed synthesis" })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Proposed Summary" })).toHaveCount(0);
     await page.getByRole("button", { name: "Close chat" }).click();
     const reconciled = page.getByRole("region", { name: "Summary" });
     await expect(reconciled).toBeVisible();

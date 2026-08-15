@@ -802,7 +802,10 @@ function DashboardWorkspace({
       pendingTreeFocus.current = sourceId;
       router.refresh();
     } catch {
-      setDragError("MindTree couldn’t move that thought. Please try again.");
+      setDragError(
+        "MindTree couldn’t confirm the move. The tree was refreshed; check the thought’s current location before trying again.",
+      );
+      router.refresh();
     } finally {
       setDragPending(false);
     }
@@ -870,9 +873,10 @@ function DashboardWorkspace({
       setLifecycleStatus("");
       setLifecycleError(
         selectedNode.archivedAt
-          ? "MindTree couldn’t unarchive that thought. Please try again."
-          : "MindTree couldn’t archive that thought. Please try again.",
+          ? "MindTree couldn’t confirm the unarchive. The tree was refreshed; check the thought’s current state before trying again."
+          : "MindTree couldn’t confirm the archive. The tree was refreshed; check the thought’s current state before trying again.",
       );
+      router.refresh();
     } finally {
       lifecycleRequestInFlight.current = false;
       setLifecyclePending(false);
@@ -1129,7 +1133,7 @@ function DashboardWorkspace({
                         aria-current={isSelected ? "page" : undefined}
                       >
                         <span>{node.title}</span>
-                        <small>{node.archivedAt ? "Archived" : "No synthesis yet"}</small>
+                        <small>{node.archivedAt ? "Archived" : "Active"}</small>
                       </Link>
                       {node.archivedAt === null ? (
                         <button
@@ -1292,7 +1296,7 @@ function DashboardWorkspace({
                       Summary
                     </h2>
                     <p className="synthesis-conversation-empty">
-                      No synthesis is published yet. Open Chat when this thought is ready to synthesize.
+                      No Summary is published yet. Open Chat when this thought is ready to synthesize.
                     </p>
                   </section>
                 )}

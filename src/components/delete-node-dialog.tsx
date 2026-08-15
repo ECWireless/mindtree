@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent, type RefObject } from "react";
+import { useRouter } from "next/navigation";
 
 import { deleteNode } from "@/app/actions/nodes";
 import type { TreeNode } from "@/lib/nodes/tree";
@@ -32,6 +33,7 @@ export function DeleteNodeDialog({
   onDeleted: (recoveryNodeId: string | null) => void;
   returnFocusRef: RefObject<HTMLButtonElement | null>;
 }) {
+  const router = useRouter();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const deleteButtonRef = useRef<HTMLButtonElement>(null);
@@ -89,7 +91,10 @@ export function DeleteNodeDialog({
       dialogRef.current?.close();
       onDeleted(result.recoveryNodeId ?? null);
     } catch {
-      setError("MindTree couldn’t delete that thought. Please try again.");
+      setError(
+        "MindTree couldn’t confirm the deletion. The tree was refreshed; check whether the thought still exists before trying again.",
+      );
+      router.refresh();
     } finally {
       cancelAnimationFrame(pendingFocusFrame);
       requestInFlight.current = false;
