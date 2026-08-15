@@ -209,7 +209,12 @@ export function ExternalReferences({
             <li key={reference.url} value={reference.ordinal}>
               <span>
                 <cite>
-                  “<a href={reference.url} target="_blank" rel="noreferrer noopener">
+                  “<a
+                    href={reference.url}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    aria-label={`Source ${reference.ordinal}: ${reference.title}. Opens in a new tab.`}
+                  >
                     {reference.title}
                   </a>”
                 </cite>

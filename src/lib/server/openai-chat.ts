@@ -372,7 +372,7 @@ export async function* normalizeOpenAIChatEvents(
     } else if (phase === "synthesis" && proposal !== null) {
       yield {
         type: "text-delta",
-        content: "I drafted a synthesis proposal for your review.",
+        content: "I drafted a Summary proposal for your review.",
       };
     } else {
       throw new OpenAIChatError("response-invalid");

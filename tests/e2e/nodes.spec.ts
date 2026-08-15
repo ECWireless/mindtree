@@ -16,11 +16,15 @@ if (!connectionString) {
 
 const pool = new Pool({ connectionString });
 
+function usesNarrowLayout(page: import("@playwright/test").Page) {
+  return (page.viewportSize()?.width ?? 0) <= 760;
+}
+
 test.afterAll(async () => {
   await pool.end();
 });
 
-test("creates and navigates a responsive thought hierarchy", async ({ context, page }, testInfo) => {
+test("creates and navigates a responsive thought hierarchy", async ({ context, page }) => {
   const seeded = await seedBrowserSession(pool);
 
   try {
@@ -36,7 +40,7 @@ test("creates and navigates a responsive thought hierarchy", async ({ context, p
     await expect(newRoot).toHaveAttribute("data-tooltip", "New root thought");
     await expect(showArchived).toHaveAttribute("data-tooltip", "Show archived");
     await expect(showArchived).toBeEnabled();
-    if (testInfo.project.name !== "mobile") {
+    if (!usesNarrowLayout(page)) {
       await expect(toolbarCount).toBeVisible();
       const countColor = await toolbarCount.locator(".eyebrow").evaluate(
         (element) => getComputedStyle(element).color,
@@ -77,7 +81,7 @@ test("creates and navigates a responsive thought hierarchy", async ({ context, p
     const addChild = page.getByRole("button", { name: "Add child", exact: true });
     await addChild.click();
     const childThought = page.getByPlaceholder("Child thought");
-    if (testInfo.project.name !== "mobile") {
+    if (!usesNarrowLayout(page)) {
       await expect(page.locator(".tree-pane").getByPlaceholder("Child thought")).toBeVisible();
       await expect(page.locator(".detail-pane").getByPlaceholder("Child thought")).toHaveCount(0);
     } else {
@@ -104,7 +108,7 @@ test("creates and navigates a responsive thought hierarchy", async ({ context, p
     await page.getByRole("button", { name: "Save" }).click();
     await expect(page.getByRole("heading", { level: 1, name: "Reinforcing loops" })).toBeVisible();
 
-    if (testInfo.project.name !== "mobile") {
+    if (!usesNarrowLayout(page)) {
       await page.getByRole("button", { name: "Collapse Systems thinking" }).click();
       await expect(page.getByRole("link", { name: /Reinforcing loops/ })).toHaveCount(0);
       await addChild.click();
@@ -127,7 +131,7 @@ test("creates and navigates a responsive thought hierarchy", async ({ context, p
     await page.goBack();
     await expect(page.getByRole("heading", { level: 1, name: "Reinforcing loops" })).toBeVisible();
 
-    if (testInfo.project.name !== "mobile") {
+    if (!usesNarrowLayout(page)) {
       await newRoot.click();
       const rootThought = page.getByPlaceholder("Root thought");
       await expect(rootThought).toBeVisible();
@@ -135,7 +139,7 @@ test("creates and navigates a responsive thought hierarchy", async ({ context, p
       await expect(newRoot).toBeFocused();
     }
 
-    if (testInfo.project.name === "mobile") {
+    if (usesNarrowLayout(page)) {
       await page.getByRole("link", { name: "Back to thoughts" }).click();
       await expect(page).toHaveURL("/");
       const expandRoot = page.getByRole("button", { name: "Expand Systems thinking" });
@@ -168,7 +172,7 @@ test("creates and navigates a responsive thought hierarchy", async ({ context, p
 test("selecting an open branch preserves its expanded children", async ({
   context,
   page,
-}, testInfo) => {
+}) => {
   const seeded = await seedBrowserSession(pool);
   const rootId = randomUUID();
   const childId = randomUUID();
@@ -187,7 +191,7 @@ test("selecting an open branch preserves its expanded children", async ({
     const rootLink = tree.getByRole("link", { name: /Persistent open branch/ });
     const childLink = tree.getByRole("link", { name: /Visible branch child/ });
 
-    if (testInfo.project.name === "mobile") {
+    if (usesNarrowLayout(page)) {
       await page.getByRole("link", { name: "Back to thoughts" }).click();
     }
     await expect(tree.getByRole("button", { name: "Collapse Persistent open branch" }))
@@ -199,7 +203,7 @@ test("selecting an open branch preserves its expanded children", async ({
     await expect(page.getByRole("heading", { level: 1, name: "Persistent open branch" }))
       .toBeVisible();
 
-    if (testInfo.project.name === "mobile") {
+    if (usesNarrowLayout(page)) {
       await page.getByRole("link", { name: "Back to thoughts" }).click();
     }
     await expect(tree.getByRole("button", { name: "Collapse Persistent open branch" }))
@@ -213,7 +217,7 @@ test("selecting an open branch preserves its expanded children", async ({
 test("archives a subtree, reveals it, and unarchives only a reachable path", async ({
   context,
   page,
-}, testInfo) => {
+}) => {
   const seeded = await seedBrowserSession(pool);
   const rootId = randomUUID();
   const childId = randomUUID();
@@ -243,7 +247,7 @@ test("archives a subtree, reveals it, and unarchives only a reachable path", asy
     ).toBeVisible();
     await expect(page.locator(".node-status-line")).toHaveText("Archived");
     await expect(page.getByRole("button", { name: "Add child", exact: true })).toHaveCount(0);
-    if (testInfo.project.name === "mobile") {
+    if (usesNarrowLayout(page)) {
       await page.getByRole("link", { name: "Back to thoughts" }).click();
       await expect(page.getByRole("link", { name: /Archive root/ })).toBeVisible();
     }
@@ -262,9 +266,9 @@ test("archives a subtree, reveals it, and unarchives only a reachable path", asy
     const unarchiveButton = page.getByRole("button", { name: "Unarchive", exact: true });
     await expect(unarchiveButton).toHaveAttribute("data-tooltip", "Unarchive thought");
     await unarchiveButton.click();
-    await expect(page.getByText("Active", { exact: true })).toBeVisible();
+    await expect(page.locator(".node-status-line")).toHaveText("Active");
 
-    if (testInfo.project.name === "mobile") {
+    if (usesNarrowLayout(page)) {
       await page.getByRole("link", { name: "Back to thoughts" }).click();
     }
     const toggleAfterUnarchive = page.getByRole("button", { name: "Show archived" });
@@ -285,7 +289,7 @@ test("archives a subtree, reveals it, and unarchives only a reachable path", asy
     await archivedSearchResult.click();
     await expect(page).toHaveURL(`/?node=${grandchildId}`);
     await expect(page.locator(".node-status-line")).toHaveText("Archived");
-    if (testInfo.project.name === "mobile") {
+    if (usesNarrowLayout(page)) {
       await page.getByRole("link", { name: "Back to thoughts" }).click();
     }
     await expect(page.getByRole("button", { name: "Show archived" })).toHaveAttribute(
@@ -358,7 +362,7 @@ test("reconciles an archive whose committed Server Action response is lost", asy
 test("confirms permanent subtree deletion and recovers selection and focus", async ({
   context,
   page,
-}, testInfo) => {
+}) => {
   const seeded = await seedBrowserSession(pool);
   const rootId = randomUUID();
   const stableChildId = randomUUID();
@@ -442,7 +446,7 @@ test("confirms permanent subtree deletion and recovers selection and focus", asy
     await page.unroute("**/*");
 
     await expect(page).toHaveURL(`/?node=${rootId}`);
-    if (testInfo.project.name === "mobile") {
+    if (usesNarrowLayout(page)) {
       await expect(page.getByRole("heading", { level: 1, name: "Deletion parent" })).toBeFocused();
     } else {
       await expect(page.getByRole("link", { name: /Deletion parent/ })).toBeFocused();
@@ -465,7 +469,7 @@ test("confirms permanent subtree deletion and recovers selection and focus", asy
     await page.getByRole("button", { name: "Delete permanently" }).click();
     await expect(page).toHaveURL(`/?node=${otherRootId}`);
     await expect(page.locator(".node-status-line")).toHaveText("Archived");
-    if (testInfo.project.name === "mobile") {
+    if (usesNarrowLayout(page)) {
       await expect(page.getByRole("heading", { level: 1, name: "Other root" })).toBeFocused();
     } else {
       await expect(page.getByRole("button", { name: "Show archived" })).toHaveAttribute(
@@ -481,7 +485,7 @@ test("confirms permanent subtree deletion and recovers selection and focus", asy
     await expect(page.getByRole("button", { name: "New root thought" })).toBeFocused();
     await expect(
       page.getByText(
-        testInfo.project.name === "mobile" ? "No thoughts yet." : "Start with one thought.",
+        usesNarrowLayout(page) ? "No thoughts yet." : "Start with one thought.",
         { exact: true },
       ),
     ).toBeVisible();
@@ -493,7 +497,7 @@ test("confirms permanent subtree deletion and recovers selection and focus", asy
 test("keeps archived delete recovery accessible in a short viewport", async ({
   context,
   page,
-}, testInfo) => {
+}) => {
   const seeded = await seedBrowserSession(pool);
   const missingArchivedId = randomUUID();
   const deletableArchivedId = randomUUID();
@@ -514,7 +518,7 @@ test("keeps archived delete recovery accessible in a short viewport", async ({
     await page.goto(`/?node=${missingArchivedId}`);
 
     await expect(page.locator(".node-status-line")).toHaveText("Archived");
-    if (testInfo.project.name !== "mobile") {
+    if (!usesNarrowLayout(page)) {
       await expect(page.getByRole("button", { name: "Show archived" })).toHaveAttribute(
         "aria-pressed",
         "true",
@@ -549,7 +553,7 @@ test("keeps archived delete recovery accessible in a short viewport", async ({
     await deletableTrigger.press("Enter");
     await page.getByRole("button", { name: "Delete permanently" }).click();
     await expect(page).toHaveURL(`/?node=${activeRootId}`);
-    if (testInfo.project.name === "mobile") {
+    if (usesNarrowLayout(page)) {
       await expect(page.getByRole("heading", { level: 1, name: "Active recovery root" })).toBeFocused();
     } else {
       await expect(page.getByRole("link", { name: /Active recovery root/ })).toBeFocused();
@@ -559,7 +563,7 @@ test("keeps archived delete recovery accessible in a short viewport", async ({
   }
 });
 
-test("keeps deep long-title rows and breadcrumbs within the viewport", async ({ context, page }, testInfo) => {
+test("keeps deep long-title rows and breadcrumbs within the viewport", async ({ context, page }) => {
   const seeded = await seedBrowserSession(pool);
   const titles = Array.from(
     { length: 13 },
@@ -578,7 +582,7 @@ test("keeps deep long-title rows and breadcrumbs within the viewport", async ({ 
     }
 
     await installBrowserSessionCookie(context, seeded.cookie);
-    if (testInfo.project.name === "mobile") {
+    if (usesNarrowLayout(page)) {
       await page.setViewportSize({ width: 320, height: 812 });
     }
     await page.goto("/");
@@ -655,8 +659,9 @@ test("keeps deep long-title rows and breadcrumbs within the viewport", async ({ 
   }
 });
 
-test("searches the tree and moves a thought through the accessible dialog", async ({ context, page }, testInfo) => {
+test("searches the tree and moves a thought through the accessible dialog", async ({ context, page }) => {
   const seeded = await seedBrowserSession(pool);
+  const initialViewport = page.viewportSize();
   const systemsId = randomUUID();
   const feedbackId = randomUUID();
   const researchId = randomUUID();
@@ -727,7 +732,7 @@ test("searches the tree and moves a thought through the accessible dialog", asyn
 
     await expect(page).toHaveURL(new RegExp(`\\?node=${feedbackId}$`));
     await expect(page.getByRole("heading", { level: 1, name: "Feedback loops" })).toBeVisible();
-    if (testInfo.project.name !== "mobile") {
+    if (!usesNarrowLayout(page)) {
       await expect(page.getByRole("link", { name: /Feedback loops/ })).toBeFocused();
     } else {
       await expect(page.getByRole("heading", { level: 1, name: "Feedback loops" })).toBeFocused();
@@ -765,7 +770,7 @@ test("searches the tree and moves a thought through the accessible dialog", asyn
     await expect(dialog.getByRole("button", { name: "Move before Research notes" })).toBeFocused();
     await dialog.getByRole("button", { name: "Back to destinations" }).click();
     await expect(dialog.getByRole("button", { name: "Move here" })).toBeFocused();
-    if (testInfo.project.name === "mobile") {
+    if (usesNarrowLayout(page)) {
       await page.setViewportSize({ width: 667, height: 320 });
     }
     await dialog.getByRole("searchbox", { name: "Search destinations" }).fill("research");
@@ -795,8 +800,8 @@ test("searches the tree and moves a thought through the accessible dialog", asyn
     await expect(dialog).toBeVisible();
     await expect(dialog).toHaveCount(0);
     await page.unroute("**/*");
-    if (testInfo.project.name === "mobile") {
-      await page.setViewportSize({ width: 375, height: 812 });
+    if (usesNarrowLayout(page)) {
+      await page.setViewportSize(initialViewport ?? { width: 375, height: 812 });
     }
     await expect(page.getByRole("navigation", { name: "Breadcrumb" })).toContainText(
       "Research notes",
@@ -833,9 +838,12 @@ test("searches the tree and moves a thought through the accessible dialog", asyn
       .locator('[aria-label="Search move destinations"]')
       .getByRole("button", { name: /Research notes/ })
       .click();
+    await expect(dialog.getByRole("button", { name: "Move before Research notes" }))
+      .toBeFocused();
     const afterResearch = dialog.getByRole("button", { name: "Move after Research notes" });
     await afterResearch.focus();
-    await afterResearch.press("Enter");
+    await expect(afterResearch).toBeFocused();
+    await page.keyboard.press("Enter");
     await expect.poll(async () => {
       const result = await pool.query<{ id: string }>(
         `select id from nodes where user_id = $1 and parent_id is null order by position`,
@@ -849,7 +857,7 @@ test("searches the tree and moves a thought through the accessible dialog", asyn
 });
 
 test("moves a root with pointer drag-and-drop before, inside, and after targets", async ({ context, page }, testInfo) => {
-  test.skip(testInfo.project.name === "mobile", "Pointer drag coverage runs in the desktop project.");
+  test.skip(testInfo.project.name !== "desktop", "Pointer drag coverage runs in the desktop project.");
   const seeded = await seedBrowserSession(pool);
   const firstId = randomUUID();
   const secondId = randomUUID();
@@ -1000,7 +1008,7 @@ test("moves a root with pointer drag-and-drop before, inside, and after targets"
 });
 
 test("uses and cancels TimeTree's drag hover expansion delay", async ({ context, page }, testInfo) => {
-  test.skip(testInfo.project.name === "mobile", "Pointer drag coverage runs in the desktop project.");
+  test.skip(testInfo.project.name !== "desktop", "Pointer drag coverage runs in the desktop project.");
   const seeded = await seedBrowserSession(pool);
   const sourceId = randomUUID();
   const targetId = randomUUID();
@@ -1061,7 +1069,7 @@ test("uses and cancels TimeTree's drag hover expansion delay", async ({ context,
 });
 
 test("uses TimeTree's reduced-motion delay for drag hover expansion", async ({ context, page }, testInfo) => {
-  test.skip(testInfo.project.name === "mobile", "Pointer drag coverage runs in the desktop project.");
+  test.skip(testInfo.project.name !== "desktop", "Pointer drag coverage runs in the desktop project.");
   const seeded = await seedBrowserSession(pool);
   const sourceId = randomUUID();
   const targetId = randomUUID();

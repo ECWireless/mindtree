@@ -2297,11 +2297,15 @@ button:not(:disabled) {
 
 @container (max-width: 30rem) {
   .node-row {
-    --row-edge: calc(0.25rem + var(--node-depth) * 0.65rem);
+    --row-edge: calc(
+      0.25rem + var(--node-depth) * clamp(0.3rem, 2cqi, 0.65rem)
+    );
   }
 
   .tree-child-create {
-    padding-left: calc(4rem + var(--node-depth) * 0.65rem);
+    padding-left: calc(
+      4rem + var(--node-depth) * clamp(0.3rem, 2cqi, 0.65rem)
+    );
   }
 }
 
@@ -2499,6 +2503,34 @@ button:not(:disabled) {
   .node-create p,
   .inline-editor p {
     grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 360px) {
+  .chat-composer {
+    gap: 0.25rem;
+    padding: 0.5rem;
+  }
+
+  .chat-composer__actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 0.25rem;
+  }
+
+  .chat-composer__actions small {
+    flex: 0 0 auto;
+  }
+
+  .chat-composer__availability {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .chat-composer__web-toggle {
+    min-width: 0;
+    gap: 0.35rem;
+    font-size: 0.6875rem;
   }
 }
 

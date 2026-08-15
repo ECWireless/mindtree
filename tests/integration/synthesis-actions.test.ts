@@ -120,7 +120,7 @@ describe("synthesis decision Server Actions", () => {
   it("validates input and performs authorized approval and rejection", async () => {
     const userId = await seedAuthorizedSession();
     expect(await approveSynthesisProposal({ nodeId: "invalid", proposalId: "invalid" }))
-      .toEqual({ ok: false, message: "That synthesis proposal is invalid." });
+      .toEqual({ ok: false, message: "That Summary proposal is invalid." });
 
     const approvedNodeId = await insertNode(userId, 0);
     const approvedProposalId = await insertPendingProposal(userId, approvedNodeId);
@@ -169,7 +169,7 @@ describe("synthesis decision Server Actions", () => {
     );
     const foreignNodeId = await insertNode(foreignUserId, 0);
     const foreignProposalId = await insertPendingProposal(foreignUserId, foreignNodeId);
-    const expected = { ok: false, message: "That synthesis proposal is no longer available." };
+    const expected = { ok: false, message: "That Summary proposal is no longer available." };
 
     expect(await approveSynthesisProposal({ nodeId, proposalId: randomUUID() }))
       .toEqual(expected);

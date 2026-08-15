@@ -164,11 +164,11 @@ test("recovers a stale Summary through Branch Outline regeneration and approval"
     await page.getByRole("button", { name: "Chat", exact: true }).click();
     await composer.fill("Create a synthesis Summary after Branch Outline regeneration");
     await chat.getByRole("button", { name: "Send message" }).click();
-    const proposal = page.getByRole("region", { name: "Proposed synthesis" });
+    const proposal = page.getByRole("region", { name: "Proposed Summary" });
     await expect(proposal).toBeVisible();
     await expect(page.locator(".chat-panel > .sr-only[role='status']"))
-      .toHaveText("Synthesis proposal request completed.");
-    await proposal.getByRole("button", { name: "Approve and publish" }).click();
+      .toHaveText("Summary proposal request completed.");
+    await proposal.getByRole("button", { name: "Approve and publish Summary" }).click();
 
     await expect(chat).not.toBeVisible();
     await expect(summary.getByRole("heading", { name: "Summary", exact: true }))

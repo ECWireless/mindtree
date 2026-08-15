@@ -35,10 +35,10 @@ export default defineConfig({
   },
   projects: [
     {
-      name: "desktop",
+      name: "small-mobile",
       use: {
-        ...devices["Desktop Chrome"],
-        viewport: { width: 1440, height: 900 },
+        ...devices["Pixel 5"],
+        viewport: { width: 320, height: 568 },
       },
     },
     {
@@ -46,6 +46,20 @@ export default defineConfig({
       use: {
         ...devices["Pixel 5"],
         viewport: { width: 375, height: 812 },
+      },
+    },
+    {
+      name: "tablet",
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 768, height: 1024 },
+      },
+    },
+    {
+      name: "desktop",
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 1440, height: 900 },
       },
     },
   ],

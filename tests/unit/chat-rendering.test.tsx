@@ -437,6 +437,12 @@ describe("external References", () => {
     expect(markup.match(/href="https:\/\/two\.example\.test\/"/g)).toHaveLength(1);
     expect(markup).toContain('target="_blank"');
     expect(markup).toContain('rel="noreferrer noopener"');
+    expect(markup).toContain(
+      'aria-label="Source 1: Two. Opens in a new tab."',
+    );
+    expect(markup).toContain(
+      'aria-label="Source 2: One. Opens in a new tab."',
+    );
     expect(markup).not.toContain("External source · may change");
     expect(markup).toContain("“<a");
     expect(markup).toContain("</a>”");

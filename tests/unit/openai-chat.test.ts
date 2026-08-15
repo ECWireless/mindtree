@@ -925,7 +925,7 @@ describe("OpenAI Responses chat stream", () => {
 
     expect(normalized).toEqual([
       { type: "started", providerResponseId: "resp_synthetic" },
-      { type: "text-delta", content: "I drafted a synthesis proposal for your review." },
+      { type: "text-delta", content: "I drafted a Summary proposal for your review." },
       {
         type: "completed",
         providerResponseId: "resp_synthetic",

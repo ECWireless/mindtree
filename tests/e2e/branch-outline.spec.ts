@@ -29,7 +29,7 @@ test("generates and regenerates a Branch Outline below Summary", async ({ contex
 
     const summary = page.getByRole("region", { name: "Summary" });
     const outline = page.getByRole("region", { name: "Branch Outline" });
-    await expect(summary).toContainText("No synthesis is published yet");
+    await expect(summary).toContainText("No Summary is published yet");
     await expect(outline).toContainText("No Branch Outline yet");
     const generate = outline.getByRole("button", { name: "Generate", exact: true });
     const generateBox = await generate.boundingBox();
@@ -82,7 +82,7 @@ test("generates and regenerates a Branch Outline below Summary", async ({ contex
     )).toBeLessThanOrEqual(1);
     await expect(outline.getByRole("button", { name: "Regenerate", exact: true }))
       .toBeEnabled();
-    await expect(summary).toContainText("No synthesis is published yet");
+    await expect(summary).toContainText("No Summary is published yet");
     const first = await pool.query<{ id: string }>(
       `select id from branch_outline_versions
        where user_id = $1 and node_id = $2 and status = 'completed'`,

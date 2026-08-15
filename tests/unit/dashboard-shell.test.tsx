@@ -44,11 +44,12 @@ describe("DashboardShell", () => {
     expect(markup).toContain("Living systems");
     expect(markup).toContain("Feedback loops");
     expect(markup).toContain("Open questions");
-    expect(markup).toContain("No synthesis yet");
+    expect(markup).toContain(">Active</small>");
     expect(markup).toContain("Open Chat when this thought is ready to synthesize");
     expect(markup).toContain("Chat about Feedback loops");
     expect(markup).toContain(">Chat</button>");
     expect(markup).toContain("Assistant replies require OpenAI configuration.");
+    expect(markup).toContain('class="chat-composer__availability"');
     expect(markup).toContain('textarea id="chat-draft-feedback"');
     expect(markup).toContain("disabled");
     expect(markup).toContain('aria-label="Thought tree"');
@@ -185,15 +186,16 @@ describe("DashboardShell", () => {
     );
 
     expect(markup).toContain(">Summary</h2>");
-    expect(markup).toContain("Pending proposal");
+    expect(markup).toContain("Pending Summary proposal · Not published");
     expect(markup).toContain("Old point");
     expect(markup).toContain("New point");
     expect(markup).toContain("Added:");
     expect(markup).toContain("Removed:");
-    expect(markup).toContain("Approve and publish");
-    expect(markup).toContain("Reject proposal");
+    expect(markup).toContain("Approve and publish Summary");
+    expect(markup).toContain("Reject Summary proposal");
+    expect(markup).toContain('aria-label="Summary proposal decision"');
     expect(markup).toContain("describe the changes in your next message");
-    expect(markup).toContain("Recent synthesis decisions (1)");
+    expect(markup).toContain("Recent Summary decisions (1)");
     expect(markup).toContain("Update available");
     expect(markup).toContain("Open Chat to request a refreshed Summary");
     expect(markup).not.toContain("<h1>Summary</h1>");
