@@ -110,6 +110,31 @@ describe("assistant chat Markdown", () => {
 });
 
 describe("internal synthesis links", () => {
+  it("preserves Summary paragraphs and ordered and unordered list semantics", () => {
+    const markup = renderToStaticMarkup(
+      <SynthesisDocumentContent
+        content={[
+          "First paragraph.",
+          "",
+          "Second paragraph.",
+          "",
+          "- Unordered point",
+          "  - Nested point",
+          "",
+          "1. First ordered point",
+          "2. Second ordered point",
+        ].join("\n")}
+      />,
+    );
+
+    expect(markup).toContain("<p>First paragraph.</p>");
+    expect(markup).toContain("<p>Second paragraph.</p>");
+    expect(markup).toContain("<ul>");
+    expect(markup).toMatch(/<ul>\s*<li>Nested point<\/li>\s*<\/ul>/);
+    expect(markup).toContain("<ol>");
+    expect(markup).toContain("<li>Second ordered point</li>");
+  });
+
   it("renders the supported phrase as an application-owned changed link", () => {
     const content = "A supported claim.";
     const markup = renderToStaticMarkup(

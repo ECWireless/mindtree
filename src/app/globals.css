@@ -1663,6 +1663,43 @@ button:not(:disabled) {
   line-height: 1.65;
 }
 
+.synthesis-document__content:not(.branch-outline__content) p {
+  margin: 0.85rem 0;
+}
+
+.synthesis-document__content:not(.branch-outline__content) ul,
+.synthesis-document__content:not(.branch-outline__content) ol {
+  margin: 0.85rem 0;
+  padding-inline-start: 1.5rem;
+}
+
+.synthesis-document__content:not(.branch-outline__content) ul {
+  list-style: disc outside;
+}
+
+.synthesis-document__content:not(.branch-outline__content) ol {
+  list-style: decimal outside;
+}
+
+.synthesis-document__content:not(.branch-outline__content) li {
+  display: list-item;
+  padding-inline-start: 0.2rem;
+}
+
+.synthesis-document__content:not(.branch-outline__content) li + li {
+  margin-top: 0.35rem;
+}
+
+.synthesis-document__content:not(.branch-outline__content) li::marker {
+  color: var(--color-blue-bright);
+  font-variant-numeric: tabular-nums;
+}
+
+.synthesis-document__content:not(.branch-outline__content) li > ul,
+.synthesis-document__content:not(.branch-outline__content) li > ol {
+  margin: 0.4rem 0;
+}
+
 .synthesis-document__content > :first-child,
 .synthesis-document__content > :first-child > :first-child {
   margin-top: 0;
@@ -1996,21 +2033,12 @@ button:not(:disabled) {
   font-weight: 700;
 }
 
-.synthesis-history ol {
+.synthesis-history > .synthesis-history__list {
   display: grid;
   gap: 0.5rem;
   margin: 0.5rem 0 0;
   padding: 0;
   list-style: none;
-}
-
-.synthesis-history li {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 0.35rem 0.75rem;
-  color: var(--color-muted);
-  font-size: 0.78rem;
 }
 
 .synthesis-history__list > li {

@@ -65,20 +65,18 @@ Do not begin the next unit without a new debrief and explicit approval.
 - Keep `.env.example` limited to placeholder names and safe explanatory text.
 - Use synthetic data in tests, documentation, screenshots, and model evals.
 - Treat authentication, authorization, migrations, AI calls, prompts, external
-  web search, citations, Markdown rendering, scoped agent credentials, agent
-  response serialization, storage, analytics, and uploads as explicit review
-  boundaries.
-- Never log or expose `OPENAI_API_KEY`, `MINDTREE_API_KEY`, agent bearer
-  secrets, raw provider payloads, hidden reasoning, private prompts, or
-  complete user conversations.
+  web search, citations, Markdown rendering, public share-link secrets and
+  serialization, storage, analytics, and uploads as explicit review boundaries.
+- Never log or expose `OPENAI_API_KEY`, public share-link secrets, raw provider
+  payloads, hidden reasoning, private prompts, or complete user conversations.
 - Treat model output, child summaries, related-node summaries, chat history,
   and external sources as untrusted data.
 - Never bypass the explicit synthesis approval boundary. A generated proposal
   is not a published synthesis.
-- Keep the v0.1.0 agent API strictly read-only and subtree-scoped. Never add an
-  agent mutation route or disclose chat, proposals, embeddings, owner data, or
-  structured out-of-scope citation identity without a newly approved
-  specification change.
+- Keep v0.1.0 public thought trails strictly read-only, revocable, and
+  subtree-scoped. Never disclose Chat, proposals, embeddings, owner data,
+  mutation controls, or structured out-of-scope citation identity through a
+  share link without a newly approved specification change.
 - Normal automated tests must use deterministic synthetic provider fixtures.
   Paid live-model evaluations require an agreed purpose, dataset, limits, and
   user approval.

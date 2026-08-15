@@ -121,19 +121,22 @@ Before declaring a commit unit complete:
    - external calls and stored data are intentional;
    - authorization, citation validation, Markdown sanitization, and approval
      boundaries remain server-enforced;
-   - agent credentials stay subtree-scoped and read-only, response fields use
-     an explicit allowlist, and structured out-of-scope citation identities
-     remain redacted.
+   - public share links stay revocable, subtree-scoped, and read-only; shared
+     fields use an explicit allowlist, and structured out-of-scope citation
+     identities remain undisclosed.
 4. Run the fresh-context independent-review gate below.
 5. Resolve accepted findings and rerun affected checks.
 6. Report the review disposition and propose exact user-facing, browser,
    live-provider, or deployment QA. Obtain approval before performing it.
-7. Perform approved QA and resolve accepted findings.
-8. Rerun affected verification and obtain focused independent re-review for
+7. Perform the approved agent-led QA and resolve accepted findings.
+8. For every commit containing a new UI feature, give the user a concrete
+   manual QA checklist and wait for them to complete it before requesting
+   commit approval. Agent-led browser checks never replace this owner QA gate.
+9. Rerun affected verification and obtain focused independent re-review for
    material post-review changes.
-9. Review every change made since the independent-review snapshot.
-10. Summarize changes, evidence, deviations, and remaining work.
-11. Obtain explicit approval before staging or committing.
+10. Review every change made since the independent-review snapshot.
+11. Summarize changes, evidence, deviations, and remaining work.
+12. Obtain explicit approval before staging or committing.
 
 Prepare one sequential commit unit at a time. Complete its verification,
 independent review, approved QA, and commit approval before implementing the
@@ -161,7 +164,7 @@ Useful specialties:
 - **Technical:** correctness, transactions, failure modes, tests, architecture,
   performance, dependencies, and scope.
 - **Security and AI integrity:** auth, ownership, secrets, prompts, untrusted
-  evidence, citations, approval boundaries, scoped agent responses, provider
+  evidence, citations, approval boundaries, public share responses, provider
   data, and external calls.
 - **Experience:** user behavior, accessibility, responsive layout, keyboard and
   touch use, chat streaming, diff clarity, and recovery states.
