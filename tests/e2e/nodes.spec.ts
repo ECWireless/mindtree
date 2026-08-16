@@ -20,6 +20,196 @@ function usesNarrowLayout(page: import("@playwright/test").Page) {
   return (page.viewportSize()?.width ?? 0) <= 760;
 }
 
+test("uses purposeful workspace motion and honors reduced-motion preferences", async ({
+  context,
+  page,
+}) => {
+  const seeded = await seedBrowserSession(pool);
+  const rootId = randomUUID();
+  const childId = randomUUID();
+  const destinationId = randomUUID();
+  const chatClientMessageId = randomUUID();
+
+  try {
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values ($1, $4, null, 0, 'Motion root'),
+              ($2, $4, $1, 0, 'Motion child'),
+              ($3, $4, null, 1, 'Motion destination')`,
+      [rootId, childId, destinationId, seeded.userId],
+    );
+    await pool.query(
+      `insert into chat_messages
+        (user_id, node_id, client_message_id, sequence, role, status, content, completed_at)
+       values
+        ($1, $2, $3, 0, 'user', 'completed', 'Give me the short version.', now()),
+        ($1, $2, $3, 1, 'assistant', 'completed', 'A compact synthetic answer.', now())`,
+      [seeded.userId, childId, chatClientMessageId],
+    );
+    await page.addInitScript(() => {
+      const originalAnimate = Element.prototype.animate;
+      const motionWindow = window as typeof window & {
+        __mindtreeNodeLayoutAnimations?: number[];
+      };
+      motionWindow.__mindtreeNodeLayoutAnimations = [];
+      Element.prototype.animate = function animate(keyframes, options) {
+        if (this instanceof HTMLElement && this.classList.contains("node-row")) {
+          const duration = typeof options === "number" ? options : options?.duration;
+          if (typeof duration === "number") {
+            motionWindow.__mindtreeNodeLayoutAnimations?.push(duration);
+          }
+        }
+        return Reflect.apply(originalAnimate, this, [keyframes, options]);
+      };
+    });
+    await installBrowserSessionCookie(context, seeded.cookie);
+    await page.goto("/");
+
+    const rootExpander = page.getByRole("button", { name: "Expand Motion root" });
+    await expect(rootExpander).toHaveAttribute("aria-expanded", "false");
+    await rootExpander.click();
+    const expandedRoot = page.getByRole("button", { name: "Collapse Motion root" });
+    await expect(expandedRoot).toHaveAttribute("aria-expanded", "true");
+    await expect.poll(() =>
+      expandedRoot.locator("svg").evaluate((icon) => getComputedStyle(icon).transform),
+    ).toBe("matrix(0, 1, -1, 0, 0, 0)");
+
+    expect(await page.locator(".node-list > li").first().evaluate((item) => {
+      const style = getComputedStyle(item);
+      return { duration: style.animationDuration, name: style.animationName };
+    })).toEqual({ duration: "0.34s", name: "branch-item-arrive" });
+
+    const newRootButton = page.getByRole("button", { name: "New root thought" });
+    await newRootButton.hover();
+    expect(await newRootButton.evaluate(
+      (button) => getComputedStyle(button, "::after").transitionDelay,
+    )).toBe("0.5s");
+
+    const search = page.getByRole("combobox", { name: "Search thought titles" });
+    await search.fill("Motion");
+    const searchResults = page.locator(".search-results");
+    await expect(searchResults).toBeVisible();
+    expect(
+      await searchResults.evaluate((results) => getComputedStyle(results).animationName),
+    ).toBe("surface-arrive");
+
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    const reducedTreeStyles = await page.evaluate(() => ({
+      branchItem: getComputedStyle(document.querySelector(".node-list > li")!).animationName,
+      expanderTransitionDuration: getComputedStyle(
+        document.querySelector(".node-expander svg")!,
+      ).transitionDuration,
+      searchResults: getComputedStyle(document.querySelector(".search-results")!).animationName,
+    }));
+    expect(reducedTreeStyles).toEqual({
+      branchItem: "none",
+      expanderTransitionDuration: "1e-05s",
+      searchResults: "none",
+    });
+    await search.press("Escape");
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+
+    await page.getByRole("link", { name: /Motion child/ }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Motion child" })).toBeVisible();
+    const detailMotionStyles = await page.evaluate(() => ({
+      branchOutline: getComputedStyle(document.querySelector(".branch-outline")!).animationName,
+      detailPane: getComputedStyle(document.querySelector(".detail-pane")!).animationName,
+    }));
+    expect(detailMotionStyles).toEqual({
+      branchOutline: "surface-arrive",
+      detailPane: "detail-pane-arrive",
+    });
+
+    await page.getByRole("button", { name: "Move To…" }).click();
+    const moveDialog = page.getByRole("dialog", {
+      name: "Choose a new location for Motion child",
+    });
+    await expect(moveDialog).toBeVisible();
+    expect(
+      await moveDialog.evaluate((dialog) => getComputedStyle(dialog).animationName),
+    ).toBe("dialog-arrive");
+
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    const reducedMotionStyles = await page.evaluate(() => ({
+      branchOutline: getComputedStyle(document.querySelector(".branch-outline")!).animationName,
+      detailPane: getComputedStyle(document.querySelector(".detail-pane")!).animationName,
+      dialog: getComputedStyle(document.querySelector(".node-dialog[open]")!).animationName,
+    }));
+    expect(reducedMotionStyles).toEqual({
+      branchOutline: "none",
+      detailPane: "none",
+      dialog: "none",
+    });
+
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await moveDialog.getByRole("button", { name: "Up one level" }).click();
+    await moveDialog.getByRole("button", { name: "Browse Motion destination" }).click();
+    await moveDialog.getByRole("button", { name: "Move here" }).click();
+    await expect(moveDialog).not.toBeVisible();
+    if (!usesNarrowLayout(page)) {
+      await expect.poll(() => page.evaluate(() => {
+        const motionWindow = window as typeof window & {
+          __mindtreeNodeLayoutAnimations?: number[];
+        };
+        return motionWindow.__mindtreeNodeLayoutAnimations?.includes(420) ?? false;
+      })).toBe(true);
+
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await page.evaluate(() => {
+        const motionWindow = window as typeof window & {
+          __mindtreeNodeLayoutAnimations?: number[];
+        };
+        motionWindow.__mindtreeNodeLayoutAnimations = [];
+      });
+      await page.getByRole("button", { name: "Move To…" }).click();
+      const reducedMoveDialog = page.getByRole("dialog", {
+        name: "Choose a new location for Motion child",
+      });
+      await reducedMoveDialog.getByRole("button", { name: "Up one level" }).click();
+      await reducedMoveDialog.getByRole("button", { name: "Browse Motion root" }).click();
+      await reducedMoveDialog.getByRole("button", { name: "Move here" }).click();
+      await expect(reducedMoveDialog).not.toBeVisible();
+      expect(await page.evaluate(() => {
+        const motionWindow = window as typeof window & {
+          __mindtreeNodeLayoutAnimations?: number[];
+        };
+        return motionWindow.__mindtreeNodeLayoutAnimations ?? [];
+      })).toEqual([]);
+    }
+
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+    const chatDialog = page.getByRole("dialog", { name: "Chat about Motion child" });
+    await expect(chatDialog).toBeVisible();
+    await expect.poll(() =>
+      chatDialog.evaluate((dialog) => getComputedStyle(dialog).transform),
+    ).toBe("none");
+    const chatLayout = await chatDialog.evaluate((dialog) => ({
+      alignContent: getComputedStyle(dialog.querySelector(".chat-history")!).alignContent,
+      messageHeights: [...dialog.querySelectorAll(".chat-message")].map(
+        (message) => message.getBoundingClientRect().height,
+      ),
+    }));
+    expect(chatLayout.alignContent).toBe("start");
+    expect(chatLayout.messageHeights).toHaveLength(2);
+    expect(Math.max(...chatLayout.messageHeights)).toBeLessThan(180);
+    if (usesNarrowLayout(page)) {
+      const dialogBox = await chatDialog.boundingBox();
+      const viewportWidth = page.viewportSize()?.width;
+      if (!dialogBox || !viewportWidth) {
+        throw new Error("Mobile Chat dialog and viewport must be measurable.");
+      }
+      expect(dialogBox.x).toBeCloseTo(0, 5);
+      expect(dialogBox.width).toBeCloseTo(viewportWidth, 5);
+      expect(
+        await chatDialog.evaluate((dialog) => getComputedStyle(dialog).maxWidth),
+      ).toBe("none");
+    }
+  } finally {
+    await seeded.cleanup();
+  }
+});
+
 test.afterAll(async () => {
   await pool.end();
 });
