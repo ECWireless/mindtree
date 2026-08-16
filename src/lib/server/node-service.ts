@@ -47,6 +47,8 @@ function toFlatNode(row: typeof nodes.$inferSelect): FlatNode {
     position: row.position,
     title: row.title,
     archivedAt: row.archivedAt?.toISOString() ?? null,
+    publishedSynthesisVersionId: row.publishedSynthesisVersionId,
+    synthesisStaleAt: row.synthesisStaleAt?.toISOString() ?? null,
   };
 }
 

@@ -162,6 +162,10 @@ describe("owner-scoped node service", () => {
       "Grandchild",
       "Second root",
     ]);
+    expect(tree.byId.get(firstRoot.id)).toMatchObject({
+      publishedSynthesisVersionId: null,
+      synthesisStaleAt: null,
+    });
     expect((await getNodeTreeForUser(otherUserId)).ordered).toEqual([]);
   });
 

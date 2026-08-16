@@ -10,12 +10,17 @@ import {
 } from "../../src/lib/nodes/presentation";
 import { assembleNodeTree, type FlatNode } from "../../src/lib/nodes/tree";
 
+const synthesisState = {
+  publishedSynthesisVersionId: null,
+  synthesisStaleAt: null,
+} as const;
+
 const flatNodes = [
-  { id: "alpha", parentId: null, position: 0, title: "Alpha Systems", archivedAt: null },
-  { id: "child", parentId: "alpha", position: 0, title: "Feedback Loop", archivedAt: null },
-  { id: "grandchild", parentId: "child", position: 0, title: "Deep Signal", archivedAt: null },
-  { id: "beta", parentId: null, position: 1, title: "Beta systems", archivedAt: "2026-01-01" },
-  { id: "beta-child", parentId: "beta", position: 0, title: "Other work", archivedAt: null },
+  { ...synthesisState, id: "alpha", parentId: null, position: 0, title: "Alpha Systems", archivedAt: null },
+  { ...synthesisState, id: "child", parentId: "alpha", position: 0, title: "Feedback Loop", archivedAt: null },
+  { ...synthesisState, id: "grandchild", parentId: "child", position: 0, title: "Deep Signal", archivedAt: null },
+  { ...synthesisState, id: "beta", parentId: null, position: 1, title: "Beta systems", archivedAt: "2026-01-01" },
+  { ...synthesisState, id: "beta-child", parentId: "beta", position: 0, title: "Other work", archivedAt: null },
 ] satisfies readonly FlatNode[];
 
 describe("node presentation", () => {
@@ -45,6 +50,8 @@ describe("node presentation", () => {
       position: 0,
       title: "Deep 4999",
       archivedAt: "2026-01-01T00:00:00.000Z",
+      publishedSynthesisVersionId: null,
+      synthesisStaleAt: null,
       children: [],
       breadcrumb: [],
       depth: 4_999,
@@ -56,6 +63,8 @@ describe("node presentation", () => {
         position: 0,
         title: `Deep ${depth}`,
         archivedAt: null,
+        publishedSynthesisVersionId: null,
+        synthesisStaleAt: null,
         children: [root],
         breadcrumb: [],
         depth,
@@ -106,10 +115,10 @@ describe("node presentation", () => {
 
   it("keeps root drop resolution valid after moving the source out of a child group", () => {
     const movedTree = assembleNodeTree([
-      { id: "second", parentId: null, position: 0, title: "Second", archivedAt: null },
-      { id: "existing", parentId: "second", position: 0, title: "Existing", archivedAt: null },
-      { id: "first", parentId: "second", position: 1, title: "First", archivedAt: null },
-      { id: "third", parentId: null, position: 1, title: "Third", archivedAt: null },
+      { ...synthesisState, id: "second", parentId: null, position: 0, title: "Second", archivedAt: null },
+      { ...synthesisState, id: "existing", parentId: "second", position: 0, title: "Existing", archivedAt: null },
+      { ...synthesisState, id: "first", parentId: "second", position: 1, title: "First", archivedAt: null },
+      { ...synthesisState, id: "third", parentId: null, position: 1, title: "Third", archivedAt: null },
     ]);
 
     expect(

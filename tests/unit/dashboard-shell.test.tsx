@@ -60,6 +60,9 @@ describe("DashboardShell", () => {
     expect(markup).toContain("3 nodes");
     expect(markup).toContain('data-tooltip="Show archived"');
     expect(markup).toContain('aria-pressed="false"');
+    expect(markup).toContain('aria-label="Node constellation"');
+    expect(markup).toContain('data-tooltip="Open node constellation"');
+    expect(markup).toContain('<path d="m7.3 10.9 7.6-3.8M7.3 13.1l7.6 3.8"></path>');
     expect(markup).toContain('data-tooltip="New root thought"');
     expect(markup).toContain('<path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"></path>');
     expect(markup).toContain('<path d="m16.5 16.5 4 4"></path>');
