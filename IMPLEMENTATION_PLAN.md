@@ -1105,18 +1105,28 @@ thought-trail sharing.
 ### User-visible outcome
 
 - The owner can switch between tree and constellation, explore the same visible
-  hierarchy, inspect synthesis/archive/stale state, and open a node back in the
-  tree.
+  hierarchy through a playful, responsive graphical surface, inspect a selected
+  node without turning the graph into a status dashboard, and open it back in
+  the tree.
 
 ### Deliverables
 
 - `d3-force` dependency and isolated deterministic graph-layout helpers.
 - Toolbar constellation toggle preserving node selection and **Show archived**
   state without a new route.
-- Uniform node bubbles and parent links; root blue, archived muted, stale ring,
-  yellow focus/selection.
-- Settling force layout, reset, pan, zoom, and local pointer/touch nudging with
-  no persisted coordinates or tree mutation.
+- Exponentially depth-scaled node bubbles and parent links; roots largest, each
+  deeper layer 75% of the preceding visual radius down to a small visual floor,
+  with separate 44-pixel minimum touch targets at every zoom level. Root blue, archived muted, yellow
+  focus/selection, and no bubble-level staleness styling. Size represents only
+  hierarchy depth, not importance or status.
+- Design-canvas zoom from 15% through 1200%, with all visible node details kept
+  in world space so borders, labels, dashes, and links retain their proportions
+  and resolve naturally as the camera moves closer. Screen-space hit targets,
+  nearest-node overview picking, and a stable keyboard/selection locator remain
+  camera-level usability affordances.
+- A lively settling force layout with responsive physical nudging, natural link
+  movement, direct panning, cursor-centered zoom, and satisfying reset feedback,
+  with no persisted coordinates or tree mutation.
 - Keyboard-focusable graph nodes with complete accessible names.
 - Selection card with breadcrumb, archive state, synthesis state, and **Open in
   tree**.
@@ -1125,8 +1135,8 @@ thought-trail sharing.
 
 ### Non-goals
 
-- No graph editing, size metric, stored coordinates, analytics, export,
-  additional route, schema, or server mutation.
+- No graph editing, importance/activity size metric, stored coordinates,
+  analytics, export, additional route, schema, or server mutation.
 - No change to proposal, citation, or approval semantics.
 
 ### Proposed commit units
@@ -1137,17 +1147,20 @@ thought-trail sharing.
 ### Acceptance
 
 - Constellation nodes exactly match tree archive visibility.
-- Uniform sizing does not imply semantic importance.
+- Depth sizing is dramatically visible, retains separate accessible touch
+  targets, and does not imply semantic importance.
 - Opening a bubble returns to and focuses the correct tree node.
 - Pan, zoom, reset, pointer/touch nudge, keyboard navigation, and reduced motion
   work at supported widths.
+- Direct manipulation feels playful and responsive without compromising
+  legibility, touch use, focus behavior, or the read-only boundary.
 - The layout settles and does not consume resources indefinitely.
 - Core tree editing remains the primary interface.
 
 ### Verification
 
-- Graph derivation, visibility, styling-state, and deterministic layout unit
-  tests.
+- Graph derivation, visibility, interaction-state, and deterministic layout
+  unit tests.
 - Desktop/mobile/reduced-motion Playwright workflows with touch and keyboard
   coverage.
 - Performance observation on a representative synthetic tree.

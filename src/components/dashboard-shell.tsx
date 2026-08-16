@@ -42,6 +42,7 @@ import { DeleteNodeDialog } from "@/components/delete-node-dialog";
 import { BranchOutlinePanel } from "@/components/branch-outline-panel";
 import { ChatPanel } from "@/components/chat-panel";
 import { MoveNodeDialog } from "@/components/move-node-dialog";
+import { NodeConstellation } from "@/components/node-constellation";
 import { NodeTreeList } from "@/components/node-tree-list";
 import { ExternalReferences } from "@/components/chat-message-content";
 import { PublishedSynthesisArtifact } from "@/components/synthesis-panel";
@@ -161,6 +162,25 @@ function EyeOffIcon() {
       <path d="M3 3l18 18" />
       <path d="M10.6 5.2A10.8 10.8 0 0 1 12 5c6 0 9.5 7 9.5 7a16.8 16.8 0 0 1-2.1 3" />
       <path d="M6.1 6.1A16.5 16.5 0 0 0 2.5 12S6 19 12 19c1.6 0 3-.5 4.3-1.1" />
+    </svg>
+  );
+}
+
+function GraphIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="m7.3 10.9 7.6-3.8M7.3 13.1l7.6 3.8" />
+      <circle cx="5" cy="12" r="2.4" />
+      <circle cx="17" cy="6" r="2.25" />
+      <circle cx="17" cy="18" r="2.25" />
     </svg>
   );
 }
@@ -538,6 +558,7 @@ function DashboardWorkspace({
   const tree = useMemo(() => assembleNodeTree(nodes), [nodes]);
   const selectedNode = selectedNodeId ? tree.byId.get(selectedNodeId) ?? null : null;
   const [showArchived, setShowArchived] = useState(selectedNode?.archivedAt != null);
+  const [constellationOpen, setConstellationOpen] = useState(false);
   const [creatingParentId, setCreatingParentId] = useState<
     string | null | undefined
   >(undefined);
@@ -561,6 +582,9 @@ function DashboardWorkspace({
   const chatTriggerRef = useRef<HTMLButtonElement>(null);
   const summaryHeadingRef = useRef<HTMLHeadingElement>(null);
   const approvalPreviousPublishedId = useRef<string | null | undefined>(undefined);
+  const constellationTriggerRef = useRef<HTMLButtonElement>(null);
+  const mobileConstellationTriggerRef = useRef<HTMLButtonElement>(null);
+  const pendingConstellationFocus = useRef<"toolbar" | "mobile-detail" | null>(null);
   const newRootTriggerRef = useRef<HTMLButtonElement>(null);
   const lifecycleRequestInFlight = useRef(false);
   const pendingTreeFocus = useRef<string | null>(null);
@@ -703,6 +727,9 @@ function DashboardWorkspace({
   }, [tree]);
 
   useEffect(() => {
+    if (constellationOpen) {
+      return;
+    }
     const nodeId = pendingTreeFocus.current;
     if (!nodeId || !tree.byId.has(nodeId)) {
       return;
@@ -724,7 +751,27 @@ function DashboardWorkspace({
         cancelAnimationFrame(settleFrame);
       }
     };
-  }, [tree]);
+  }, [constellationOpen, tree]);
+
+  useEffect(() => {
+    const target = pendingConstellationFocus.current;
+    if (
+      (target === "toolbar" && !constellationOpen) ||
+      (target === "mobile-detail" && constellationOpen) ||
+      target === null
+    ) {
+      return;
+    }
+    pendingConstellationFocus.current = null;
+    const frame = requestAnimationFrame(() => {
+      if (target === "toolbar") {
+        constellationTriggerRef.current?.focus();
+      } else {
+        mobileConstellationTriggerRef.current?.focus();
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [constellationOpen]);
 
   useEffect(() => {
     if (activeSearchIndex < 0) {
@@ -789,6 +836,7 @@ function DashboardWorkspace({
   }
 
   function chooseSearchResult(node: TreeNode) {
+    setConstellationOpen(false);
     if (node.archivedAt !== null) {
       setShowArchived(true);
     }
@@ -813,6 +861,29 @@ function DashboardWorkspace({
       link?.focus();
       pendingTreeFocus.current = null;
     });
+  }
+
+  function openNodeFromConstellation(nodeId: string) {
+    const node = tree.byId.get(nodeId);
+    if (!node) {
+      return;
+    }
+    if (node.archivedAt !== null) {
+      setShowArchived(true);
+    }
+    setExpanded((current) => {
+      const next = new Set(current);
+      for (const ancestor of node.breadcrumb.slice(0, -1)) {
+        next.add(ancestor.id);
+      }
+      return next;
+    });
+    pendingTreeFocus.current = node.id;
+    setConstellationOpen(false);
+    if (node.id !== selectedNode?.id) {
+      sessionStorage.setItem(pendingTreeFocusKey, node.id);
+      router.push(nodeHref(node.id));
+    }
   }
 
   function resolveDropIntent(event: DragMoveEvent | DragEndEvent) {
@@ -939,7 +1010,11 @@ function DashboardWorkspace({
 
   return (
     <main
-      className={`dashboard${selectedNode ? " dashboard--detail" : ""}`}
+      className={[
+        "dashboard",
+        selectedNode && !constellationOpen ? "dashboard--detail" : "",
+        constellationOpen ? "dashboard--constellation" : "",
+      ].filter(Boolean).join(" ")}
       data-testid="dashboard-shell"
     >
       <header className="dashboard-header">
@@ -1065,6 +1140,32 @@ function DashboardWorkspace({
             {showArchived ? <EyeOffIcon /> : <EyeIcon />}
           </button>
           <button
+            ref={constellationTriggerRef}
+            className="icon-button icon-button--toggle"
+            type="button"
+            aria-label="Node constellation"
+            aria-pressed={constellationOpen}
+            data-tooltip={
+              constellationOpen ? "Return to thought tree" : "Open node constellation"
+            }
+            onClick={() => {
+              setCreatingParentId(undefined);
+              setCreatingChildSurface(null);
+              setConstellationOpen((current) => {
+                if (
+                  current &&
+                  selectedNode &&
+                  window.matchMedia("(max-width: 760px)").matches
+                ) {
+                  pendingConstellationFocus.current = "mobile-detail";
+                }
+                return !current;
+              });
+            }}
+          >
+            <GraphIcon />
+          </button>
+          <button
             ref={newRootTriggerRef}
             className="icon-button icon-button--primary"
             type="button"
@@ -1072,6 +1173,7 @@ function DashboardWorkspace({
             aria-expanded={creatingParentId === null}
             data-tooltip="New root thought"
             onClick={(event) => {
+              setConstellationOpen(false);
               if (creatingParentId === null) {
                 setCreatingParentId(undefined);
               } else {
@@ -1096,6 +1198,22 @@ function DashboardWorkspace({
         </div>
       ) : null}
 
+      {constellationOpen ? (
+        <NodeConstellation
+          nodes={tree.ordered}
+          selectedNodeId={selectedNode?.id}
+          showArchived={showArchived}
+          onCreateRoot={() => {
+            createReturnFocus.current =
+              constellationTriggerRef.current ?? newRootTriggerRef.current;
+            setConstellationOpen(false);
+            setCreatingChildSurface(null);
+            setCreatingParentId(null);
+          }}
+          onOpenNode={openNodeFromConstellation}
+          onShowArchived={() => setShowArchived(true)}
+        />
+      ) : (
       <div className={`dashboard-main${selectedNode ? " dashboard-main--detail" : ""}`}>
         <nav className="tree-pane" aria-label="Thought tree">
           <p className="pane-eyebrow">Thoughts</p>
@@ -1237,17 +1355,34 @@ function DashboardWorkspace({
         <section className="detail-pane" aria-labelledby={selectedNode ? "node-detail-title" : "detail-empty-title"}>
           {selectedNode ? (
             <>
-              <Link
-                className="mobile-back"
-                href="/"
-                onClick={() => {
-                  if (showArchived) {
-                    sessionStorage.setItem(pendingShowArchivedKey, "true");
-                  }
-                }}
-              >
-                <span aria-hidden="true">←</span> Back to thoughts
-              </Link>
+              <div className="mobile-detail-nav">
+                <Link
+                  className="mobile-back"
+                  href="/"
+                  onClick={() => {
+                    if (showArchived) {
+                      sessionStorage.setItem(pendingShowArchivedKey, "true");
+                    }
+                  }}
+                >
+                  <span aria-hidden="true">←</span> Back to thoughts
+                </Link>
+                <button
+                  ref={mobileConstellationTriggerRef}
+                  className="icon-button icon-button--toggle mobile-constellation-trigger"
+                  type="button"
+                  aria-label="Open node constellation"
+                  data-tooltip="Open node constellation"
+                  onClick={() => {
+                    pendingConstellationFocus.current = "toolbar";
+                    setCreatingParentId(undefined);
+                    setCreatingChildSurface(null);
+                    setConstellationOpen(true);
+                  }}
+                >
+                  <GraphIcon />
+                </button>
+              </div>
               <nav className="breadcrumbs" aria-label="Breadcrumb">
                 <ol>
                   {selectedNode.breadcrumb.map((item, index) => (
@@ -1402,6 +1537,7 @@ function DashboardWorkspace({
           )}
         </section>
       </div>
+      )}
       {selectedNode && moveDialogOpen ? (
         <MoveNodeDialog
           node={selectedNode}

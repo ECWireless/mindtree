@@ -4,6 +4,8 @@ export type FlatNode = {
   position: number;
   title: string;
   archivedAt: string | null;
+  publishedSynthesisVersionId: string | null;
+  synthesisStaleAt: string | null;
 };
 
 export type NodeBreadcrumb = {

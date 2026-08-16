@@ -9,6 +9,8 @@ export const syntheticDashboardNodes = [
     position: 0,
     title: "Living systems",
     archivedAt: null,
+    publishedSynthesisVersionId: null,
+    synthesisStaleAt: null,
   },
   {
     id: "feedback",
@@ -16,6 +18,8 @@ export const syntheticDashboardNodes = [
     position: 0,
     title: "Feedback loops",
     archivedAt: null,
+    publishedSynthesisVersionId: null,
+    synthesisStaleAt: null,
   },
   {
     id: "questions",
@@ -23,5 +27,7 @@ export const syntheticDashboardNodes = [
     position: 1,
     title: "Open questions",
     archivedAt: null,
+    publishedSynthesisVersionId: null,
+    synthesisStaleAt: null,
   },
 ] satisfies readonly FlatNode[];

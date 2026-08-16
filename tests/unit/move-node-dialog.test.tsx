@@ -14,13 +14,18 @@ import { assembleNodeTree, type FlatNode } from "@/lib/nodes/tree";
 
 describe("MoveNodeDialog", () => {
   it("renders the TimeTree-style hierarchy browser with bounded level content", () => {
+    const synthesisState = {
+      publishedSynthesisVersionId: null,
+      synthesisStaleAt: null,
+    } as const;
     const flatNodes: FlatNode[] = [
-      { id: "source", parentId: null, position: 0, title: "Source", archivedAt: null },
-      { id: "parent-a", parentId: null, position: 1, title: "Parent A", archivedAt: null },
-      { id: "duplicate-a", parentId: "parent-a", position: 0, title: "Duplicate", archivedAt: null },
-      { id: "parent-b", parentId: null, position: 2, title: "Parent B", archivedAt: null },
-      { id: "duplicate-b", parentId: "parent-b", position: 0, title: "Duplicate", archivedAt: null },
+      { ...synthesisState, id: "source", parentId: null, position: 0, title: "Source", archivedAt: null },
+      { ...synthesisState, id: "parent-a", parentId: null, position: 1, title: "Parent A", archivedAt: null },
+      { ...synthesisState, id: "duplicate-a", parentId: "parent-a", position: 0, title: "Duplicate", archivedAt: null },
+      { ...synthesisState, id: "parent-b", parentId: null, position: 2, title: "Parent B", archivedAt: null },
+      { ...synthesisState, id: "duplicate-b", parentId: "parent-b", position: 0, title: "Duplicate", archivedAt: null },
       ...Array.from({ length: 101 }, (_, index) => ({
+        ...synthesisState,
         id: `extra-${index}`,
         parentId: null,
         position: index + 3,

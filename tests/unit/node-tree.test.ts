@@ -13,6 +13,8 @@ function node(index: number, overrides: Partial<FlatNode> = {}): FlatNode {
     position: 0,
     title: `Node ${index}`,
     archivedAt: null,
+    publishedSynthesisVersionId: null,
+    synthesisStaleAt: null,
     ...overrides,
   };
 }

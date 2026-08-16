@@ -503,11 +503,28 @@ thought-trail sharing and v0.1.0 release readiness.
 - A graph icon in the tree toolbar switches between the primary tree workspace
   and a read-only, full-workspace constellation without changing the route.
 - The **Show archived** state applies to both views.
-- Each visible node is a uniform bubble connected to its current parent. The
-  visualization does not imply importance through an invented size metric.
-- Root nodes use brand blue, archived nodes are muted, stale nodes have a
-  restrained distinct ring, and yellow remains reserved for focus and
-  selection.
+- Each visible node is a bubble connected to its current parent. Root visual
+  radius is largest, and each deeper layer is 75% of its parent layer down to a
+  small visual floor. A separate transparent minimum touch target stays at
+  least 44 pixels across every zoom level and keeps tiny deep nodes directly
+  manipulable. Bubble size communicates hierarchy depth
+  only, never importance, activity, or staleness.
+- Zoom behaves like a design-canvas camera across a broad 15%–1200% range.
+  Bubble borders, labels, archived dashes, and links remain fixed in world space
+  and scale uniformly with their nodes. Every node
+  retains a proportionally fitted label that naturally becomes legible when the
+  user zooms in; zoom never swaps or enlarges visual styles independently.
+  Invisible hit targets and the keyboard/selection locator are camera UI rather
+  than node art: they retain usable screen-space dimensions, and overview-scale
+  pointer input resolves to the nearest node instead of SVG paint order.
+- Root nodes use brand blue, archived nodes are muted, and yellow remains
+  reserved for focus and selection. Staleness does not change bubble styling;
+  the selected-node card may report synthesis state quietly without turning
+  the constellation into a status dashboard.
+- Interaction quality is the feature's leading experience goal. The graph has
+  a lively initial settle, responsive physical nudging, natural link movement,
+  direct panning, cursor-centered zoom, and satisfying selection and reset
+  feedback while remaining calm and legible.
 - The force-directed layout settles instead of animating indefinitely and can
   be reset. The owner may pan, zoom, and locally nudge bubbles without
   persisting coordinates or changing the tree.
@@ -517,6 +534,7 @@ thought-trail sharing and v0.1.0 release readiness.
 - Reduced-motion preferences use a stable deterministic layout.
 - Desktop and mobile layouts retain recovery actions for empty and
   archived-only states.
+- The visible workspace heading is **Thought Constellation** with no subtitle.
 - The constellation does not add editing, persistent coordinates, analytics,
   export, stored graph aggregates, routes, or database fields.
 
