@@ -56,7 +56,7 @@ export const runtime = "nodejs";
 const MAX_CHAT_REQUEST_BYTES = 128_000;
 const PERSISTENCE_BATCH_CHARACTERS = 1_024;
 const PERSISTENCE_BATCH_MS = 250;
-export const STALE_BRANCH_OUTLINE_SUMMARY_NOTICE =
+const STALE_BRANCH_OUTLINE_SUMMARY_NOTICE =
   "Regenerate the stale Branch Outline before requesting a new Summary. You can still discuss the existing outline here.";
 
 class ChatRequestTooLargeError extends Error {}
