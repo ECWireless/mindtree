@@ -1,6 +1,6 @@
 # MindTree v0.1.0 Implementation Plan
 
-Status: Approved sequence; implementation not started
+Status: Approved sequence; Phases 0–11 complete
 
 This is the temporary delivery roadmap for `SPEC.md`. It is intentionally
 deleted in the final v0.1.0 release-readiness unit after all phases and evidence
@@ -32,9 +32,9 @@ v0.1.0 is complete only when an authorized owner can organize an infinitely
 nested tree, hold a persistent node conversation, generate and explicitly
 approve a cited synthesis proposal, explicitly generate a recursive Branch
 Outline, see child-driven Summary and outline staleness, request external
-research with clickable References, archive and delete subtrees, grant a coding
-agent read-only access to an approved synthesis subtree, and navigate the same
-tree through a responsive Node Constellation.
+research with clickable References, archive and delete subtrees, navigate the
+same tree through a responsive Node Constellation, and publish a revocable
+read-only thought trail for one current subtree.
 
 The release must preserve the invariant that no generated text becomes the
 published synthesis without an explicit, current, transactional owner
@@ -61,8 +61,8 @@ approval.
 - pnpm with a committed lockfile and recorded package-manager version.
 - Server Components for authoritative reads, Server Actions for bounded
   mutations, and a streaming route handler for chat generation.
-- One versioned bearer-authenticated route exposes an explicitly allowlisted,
-  read-only approved subtree to connected agents.
+- One dedicated public page renders an explicitly shared, read-only current
+  subtree without exposing a general-purpose data API.
 - Tailwind CSS plus locally owned accessible primitives and restrained global
   styles adapted from TimeTree.
 - No separate API service, GraphQL, tRPC, Redux, or React Query.
@@ -141,7 +141,7 @@ Every phase that touches the relevant area preserves these rules:
 4. Chat messages, proposals, and published syntheses are distinct persisted
    concepts.
 5. Branch Outlines are versioned generated context, not published syntheses;
-   they never appear in the approved-synthesis agent API.
+   they remain readable in an explicitly shared thought trail.
 6. Generated content cannot move the node's published synthesis pointer.
 7. Approval checks its base version and exact source revisions inside the
    transaction.
@@ -157,9 +157,9 @@ Every phase that touches the relevant area preserves these rules:
     provider payloads, and hidden reasoning.
 13. Node Constellation stays read-only and reflects the same tree and archive
     visibility as the primary workspace.
-14. An agent bearer key can read only its current subtree's approved material;
-    credential management remains owner-session-only and the agent API has no
-    mutation method.
+14. A public share link exposes only its current subtree's allowlisted
+    read-only thought-trail material; creation and revocation remain
+    owner-session-only.
 
 ## Verification commands at maturity
 
@@ -229,8 +229,8 @@ Create the durable product contract and working agreements before scaffolding.
 
 - The documents agree on multiple roots, archive language, persistent chat,
   explicit synthesis approval, persistent revisions, chosen models, per-turn
-  web authorization, scoped read-only agent access, final-feature
-  Constellation, first tag at v0.1.0, and final plan deletion.
+  web authorization, public thought-trail sharing, final-feature sequence,
+  first tag at v0.1.0, and final plan deletion.
 - The exact TimeTree source repository is retained as the reference for general
   UX, styling, stack, and repository conventions, with MindTree divergences
   governed by `SPEC.md`.
@@ -776,7 +776,8 @@ manual approval as the only Summary-publication path.
 - Deep ancestor propagation is iterative and owner-scoped.
 - Regenerating an outline clears only that outline's stale state and does not
   stale its Summary.
-- Branch Outlines never appear in the read-only approved-synthesis agent API.
+- Branch Outlines remain available to the owner and any explicitly shared
+  thought-trail view without becoming published Summaries.
 
 ### Verification
 
@@ -956,8 +957,8 @@ an approval-required synthesis proposal.
 
 ### Goal
 
-Harden the complete tree-chat-synthesis workflow before adding scoped agent
-access and the final Constellation feature.
+Harden the complete tree-chat-synthesis workflow before the final interaction,
+Constellation, and public sharing phases.
 
 ### User-visible outcome
 
@@ -980,8 +981,8 @@ access and the final Constellation feature.
   citation names, touch targets, dialog focus, and reduced motion.
 - Responsive pass at agreed small mobile, mobile, tablet, and desktop widths.
 - Privacy/security pass for logs, rendered Markdown, URL handling, prompt
-  injection, authorization order, secrets, provider retention, and the upcoming
-  agent-response allowlist boundary.
+  injection, authorization order, secrets, provider retention, and the
+  upcoming public-share allowlist boundary.
 - Synthetic live-model evaluation harness with fixed fixtures, bounded calls,
   recorded structural outcomes, and manual quality rubric.
 - README setup/deployment/model notes updated to match shipped behavior.
@@ -1019,8 +1020,8 @@ after results are seen.
 - No P0–P2 review finding remains unresolved without explicit user disposition.
 - Approved live evaluation meets its predeclared structural and quality bar.
 - Core product copy makes proposal versus published synthesis unmistakable.
-- The read-only agent API and final Constellation can consume the same tree read
-  model without changing core synthesis behavior.
+- The final Constellation and public thought-trail view can consume the same
+  tree read model without changing core synthesis behavior.
 
 ### Verification
 
@@ -1030,204 +1031,76 @@ after results are seen.
 
 ---
 
-## Phase 12 — Scoped credential and read-only agent API
+## Phase 12 — Summary readability and purposeful interaction motion
 
 ### Goal
 
-Add TimeTree-style dynamic subtree credentials while exposing only current
-approved knowledge through one read-only route.
+Improve the readability and tactile quality of the existing product without
+changing its information architecture, persistence, or AI behavior.
 
 ### User-visible outcome
 
-- An owner can create, rotate, and revoke a cryptographically protected key for
-  a selected node.
-- A valid key can read that node's current subtree and approved syntheses but
-  cannot access chats, drafts, history, embeddings, owner data, or any mutation.
+- Summary paragraphs, ordered lists, and unordered lists have clear rhythm,
+  indentation, and visible markers across published and proposal states.
+- Priority interactions feel responsive and polished through short,
+  purposeful motion that remains calm and fully usable with reduced motion.
 
 ### Deliverables
 
-- `agentApiKeys` schema with UUID selector, owner/root composite foreign key,
-  unique owner/root constraint, `bytea(32)` SHA-256 digest, and creation time.
-- Strict `mtk_v1.<credential UUID>.<43-character base64url secret>` generation,
-  parsing, hashing, constant-time verification, and safe one-time plaintext
-  return from owner actions.
-- Owner-session-only create, rotate, and revoke services/actions using expected
-  credential IDs and the shared stable owner/node/credential lock order.
-- Central bearer-key authorization guard that rechecks the owning verified
-  allowlisted identity on every request.
-- Dynamic subtree resolution in one coherent transaction: the returned scope
-  root has `parentId: null`; current descendants follow moves; archived nodes
-  remain readable.
-- A read-only `REPEATABLE READ` transaction whose first database operation
-  verifies the credential and establishes the authorization/snapshot
-  linearization point; movement and deletion appear wholly before or after that
-  snapshot.
-- Explicit agent response contracts for nodes, current approved syntheses,
-  scope-filtered internal-link annotations, and approved external References.
-- Exact discriminated internal-link representations for `available`,
-  `redacted`, and `unavailable`, with UTF-16 content offsets; redacted and
-  unavailable states reveal no target snapshots or identity fields.
-- `GET /api/agent/v1/tree` as the only agent route, with JSON, force-dynamic,
-  no-store behavior and explicit allowlist serialization.
-- Deterministic `405` plus `Allow: GET` for every non-GET method, including
-  `HEAD` and `OPTIONS`.
-- Database-side 2,000-node, 20,000-citation/Reference, and 6-MiB text preflight;
-  a final 8-MiB UTF-8 JSON ceiling over the bounded materialized result; and one
-  finite `413` representation for either limit stage.
-- Finite safe errors that do not distinguish malformed, revoked, or
-  disallowed-owner keys.
-- No OpenAI call anywhere in the credential or agent-read path.
+- Summary Markdown typography for paragraph separation, ordered and unordered
+  markers, nested-list indentation, long-line wrapping, and mobile readability.
+- A separately debriefed audit of the highest-value motion opportunities across
+  tree expansion and selection, node-detail changes, dialogs, feedback states,
+  Chat, Summary publication, Branch Outline states, and responsive navigation.
+- A small shared motion vocabulary using existing CSS and React capabilities
+  unless the motion debrief proves a focused dependency is necessary.
+- Reduced-motion behavior that removes nonessential transforms and preserves
+  immediate state clarity, focus, keyboard operation, and screen-reader status
+  behavior.
 
 ### Explicit non-goals
 
-- No agent operation for any HTTP method other than the documented `GET`.
-- No node creation, proposal submission, chat, model invocation, rename,
-  movement, archive, deletion, approval, or rejection through the key.
-- No raw chat, pending/rejected/superseded proposal, prior synthesis revision,
-  Branch Outline, embedding, owner, credential, or provider metadata in a
-  response.
-- No MCP server, general OAuth/API platform, per-key permissions, labels,
-  expiration, last-used tracking, audit history, application-level rate
-  limiter, arbitrary node lookup, search, or pagination.
-
-### Migration and concurrency boundary
-
-- Review the key table and composite ownership constraint before applying the
-  migration.
-- Credential create/rotate/revoke uses one lock order. Agent reads instead use
-  the specified read-only repeatable snapshot.
-- Rotation/revocation commits invalidate subsequently established snapshots;
-  an earlier linearized read may finish returning its already-authorized
-  snapshot.
-- Moving descendants during a read cannot produce a mixed or scope-leaking
-  response.
+- No decorative continuous animation, delayed core action, layout-blocking
+  transition, sound, haptics, schema change, provider call, or product workflow
+  redesign.
+- No animation implementation begins until the post-typography motion audit is
+  debriefed and explicitly approved.
 
 ### Proposed commit units
 
-1. `feat: add read-only agent credential foundation`
-2. `feat: add scoped approved-synthesis tree API`
-3. `test: harden agent scope and credential races`
+1. `fix: improve Summary document readability`
+2. Motion commit units are defined after the dedicated interaction audit and
+   debrief rather than precommitting to an animation library or broad rewrite.
 
 ### Acceptance
 
-- Plaintext secrets are returned only at create/rotate and never stored.
-- At most one current key exists per selected node; none exists after
-  revocation.
-- Missing, malformed, wrong, revoked, and disallowed-owner keys receive the same
-  bounded unauthorized representation.
-- The key reads the scope root and current descendants in stable depth-first
-  order, including archived nodes.
-- A moved-out descendant disappears and a moved-in node appears without leaking
-  the scope root's actual parent or siblings.
-- Only current approved syntheses and published References appear.
-- Out-of-scope internal-link annotations are redacted without becoming a scope
-  oracle.
-- Approved prose is returned verbatim, with the documented warning that
-  structured record isolation is not semantic DLP over owner-approved text.
-- No API request can mutate product or credential data.
-- Oversized scopes fail at database preflight before row materialization or at
-  final serialization of the already bounded result; every non-GET method
-  receives the specified `405`.
-- Rotation/revocation and subtree movement race tests preserve the defined
-  linearization behavior.
+- Separate Summary paragraphs are visually distinct.
+- Ordered and unordered lists retain semantic HTML, visible markers, readable
+  indentation, and clean wrapping at supported desktop and mobile widths.
+- Branch Outline's existing specialized list treatment remains intact.
+- Approved motion is short, functional, interruption-safe, and disabled or
+  simplified under `prefers-reduced-motion`.
+- No interaction becomes pointer-only or loses visible focus or status
+  communication.
 
 ### Verification
 
-- Token parsing/hash unit tests and agent serialization/redaction unit tests.
-- PostgreSQL credential lifecycle, dynamic scope, coherent snapshot,
-  cross-owner, rotation/revocation, movement, archive, and deletion integration
-  tests.
-- Route tests for headers, no-store JSON, finite errors, allowlisted fields,
-  node/citation/text/serialized-byte ceilings, and rejection of every non-GET
-  method including `HEAD` and `OPTIONS`.
-- Static checks, schema check, build, and deterministic API contract tests.
-- Two independent reviewers: technical/data-integrity and security/privacy.
-- No live-model evaluation or browser QA in this backend unit.
+- Summary rendering unit tests plus desktop/mobile browser inspection with
+  synthetic long, nested, ordered, and unordered content.
+- Focused motion tests selected during the later debrief, including explicit
+  reduced-motion browser coverage.
+- One independent experience/accessibility reviewer for typography; the motion
+  unit chooses proportional technical and experience review after its scope is
+  known.
 
 ---
 
-## Phase 13 — Agent-access dashboard and Codex setup
+## Phase 13 — Node Constellation
 
 ### Goal
 
-Make the read-only API safely usable from the selected-node workspace and from
-an explicitly connected Codex repository.
-
-### User-visible outcome
-
-- The owner can manage selected-node read access, copy a key once, install a
-  deployment-specific Codex skill, connect a repository, and verify the
-  connection without mutating MindTree.
-
-### Deliverables
-
-- Selected-node **Agent access** summary and modal for absent/active credential
-  state.
-- One-time key presentation with disabled close until the owner acknowledges
-  saving it, copyable `MINDTREE_API_KEY=<key>` line, and safe clipboard failure
-  fallback.
-- No-store create/rotate responses and guarded in-memory secret state cleared
-  on acknowledgement, navigation, reload, and `pageshow`/BFCache restoration;
-  no browser storage, URL, replay, or post-dismissal recovery path.
-- Expected-credential create/rotate/revoke confirmations, stale-control
-  conflict reconciliation, pending-state focus management, and secret
-  redaction in browser capture/logging.
-- Canonical-origin and explicit-loopback validation for generated setup.
-- Generated global `mindtree-node-access` skill with valid metadata, embedded
-  canonical API origin, read-only response contract, dynamic scope, citation
-  redaction, secret handling, no-store read behavior, and untrusted-data rules.
-- Generated activation guidance that uses the skill only when the repository's
-  ignored `.env` defines `MINDTREE_API_KEY` and the user asks to consult
-  MindTree. Key presence alone never triggers a read.
-- One-time harness setup prompt and manual fallback that contain no key,
-  credential ID, or scope-root ID.
-- Per-repository setup copy and a verification prompt that performs only
-  `GET /tree`.
-- README and `.env.example` guidance distinguishing the MindTree deployment's
-  server environment from a connected repository's ignored
-  `MINDTREE_API_KEY`.
-
-### Proposed commit units
-
-1. `feat: add read-only agent access management`
-2. `feat: generate MindTree Codex node-access setup`
-3. `test: verify agent credential dashboard lifecycle`
-
-### Acceptance
-
-- The plaintext key is visible only during the guarded one-time state and is
-  absent after acknowledgement, refresh, rotation replacement, or revocation.
-- Browser back/forward-cache restoration and history navigation cannot restore
-  a discarded plaintext key.
-- Generated skill/setup never contains the key or selected node ID.
-- Repository instructions require confirming `.env` is ignored and untracked.
-- The verification workflow performs only the documented read operation.
-- Creating, rotating, or revoking from stale concurrent browser pages fails or
-  reconciles safely without affecting a newer credential.
-- Dialog focus, copy failure, long titles, mobile overflow, and secret-bearing
-  capture restrictions match the privacy and accessibility boundary.
-
-### Verification
-
-- Unit tests for canonical origin, generated skill content, activation rules,
-  and secret-free setup prompts.
-- Integration tests for owner-only metadata/actions and stale expected-ID
-  conflicts.
-- Playwright create/copy/acknowledge/rotate/revoke and BFCache/history flows at
-  desktop and mobile widths with screenshot, trace, and video disabled while
-  plaintext is visible.
-- Read-only connection verification against synthetic scoped data.
-- Two independent reviewers: security/privacy and experience/accessibility.
-- User-approved browser QA after review; no paid model call.
-
----
-
-## Phase 14 — Node Constellation, the final v0.1.0 feature
-
-### Goal
-
-Add the read-only graphical view as the final product feature before release
-readiness.
+Add the read-only graphical view after interaction polish and before public
+thought-trail sharing.
 
 ### User-visible outcome
 
@@ -1281,8 +1154,90 @@ readiness.
 - Two reviewers: technical/performance and accessibility/experience.
 - User-approved browser QA.
 
-No further product feature begins before v0.1.0. Any newly requested capability
-is deferred or explicitly re-scopes the release.
+No public-sharing implementation begins until Constellation is complete and
+the dedicated sharing debrief is approved.
+
+---
+
+## Phase 14 — Shareable read-only thought trails
+
+### Goal
+
+Let the owner create and revoke an unguessable public link that dynamically
+shares one selected node and its current subtree as a read-only thought trail.
+
+### User-visible outcome
+
+- The owner can create, copy, and revoke a share link for the selected branch.
+- Anyone with the link can navigate the shared root and its deepest current
+  descendants, including node titles, approved Summaries, Branch Outlines,
+  in-scope internal links, external links, and published References.
+- The public experience contains no Chat history, composer, regeneration,
+  proposal, decision, or node-management functionality.
+
+### Deliverables
+
+- Owner-session-only share-link creation and revocation with an unguessable
+  capability secret whose plaintext is not stored.
+- A dynamic current-subtree read boundary that reveals no real parent,
+  ancestor, sibling, other branch, owner, or private operational record.
+- A responsive public thought-trail surface that reuses the safe Summary,
+  Branch Outline, external-citation, and References presentation while omitting
+  every private or mutable dashboard control.
+- Public navigation among current in-scope nodes from the shared root through
+  arbitrary depth.
+- Internal links whose live targets remain in scope; out-of-scope or deleted
+  targets keep their phrase as plain text without a destination or structured
+  target identity.
+- Immediate revocation semantics and dynamic reconciliation when nodes move
+  into or out of the current subtree or the scope root moves or is deleted.
+- Explicit cache, indexing, referrer, response-size, archive-visibility, and
+  concurrent read/revoke decisions approved during the phase debrief.
+- Safe absent, revoked, malformed, deleted-root, empty-content, stale-content,
+  oversized, mobile, and deeply nested states.
+
+### Explicit non-goals
+
+- No Chat visibility or submission, Branch Outline generation/regeneration,
+  proposal history or decisions, node mutation, comments, collaboration,
+  invitations, owner identity, general-purpose API, export, or snapshot copy.
+- No semantic data-loss prevention over prose the owner deliberately shares;
+  the boundary prevents structured out-of-scope navigation and record
+  disclosure.
+
+### Provisional commit units
+
+1. `feat: add revocable branch share links`
+2. `feat: add public read-only thought trails`
+3. `test: harden shared-branch privacy and dynamic scope`
+
+The Phase 14 debrief must decide whether these remain one PR-sized phase or
+split into separate persistence/security and public-experience PR batches.
+
+### Acceptance
+
+- A valid link shows exactly its current shared subtree through arbitrary
+  depth, and ordinary owner changes appear without recreating the link.
+- Revocation and root deletion make the link unavailable without changing
+  branch content.
+- Moving a descendant out removes it; moving one in adds it; moving the root
+  preserves the link without exposing its surrounding tree.
+- Chat, private artifacts, owner data, mutation controls, and out-of-scope link
+  targets never appear in markup, serialized props, browser data, or errors.
+- In-scope internal links, validated external links, References, and Branch
+  Outlines remain readable and keyboard accessible.
+- Public requests never call OpenAI or mutate MindTree.
+
+### Verification
+
+- Token lifecycle, dynamic scope, internal-link filtering, allowlisted public
+  serialization, response bounds, and revoke/read race unit and PostgreSQL
+  integration tests.
+- Desktop/mobile/deep-tree Playwright coverage for creation, copy, public
+  navigation, owner changes, and revocation using synthetic content.
+- Two independent reviewers: technical/security/privacy and
+  experience/accessibility.
+- User-approved browser QA after review; no live-model call.
 
 ---
 
@@ -1319,9 +1274,10 @@ temporary plan, and prepare—but do not automatically create—the first tag.
    - related-node internal-link navigation;
    - explicitly enabled web research, inline citations, and References;
    - archive, show archived, unarchive, and confirmed deletion;
-   - agent-key creation, one-time copy, scoped subtree read, citation
-     redaction, rotation, revocation, and rejected write-method probes;
    - constellation desktop, mobile, touch, keyboard, and reduced motion.
+   - share-link creation, public current-subtree navigation, in-scope and
+     out-of-scope internal links, external References, dynamic owner changes,
+     and revocation at desktop and mobile widths.
 7. Obtain approval for and run the bounded synthetic live-model evaluation and
    live web citation scenario with capture configured not to retain secrets or
    private content.
@@ -1379,12 +1335,11 @@ The following ideas are intentionally outside this plan unless the user later
 updates `SPEC.md`:
 
 - provider/model configurability and quality/cost routing;
-- teams, sharing, public links, and collaboration;
+- teams, invitations, roles, and real-time collaboration;
 - automatic or scheduled refresh proposals;
 - notifications or background workers;
 - user-editable published Markdown;
 - import/export, files, images, and rich blocks;
-- agent API writes, MCP, or automatic/background MindTree access;
 - semantic user-facing global search;
 - ANN vector indexes justified by measured scale;
 - graph editing or persistent constellation coordinates;

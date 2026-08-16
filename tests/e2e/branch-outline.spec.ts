@@ -47,6 +47,25 @@ test("generates and regenerates a Branch Outline below Summary", async ({ contex
     await expect(outline.getByRole("list")).toBeVisible();
     await expect(outline.getByRole("list")).toHaveAttribute("role", "list");
     await expect(outline.getByRole("listitem")).toHaveCount(2);
+    const outlineMotion = await outline.evaluate((element) => {
+      const content = element.querySelector(".branch-outline__content--current");
+      const firstItem = content?.querySelector("li");
+      if (!content || !firstItem) return null;
+      const contentStyle = getComputedStyle(content);
+      const itemStyle = getComputedStyle(firstItem);
+      return {
+        contentDuration: contentStyle.animationDuration,
+        contentName: contentStyle.animationName,
+        itemDuration: itemStyle.animationDuration,
+        itemName: itemStyle.animationName,
+      };
+    });
+    expect(outlineMotion).toEqual({
+      contentDuration: "0.42s",
+      contentName: "outline-content-reveal",
+      itemDuration: "0.34s",
+      itemName: "outline-step-arrive",
+    });
     const outlineVisuals = await outline.evaluate((element) => {
       const panel = getComputedStyle(element);
       const item = element.querySelector("li");
@@ -62,6 +81,9 @@ test("generates and regenerates a Branch Outline below Summary", async ({ contex
     expect(outlineVisuals.panelRadius).not.toBe("0px");
     expect(outlineVisuals.itemBackground).not.toBe("rgba(0, 0, 0, 0)");
     expect(outlineVisuals.itemRadius).not.toBe("0px");
+    await expect.poll(() => outline.getByRole("listitem").first().evaluate(
+      (item) => getComputedStyle(item).transform,
+    )).toBe("none");
     const branchGeometry = await outline.evaluate((element) => {
       const list = element.querySelector("ul, ol");
       const item = list?.querySelector("li");
@@ -90,6 +112,20 @@ test("generates and regenerates a Branch Outline below Summary", async ({ contex
     );
     expect(first.rows).toHaveLength(1);
 
+    await page.evaluate(() => {
+      const motionWindow = window as typeof window & { __outlineRevealStarts?: number };
+      motionWindow.__outlineRevealStarts = 0;
+      document.addEventListener("animationstart", (event) => {
+        if (
+          event.animationName === "outline-content-reveal" &&
+          event.target instanceof HTMLElement &&
+          event.target.classList.contains("branch-outline__content--current")
+        ) {
+          motionWindow.__outlineRevealStarts = (motionWindow.__outlineRevealStarts ?? 0) + 1;
+        }
+      });
+    });
+
     await outline.getByRole("button", { name: "Regenerate", exact: true }).click();
     await expect.poll(async () => {
       const result = await pool.query<{ count: number }>(
@@ -107,6 +143,10 @@ test("generates and regenerates a Branch Outline below Summary", async ({ contex
     );
     expect(current.rows[0]?.current_id).not.toBe(first.rows[0]?.id);
     expect(current.rows[0]?.summary_id).toBeNull();
+    await expect.poll(() => page.evaluate(() => {
+      const motionWindow = window as typeof window & { __outlineRevealStarts?: number };
+      return motionWindow.__outlineRevealStarts ?? 0;
+    })).toBe(1);
   } finally {
     await pool.query(`delete from "user" where id = $1`, [seeded.userId]);
   }

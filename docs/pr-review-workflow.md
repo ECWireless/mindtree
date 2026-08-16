@@ -80,36 +80,33 @@ For changes touching chat or synthesis, reviewers verify that:
 - prompts, conversations, provider payloads, and secrets are absent from logs;
 - deterministic tests cover the behavior and any live evaluation was approved.
 
-## Agent-access review questions
+## Public-sharing review questions
 
-For changes touching scoped agent access, reviewers verify that:
+For changes touching shareable thought trails, reviewers verify that:
 
-- the agent surface exposes only the documented `GET` route and cannot mutate
-  nodes, archive state, chat, proposals, syntheses, credentials, or any other
-  application state;
-- the credential is hashed at rest, shown only once, revocable and rotatable,
-  and never reaches browser logs, server logs, tracked files, URLs, or error
-  bodies;
-- every request rechecks the credential, owner, selected root, and current
-  subtree membership before serialization;
-- the response is built from an explicit field allowlist and contains only
-  tree structure and current approved synthesis data;
-- chat, pending or historical proposals, embeddings, owner identity, model
-  metadata, credential records, and structured out-of-scope node identities
-  cannot leak;
-- internal citation targets outside the credential scope are redacted without
-  stable identifiers, titles, revision details, or inference-friendly error
-  differences;
-- approved synthesis prose is returned verbatim and is not misrepresented as
-  semantic data-loss prevention;
-- every non-GET method receives the specified `405`, and bounded
-  node/citation/text/JSON ceilings prevent an authorized request from
-  materializing unbounded work;
-- one-time plaintext is no-store, never persisted, and cannot return through
-  navigation or back/forward-cache restoration;
-- deterministic tests cover creation, one-time display, dynamic scope after
-  moves, archive visibility, rotation, revocation, malformed credentials,
-  unsupported methods, size ceilings, and citation redaction.
+- share-link creation and revocation require the authorized owner session, and
+  the plaintext capability secret is unguessable, never stored, and excluded
+  from logs, analytics, tracked files, and error bodies;
+- every public request validates the link, selected root, revocation state, and
+  current subtree membership before rendering;
+- the public representation uses an explicit field allowlist and contains only
+  current in-scope node structure, titles, approved Summaries, Branch Outlines,
+  validated external links, and published References;
+- Chat, proposal and synthesis history, diffs, embeddings, owner identity,
+  model metadata, share records, and mutation or generation controls cannot
+  leak through markup, serialized props, browser data, or errors;
+- internal links remain clickable only for current in-scope targets;
+  out-of-scope or deleted targets retain plain text without target identifiers,
+  titles, revision details, destinations, or inference-friendly errors;
+- scope changes after moves and root deletion, plus concurrent read/revoke
+  behavior, follow the approved dynamic-subtree contract;
+- approved Summary and Branch Outline prose is not misrepresented as semantic
+  data-loss prevention over content the owner deliberately shared;
+- cache, indexing, referrer, archive-visibility, response-size, absent/revoked
+  state, and deep-tree decisions match the approved phase contract; and
+- deterministic tests cover creation, copy, public navigation, dynamic scope,
+  external References, malformed and revoked links, response bounds, privacy
+  exclusions, and revocation.
 
 ## Reply style
 

@@ -84,7 +84,8 @@ describe("DashboardShell", () => {
     );
     expect(markup).toContain('class="node-drag-handle"');
     expect(markup).toContain('data-tooltip="Add child to Feedback loops"');
-    expect(markup).toContain('<path d="m5 9 7 7 7-7"></path>');
+    expect(markup).toContain('aria-label="Collapse Living systems" aria-expanded="true"');
+    expect(markup).toContain('<path d="m9 5 7 7-7 7"></path>');
     expect(markup).toContain('<path d="M12 5v14M5 12h14"></path>');
     expect(markup).toContain(
       'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"',
@@ -92,6 +93,9 @@ describe("DashboardShell", () => {
 
     const collapsedMarkup = renderToStaticMarkup(
       <DashboardShell email={syntheticDashboardEmail} nodes={syntheticDashboardNodes} />,
+    );
+    expect(collapsedMarkup).toContain(
+      'aria-label="Expand Living systems" aria-expanded="false"',
     );
     expect(collapsedMarkup).toContain('<path d="m9 5 7 7-7 7"></path>');
   });

@@ -160,6 +160,10 @@ test("proposes, refines, rejects, and explicitly publishes a synthesis", async (
     const published = page.getByRole("region", { name: "Summary" });
     await expect(published.getByRole("heading", { name: "Summary" })).toBeFocused();
     await expect(published.getByText("Propose an approved synthesis candidate", { exact: true })).toBeVisible();
+    expect(await published.evaluate((summary) => {
+      const style = getComputedStyle(summary);
+      return { duration: style.animationDuration, name: style.animationName };
+    })).toEqual({ duration: "0.42s", name: "published-content-reveal" });
     await page.getByRole("button", { name: "Chat", exact: true }).click();
     await expect(page.locator("details.synthesis-proposal--decided", {
       hasText: "Summary proposal approved",
@@ -185,6 +189,144 @@ test("proposes, refines, rejects, and explicitly publishes a synthesis", async (
       scrollWidth: document.documentElement.scrollWidth,
     }));
     expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
+  } finally {
+    await seeded.cleanup();
+  }
+});
+
+test("replays Summary and References motion when a published version changes", async ({
+  context,
+  page,
+}) => {
+  const seeded = await seedBrowserSession(pool);
+  const nodeId = randomUUID();
+  const publishedMessageId = randomUUID();
+  const pendingMessageId = randomUUID();
+  const publishedVersionId = randomUUID();
+  const pendingVersionId = randomUUID();
+  const publishedContent = "# Summary\n\nExisting published evidence";
+  const pendingContent = "# Summary\n\nUpdated published evidence";
+
+  try {
+    await pool.query(
+      `insert into nodes (id, user_id, parent_id, position, title)
+       values ($1, $2, null, 0, 'Publication motion')`,
+      [nodeId, seeded.userId],
+    );
+    await pool.query(
+      `insert into chat_messages
+        (id, user_id, node_id, client_message_id, sequence, role, status, content,
+         model, context_fingerprint, completed_at)
+       values
+        ($1, $3, $4, $5, 0, 'assistant', 'completed', 'Existing proposal response',
+         'gpt-5.6-sol', $7, now()),
+        ($2, $3, $4, $6, 1, 'assistant', 'completed', 'Updated proposal response',
+         'gpt-5.6-sol', $7, now())`,
+      [
+        publishedMessageId,
+        pendingMessageId,
+        seeded.userId,
+        nodeId,
+        randomUUID(),
+        randomUUID(),
+        "c".repeat(64),
+      ],
+    );
+    await pool.query(
+      `insert into synthesis_versions
+        (id, user_id, node_id, base_version_id, status, content, model,
+         reasoning_mode, reasoning_effort, input_fingerprint, generating_message_id, decided_at)
+       values ($1, $2, $3, null, 'pending', $4, 'gpt-5.6-sol', 'pro', 'high', $5, $6, null)`,
+      [
+        publishedVersionId,
+        seeded.userId,
+        nodeId,
+        publishedContent,
+        "d".repeat(64),
+        publishedMessageId,
+      ],
+    );
+    await pool.query(
+      `insert into citations
+        (user_id, owner_node_id, synthesis_version_id, kind, ordinal,
+         start_utf16, end_utf16, external_url, external_title)
+       values ($1, $2, $3, 'external', 1, $4, $4,
+         'https://example.test/existing', 'Existing source')`,
+      [seeded.userId, nodeId, publishedVersionId, publishedContent.length],
+    );
+    await pool.query(
+      `update synthesis_versions
+       set status = 'approved', decided_at = now(), updated_at = now()
+       where id = $1`,
+      [publishedVersionId],
+    );
+    await pool.query(
+      `insert into synthesis_versions
+        (id, user_id, node_id, base_version_id, status, content, model,
+         reasoning_mode, reasoning_effort, input_fingerprint, generating_message_id, decided_at)
+       values ($1, $2, $3, $4, 'pending', $5, 'gpt-5.6-sol', 'pro', 'high', $6, $7, null)`,
+      [
+        pendingVersionId,
+        seeded.userId,
+        nodeId,
+        publishedVersionId,
+        pendingContent,
+        "d".repeat(64),
+        pendingMessageId,
+      ],
+    );
+    await pool.query(
+      `insert into citations
+        (user_id, owner_node_id, synthesis_version_id, kind, ordinal,
+         start_utf16, end_utf16, external_url, external_title)
+       values ($1, $2, $3, 'external', 1, $4, $4,
+         'https://example.test/updated', 'Updated source')`,
+      [seeded.userId, nodeId, pendingVersionId, pendingContent.length],
+    );
+    await pool.query(
+      `update nodes set published_synthesis_version_id = $1 where id = $2`,
+      [publishedVersionId, nodeId],
+    );
+
+    await installBrowserSessionCookie(context, seeded.cookie);
+    await page.goto(`/?node=${nodeId}`);
+    await expect(page.getByRole("region", { name: "Summary" }))
+      .toContainText("Existing published evidence");
+    await expect(page.getByRole("region", { name: "External references" }))
+      .toContainText("Existing source");
+    await page.evaluate(() => {
+      const motionWindow = window as typeof window & {
+        __publicationMotionStarts?: { references: number; summary: number };
+      };
+      motionWindow.__publicationMotionStarts = { references: 0, summary: 0 };
+      document.addEventListener("animationstart", (event) => {
+        if (!(event.target instanceof HTMLElement) || event.target.closest(".node-dialog")) return;
+        if (event.animationName === "published-content-reveal") {
+          motionWindow.__publicationMotionStarts!.summary += 1;
+        }
+        if (event.animationName === "references-reveal") {
+          motionWindow.__publicationMotionStarts!.references += 1;
+        }
+      });
+    });
+
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+    const proposal = page.getByRole("region", { name: "Proposed Summary" });
+    await expect(proposal).toContainText("Updated published evidence");
+    await proposal.getByRole("button", { name: "Approve and publish Summary" }).click();
+
+    await expect(page.getByRole("dialog", { name: "Chat about Publication motion" }))
+      .not.toBeVisible();
+    await expect(page.getByRole("region", { name: "Summary" }))
+      .toContainText("Updated published evidence");
+    await expect(page.getByRole("region", { name: "External references" }))
+      .toContainText("Updated source");
+    await expect.poll(() => page.evaluate(() => {
+      const motionWindow = window as typeof window & {
+        __publicationMotionStarts?: { references: number; summary: number };
+      };
+      return motionWindow.__publicationMotionStarts;
+    })).toEqual({ references: 1, summary: 1 });
   } finally {
     await seeded.cleanup();
   }

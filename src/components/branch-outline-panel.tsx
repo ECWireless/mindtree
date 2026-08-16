@@ -199,7 +199,10 @@ export function BranchOutlinePanel({
 
       <div className="branch-outline__canvas">
         {workspace.current ? (
-          <div className="branch-outline__content synthesis-document__content">
+          <div
+            key={workspace.current.id}
+            className="branch-outline__content branch-outline__content--current synthesis-document__content"
+          >
             <BranchOutlineDocumentContent content={workspace.current.content} />
           </div>
         ) : (

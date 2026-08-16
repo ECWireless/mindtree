@@ -19,6 +19,7 @@ import { useRouter } from "next/navigation";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -79,7 +80,7 @@ function nodeHref(nodeId: string) {
   return `/?node=${encodeURIComponent(nodeId)}`;
 }
 
-function ChevronIcon({ expanded }: { expanded: boolean }) {
+function ChevronIcon() {
   return (
     <svg
       aria-hidden="true"
@@ -90,7 +91,7 @@ function ChevronIcon({ expanded }: { expanded: boolean }) {
       strokeLinecap="round"
       strokeLinejoin="round"
     >
-      <path d={expanded ? "m5 9 7 7 7-7" : "m9 5 7 7-7 7"} />
+      <path d="m9 5 7 7-7 7" />
     </svg>
   );
 }
@@ -283,6 +284,7 @@ function DraggableNodeRow({
   expandPending,
   isSelected,
   node,
+  registerRow,
   visualDepth,
 }: {
   children: ReactNode;
@@ -291,6 +293,7 @@ function DraggableNodeRow({
   expandPending: boolean;
   isSelected: boolean;
   node: TreeNode;
+  registerRow: (nodeId: string, element: HTMLDivElement | null) => void;
   visualDepth: number;
 }) {
   const {
@@ -307,8 +310,9 @@ function DraggableNodeRow({
     (element: HTMLDivElement | null) => {
       setDraggableNodeRef(element);
       setDroppableNodeRef(element);
+      registerRow(node.id, element);
     },
-    [setDraggableNodeRef, setDroppableNodeRef],
+    [node.id, registerRow, setDraggableNodeRef, setDroppableNodeRef],
   );
   const isDropTarget = dropIntent?.targetId === node.id;
 
@@ -560,6 +564,8 @@ function DashboardWorkspace({
   const newRootTriggerRef = useRef<HTMLButtonElement>(null);
   const lifecycleRequestInFlight = useRef(false);
   const pendingTreeFocus = useRef<string | null>(null);
+  const nodeRowRefs = useRef(new Map<string, HTMLDivElement>());
+  const pendingMoveLayout = useRef(new Map<string, DOMRect>());
   const rowLinkRefs = useRef(new Map<string, HTMLAnchorElement>());
   const searchOptionRefs = useRef(new Map<number, HTMLLIElement>());
   const searchResults = useMemo(
@@ -583,6 +589,52 @@ function DashboardWorkspace({
     staleAt: null,
     staleReason: null,
   };
+
+  const registerNodeRow = useCallback((nodeId: string, element: HTMLDivElement | null) => {
+    if (element) {
+      nodeRowRefs.current.set(nodeId, element);
+    } else {
+      nodeRowRefs.current.delete(nodeId);
+    }
+  }, []);
+
+  const captureMoveLayout = useCallback(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      pendingMoveLayout.current.clear();
+      return;
+    }
+    pendingMoveLayout.current = new Map(
+      [...nodeRowRefs.current].map(([nodeId, element]) => [
+        nodeId,
+        element.getBoundingClientRect(),
+      ]),
+    );
+  }, []);
+
+  useLayoutEffect(() => {
+    if (pendingMoveLayout.current.size === 0) return;
+    const previousLayout = pendingMoveLayout.current;
+    pendingMoveLayout.current = new Map();
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    for (const [nodeId, element] of nodeRowRefs.current) {
+      const previous = previousLayout.get(nodeId);
+      if (!previous) continue;
+      const current = element.getBoundingClientRect();
+      const deltaX = previous.left - current.left;
+      const deltaY = previous.top - current.top;
+      if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) continue;
+      element.animate(
+        [
+          { transform: `translate(${deltaX}px, ${deltaY}px)` },
+          { transform: "translate(0, 0)" },
+        ],
+        {
+          duration: 420,
+          easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+        },
+      );
+    }
+  }, [nodes]);
 
   useEffect(() => {
     const previousPublishedId = approvalPreviousPublishedId.current;
@@ -795,6 +847,7 @@ function DashboardWorkspace({
         setDragError(result.message);
         return;
       }
+      captureMoveLayout();
       if (destination.parentId !== null) {
         const parentId = destination.parentId;
         setExpanded((current) => new Set(current).add(parentId));
@@ -812,6 +865,7 @@ function DashboardWorkspace({
   }
 
   function moved(parentId: string | null) {
+    captureMoveLayout();
     setMoveDialogOpen(false);
     if (parentId !== null) {
       const parent = tree.byId.get(parentId);
@@ -1102,6 +1156,7 @@ function DashboardWorkspace({
                           dragPending={dragPending}
                           dropIntent={dropIntent}
                           expandPending={autoExpandCandidateId === node.id}
+                          registerRow={registerNodeRow}
                         >
                       {node.children.length > 0 ? (
                         <button
@@ -1121,7 +1176,7 @@ function DashboardWorkspace({
                             })
                           }
                         >
-                          <ChevronIcon expanded={isExpanded} />
+                          <ChevronIcon />
                         </button>
                       ) : (
                         <span className="node-expander node-expander--placeholder" aria-hidden="true" />
@@ -1282,6 +1337,7 @@ function DashboardWorkspace({
               <div className="node-summary">
                 {synthesisWorkspace.published ? (
                   <PublishedSynthesisArtifact
+                    key={synthesisWorkspace.published.id}
                     synthesis={synthesisWorkspace.published}
                     staleAt={synthesisWorkspace.staleAt}
                     headingRef={summaryHeadingRef}
@@ -1303,6 +1359,7 @@ function DashboardWorkspace({
               </div>
               {synthesisWorkspace.published ? (
                 <ExternalReferences
+                  key={synthesisWorkspace.published.id}
                   citations={synthesisWorkspace.published.citations.filter(
                     (citation) => citation.kind === "external",
                   )}
