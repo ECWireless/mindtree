@@ -165,6 +165,35 @@ export const nodes = pgTable(
   ],
 );
 
+export const branchShareLinks = pgTable(
+  "branch_share_links",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    rootNodeId: uuid("root_node_id").notNull(),
+    secretDigest: varchar("secret_digest", { length: 64 }).notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    unique("branch_share_links_user_root_unique").on(
+      table.userId,
+      table.rootNodeId,
+    ),
+    unique("branch_share_links_secret_digest_unique").on(table.secretDigest),
+    foreignKey({
+      name: "branch_share_links_root_owner_fk",
+      columns: [table.userId, table.rootNodeId],
+      foreignColumns: [nodes.userId, nodes.id],
+    }).onDelete("cascade"),
+    check(
+      "branch_share_links_secret_digest_check",
+      sql`${table.secretDigest} ~ '^[0-9a-f]{64}$'`,
+    ),
+  ],
+);
+
 export const chatMessages = pgTable(
   "chat_messages",
   {
@@ -771,6 +800,7 @@ export const authSchema = {
 export const schema = {
   ...authSchema,
   nodes,
+  branchShareLinks,
   chatMessages,
   synthesisVersions,
   citations,

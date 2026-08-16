@@ -32,6 +32,7 @@ describe("initial authentication schema", () => {
       "account",
       "branch_outline_inputs",
       "branch_outline_versions",
+      "branch_share_links",
       "chat_messages",
       "citations",
       "node_embeddings",
@@ -42,6 +43,43 @@ describe("initial authentication schema", () => {
       "user",
       "verification",
     ]);
+  });
+
+  it("defines one digest-only owner-scoped share capability per root", async () => {
+    const columns = await client.query<{ column_name: string }>(
+      `select column_name from information_schema.columns
+       where table_schema = 'public' and table_name = 'branch_share_links'
+       order by ordinal_position`,
+    );
+    expect(columns.rows.map(({ column_name }) => column_name)).toEqual([
+      "id",
+      "user_id",
+      "root_node_id",
+      "secret_digest",
+      "created_at",
+    ]);
+
+    const constraints = await client.query<{ conname: string; definition: string }>(
+      `select conname, pg_get_constraintdef(oid) as definition
+       from pg_constraint
+       where conrelid = 'branch_share_links'::regclass
+       order by conname`,
+    );
+    expect(constraints.rows.map(({ conname }) => conname)).toEqual([
+      "branch_share_links_pkey",
+      "branch_share_links_root_owner_fk",
+      "branch_share_links_secret_digest_check",
+      "branch_share_links_secret_digest_unique",
+      "branch_share_links_user_id_user_id_fk",
+      "branch_share_links_user_root_unique",
+    ]);
+    expect(
+      constraints.rows.find(({ conname }) =>
+        conname === "branch_share_links_root_owner_fk"
+      )?.definition,
+    ).toContain(
+      "FOREIGN KEY (user_id, root_node_id) REFERENCES nodes(user_id, id) ON DELETE CASCADE",
+    );
   });
 
   it("defines pgvector-backed owner-scoped current Summary embeddings", async () => {
