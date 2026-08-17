@@ -2550,7 +2550,7 @@ button:not(:disabled) {
   z-index: 30;
   top: calc(100% + 0.1rem);
   left: 50%;
-  width: min(22rem, calc(100vw - 2rem));
+  width: min(22rem, calc(100vw - 4rem));
   border: 1px solid rgb(154 166 178 / 30%);
   border-radius: 0.35rem;
   padding: 0.5rem 0.6rem;
