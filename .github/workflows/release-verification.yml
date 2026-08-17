@@ -1,0 +1,99 @@
+name: Release verification
+
+on:
+  pull_request:
+    types:
+      - labeled
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-verification-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.label.name == 'release-verification'
+    name: Complete release suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.1-pg16@sha256:33198da2828a14c30348d2ccb4750833d5ed9a44c88d840a0e523d7417120337
+        env:
+          POSTGRES_DB: mindtree
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d mindtree"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      ALLOWED_EMAIL: browser-user@example.test
+      BETTER_AUTH_SECRET: synthetic-auth-secret-for-ci-verification
+      BETTER_AUTH_URL: http://127.0.0.1:3188
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/mindtree
+      DATABASE_URL_UNPOOLED: postgresql://postgres:postgres@127.0.0.1:5432/mindtree
+      GOOGLE_CLIENT_ID: synthetic-google-client-id
+      GOOGLE_CLIENT_SECRET: synthetic-google-client-secret
+      SHARE_LINK_ENCRYPTION_KEY: Dw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.13.0
+
+      - name: Install compatible Corepack
+        run: |
+          npm install --global corepack@0.34.6 --ignore-scripts
+          corepack enable
+          corepack --version
+          corepack pnpm --version
+
+      - name: Install frozen dependencies
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Check migration consistency
+        run: corepack pnpm db:check
+
+      - name: Migrate synthetic database
+        run: corepack pnpm db:migrate
+
+      - name: Lint
+        run: corepack pnpm lint
+
+      - name: Typecheck
+        run: corepack pnpm typecheck
+
+      - name: Run unit tests
+        run: corepack pnpm test
+
+      - name: Run integration tests
+        run: corepack pnpm test:integration
+
+      - name: Build production application
+        run: corepack pnpm build
+
+      - name: Run deterministic evaluation fixtures
+        run: corepack pnpm test:eval:fixtures
+
+      - name: Install Chromium
+        run: corepack pnpm exec playwright install --with-deps chromium
+
+      - name: Run browser tests
+        run: corepack pnpm test:e2e --retries=0
