@@ -14,6 +14,24 @@ export type NodeDropResolver = (
   zone: NodeDropZone,
 ) => NodeDropDestination | null;
 
+export function getNodeDropZone(
+  pointerY: number,
+  target: { height: number; top: number },
+): NodeDropZone | null {
+  if (target.height <= 0) {
+    return null;
+  }
+
+  const relativePosition = (pointerY - target.top) / target.height;
+  if (relativePosition < 0.25) {
+    return "before";
+  }
+  if (relativePosition > 0.65) {
+    return "after";
+  }
+  return "inside";
+}
+
 function includesTitle(node: TreeNode, normalizedQuery: string) {
   return node.title.toLocaleLowerCase().includes(normalizedQuery);
 }

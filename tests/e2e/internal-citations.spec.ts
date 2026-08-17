@@ -155,7 +155,12 @@ test("navigates internal links and presents changed or unavailable evidence", as
     await expect(internalLink).toHaveText(citedText);
     await expect(internalLink).toHaveAccessibleName(citedText);
     await expect(internalLink).toHaveClass("internal-node-link");
-    await internalLink.hover();
+    const usesTouchInput = await page.evaluate(() => matchMedia("(hover: none)").matches);
+    if (usesTouchInput) {
+      await internalLink.focus();
+    } else {
+      await internalLink.hover();
+    }
     const tooltip = page.locator(".internal-node-tooltip:popover-open");
     await expect(tooltip).toBeVisible();
     await expect(tooltip).toHaveText(
@@ -175,7 +180,11 @@ test("navigates internal links and presents changed or unavailable evidence", as
     await expect(summary.getByText("Cited thoughts", { exact: false })).toHaveCount(0);
     await expect(summary.getByText("[1]", { exact: true })).toHaveCount(0);
 
-    await page.mouse.move(0, 0);
+    if (usesTouchInput) {
+      await internalLink.blur();
+    } else {
+      await page.mouse.move(0, 0);
+    }
     await expect(page.locator(".internal-node-tooltip:popover-open")).toHaveCount(0);
     await page.evaluate(() => {
       Object.defineProperty(HTMLElement.prototype, "showPopover", {
@@ -187,7 +196,11 @@ test("navigates internal links and presents changed or unavailable evidence", as
         value: undefined,
       });
     });
-    await internalLink.hover();
+    if (usesTouchInput) {
+      await internalLink.focus();
+    } else {
+      await internalLink.hover();
+    }
     await expect(page.locator(".internal-node-tooltip:popover-open")).toHaveCount(0);
     expect(pageErrors).toEqual([]);
 
@@ -252,7 +265,7 @@ test("navigates internal links and presents changed or unavailable evidence", as
     await expect(changedLink).toHaveClass(
       "internal-node-link internal-node-link--changed",
     );
-    await expect(page.getByText("Update available", { exact: true })).toBeVisible();
+    await expect(summary.getByRole("button", { name: "Update available" })).toBeVisible();
 
     await pool.query(
       `delete from nodes where user_id = $1 and id = $2`,

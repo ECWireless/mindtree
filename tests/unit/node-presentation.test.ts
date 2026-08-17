@@ -4,6 +4,7 @@ import {
   formatBreadcrumb,
   getMoveDestinations,
   getNodeDropDestination,
+  getNodeDropZone,
   getRootEndDestination,
   getVisibleNodeRoots,
   searchNodes,
@@ -111,6 +112,16 @@ describe("node presentation", () => {
     });
     expect(getNodeDropDestination(tree.ordered, source, beta, "inside")).toBeNull();
     expect(getNodeDropDestination(tree.ordered, source, betaChild, "inside")).toBeNull();
+  });
+
+  it("maps pointer positions to stable before, inside, and after zones", () => {
+    const target = { top: 100, height: 80 };
+
+    expect(getNodeDropZone(119, target)).toBe("before");
+    expect(getNodeDropZone(120, target)).toBe("inside");
+    expect(getNodeDropZone(152, target)).toBe("inside");
+    expect(getNodeDropZone(153, target)).toBe("after");
+    expect(getNodeDropZone(100, { top: 100, height: 0 })).toBeNull();
   });
 
   it("keeps root drop resolution valid after moving the source out of a child group", () => {
