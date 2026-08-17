@@ -1097,11 +1097,20 @@ test("moves a root with pointer drag-and-drop before, inside, and after targets"
       await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
       await page.mouse.down();
       await page.mouse.move(
-        targetBox.x + targetBox.width / 2,
-        targetBox.y + targetBox.height * targetFraction,
-        { steps: 8 },
+        handleBox.x + handleBox.width / 2,
+        handleBox.y + handleBox.height / 2 + 8,
+        { steps: 2 },
       );
       await expect(sourceRow).toHaveClass(/node-row--dragging/);
+      const activeTargetBox = await targetRow.boundingBox();
+      if (!activeTargetBox) {
+        throw new Error("Drag target must remain measurable after activation.");
+      }
+      await page.mouse.move(
+        activeTargetBox.x + activeTargetBox.width / 2,
+        activeTargetBox.y + activeTargetBox.height * targetFraction,
+        { steps: 8 },
+      );
       const settledTargetBox = await targetRow.boundingBox();
       if (!settledTargetBox) {
         throw new Error("Drag target must remain measurable after pointer auto-scroll.");

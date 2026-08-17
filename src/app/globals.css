@@ -2136,9 +2136,9 @@ button:not(:disabled) {
 
 .dialog-close {
   display: grid;
-  width: 2.75rem;
-  min-height: 2.75rem;
-  flex: 0 0 2.75rem;
+  width: 2.8125rem;
+  min-height: 2.8125rem;
+  flex: 0 0 2.8125rem;
   place-items: center;
   border: 0;
   background: transparent;
@@ -3003,7 +3003,7 @@ button:not(:disabled) {
 }
 
 .chat-panel button {
-  min-height: 2.75rem;
+  min-height: 2.8125rem;
   padding: 0.6rem 0.9rem;
 }
 
@@ -3166,7 +3166,7 @@ button:not(:disabled) {
 
 .chat-composer__web-toggle {
   display: inline-flex;
-  min-height: 2.75rem;
+  min-height: 2.8125rem;
   align-items: center;
   gap: 0.5rem;
   color: #dcebf7;
@@ -3205,9 +3205,9 @@ button:not(:disabled) {
 .chat-composer__control,
 .chat-message__stop {
   display: inline-flex;
-  width: 2.75rem;
-  min-width: 2.75rem;
-  min-height: 2.75rem;
+  width: 2.8125rem;
+  min-width: 2.8125rem;
+  min-height: 2.8125rem;
   align-items: center;
   justify-content: center;
   padding: 0;
@@ -3307,12 +3307,12 @@ button:not(:disabled) {
 @keyframes detail-pane-arrive {
   from {
     opacity: 0;
-    transform: translateX(0.65rem);
+    transform: translateY(0.35rem);
   }
 
   to {
     opacity: 1;
-    transform: translateX(0);
+    transform: translateY(0);
   }
 }
 
@@ -3382,12 +3382,12 @@ button:not(:disabled) {
 @keyframes dialog-arrive {
   from {
     opacity: 0;
-    transform: translateY(0.5rem) scale(0.975);
+    transform: translateY(0.5rem);
   }
 
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(0);
   }
 }
 
@@ -3771,7 +3771,13 @@ button:not(:disabled) {
 
 @media (max-width: 760px) and (max-height: 36rem) {
   .constellation__header {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   .constellation__stage {

@@ -53,6 +53,7 @@ import type { BranchOutlineWorkspace } from "@/lib/branch-outlines/contracts";
 import {
   createNodeDropResolver,
   formatBreadcrumb,
+  getNodeDropZone,
   getVisibleNodeRoots,
   searchNodes,
   type NodeDropDestination,
@@ -278,22 +279,17 @@ function GripIcon() {
   );
 }
 
-function dropZoneForEvent(event: DragMoveEvent | DragEndEvent): NodeDropZone | null {
+function dropZoneForEvent(
+  event: DragMoveEvent | DragEndEvent,
+  pointerY: number | null,
+): NodeDropZone | null {
   const activeRect = event.active.rect.current.translated;
   const overRect = event.over?.rect;
   if (!activeRect || !overRect) {
     return null;
   }
 
-  const activeCenter = activeRect.top + activeRect.height / 2;
-  const relativePosition = (activeCenter - overRect.top) / overRect.height;
-  if (relativePosition < 0.25) {
-    return "before";
-  }
-  if (relativePosition > 0.65) {
-    return "after";
-  }
-  return "inside";
+  return getNodeDropZone(pointerY ?? activeRect.top + activeRect.height / 2, overRect);
 }
 
 function describeDrop(node: TreeNode, zone: NodeDropZone) {
@@ -597,6 +593,9 @@ function DashboardWorkspace({
   const pendingTreeFocus = useRef<string | null>(null);
   const nodeRowRefs = useRef(new Map<string, HTMLDivElement>());
   const pendingMoveLayout = useRef(new Map<string, DOMRect>());
+  const dragPointerId = useRef<number | null>(null);
+  const dragPointerY = useRef<number | null>(null);
+  const lastPrimaryPointer = useRef<{ id: number; y: number } | null>(null);
   const rowLinkRefs = useRef(new Map<string, HTMLAnchorElement>());
   const searchOptionRefs = useRef(new Map<number, HTMLLIElement>());
   const searchResults = useMemo(
@@ -620,6 +619,19 @@ function DashboardWorkspace({
     staleAt: null,
     staleReason: null,
   };
+
+  useEffect(() => {
+    const trackPointer = (event: PointerEvent) => {
+      if (event.isPrimary) {
+        lastPrimaryPointer.current = { id: event.pointerId, y: event.clientY };
+        if (dragPointerId.current === event.pointerId) {
+          dragPointerY.current = event.clientY;
+        }
+      }
+    };
+    window.addEventListener("pointermove", trackPointer, true);
+    return () => window.removeEventListener("pointermove", trackPointer, true);
+  }, []);
 
   const registerNodeRow = useCallback((nodeId: string, element: HTMLDivElement | null) => {
     if (element) {
@@ -896,7 +908,7 @@ function DashboardWorkspace({
   function resolveDropIntent(event: DragMoveEvent | DragEndEvent) {
     const source = tree.byId.get(String(event.active.id));
     const target = event.over ? tree.byId.get(String(event.over.id)) : undefined;
-    const zone = dropZoneForEvent(event);
+    const zone = dropZoneForEvent(event, dragPointerY.current);
     if (!source || !target || !zone) {
       return null;
     }
@@ -907,6 +919,8 @@ function DashboardWorkspace({
   async function dropped(event: DragEndEvent) {
     const destination = resolveDropIntent(event);
     const sourceId = String(event.active.id);
+    dragPointerId.current = null;
+    dragPointerY.current = null;
     setActiveDragId(null);
     setDropIntent(null);
     if (!destination || dragPending) {
@@ -1256,12 +1270,27 @@ function DashboardWorkspace({
                 collisionDetection={pointerWithin}
                 measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
                 onDragStart={(event: DragStartEvent) => {
+                  const activatorEvent = event.activatorEvent;
+                  const pointerId = "pointerId" in activatorEvent &&
+                    typeof activatorEvent.pointerId === "number"
+                    ? activatorEvent.pointerId
+                    : null;
+                  const lastPointer = lastPrimaryPointer.current;
+                  dragPointerId.current = pointerId;
+                  dragPointerY.current = pointerId !== null && lastPointer?.id === pointerId
+                    ? lastPointer.y
+                    : "clientY" in activatorEvent &&
+                    typeof activatorEvent.clientY === "number"
+                      ? activatorEvent.clientY
+                      : null;
                   setActiveDragId(String(event.active.id));
                   setDragError(null);
                 }}
                 onDragMove={(event: DragMoveEvent) => setDropIntent(resolveDropIntent(event))}
                 onDragEnd={(event: DragEndEvent) => void dropped(event)}
                 onDragCancel={() => {
+                  dragPointerId.current = null;
+                  dragPointerY.current = null;
                   setActiveDragId(null);
                   setDropIntent(null);
                 }}
