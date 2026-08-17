@@ -13,6 +13,7 @@ import {
   type NodeDropZone,
 } from "@/lib/nodes/presentation";
 import type { TreeNode } from "@/lib/nodes/tree";
+import { isDialogBackdropClick } from "@/lib/ui/dialog";
 
 const moveDestinationLimit = 100;
 const placementZones = ["before", "inside", "after"] as const;
@@ -248,6 +249,9 @@ export function MoveNodeDialog({
         if (pending) {
           event.preventDefault();
         }
+      }}
+      onClick={(event) => {
+        if (isDialogBackdropClick(event)) close();
       }}
       onClose={onClose}
     >

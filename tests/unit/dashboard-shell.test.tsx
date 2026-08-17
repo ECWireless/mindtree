@@ -24,6 +24,12 @@ vi.mock("@/app/actions/synthesis", () => ({
   rejectSynthesisProposal: vi.fn(),
 }));
 
+vi.mock("@/app/actions/sharing", () => ({
+  createBranchShareLink: vi.fn(),
+  recoverBranchShareLink: vi.fn(),
+  revokeBranchShareLink: vi.fn(),
+}));
+
 import { DashboardShell } from "@/components/dashboard-shell";
 import {
   syntheticDashboardEmail,
@@ -67,6 +73,15 @@ describe("DashboardShell", () => {
     expect(markup).toContain('<path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"></path>');
     expect(markup).toContain('<path d="m16.5 16.5 4 4"></path>');
     expect(markup).toContain('class="node-actions" aria-label="Thought actions"');
+    expect(markup).toContain('aria-label="Share thought trail"');
+    expect(markup).toContain('aria-haspopup="dialog"');
+    expect(markup).toContain('aria-controls="share-trail-dialog-feedback"');
+    expect(markup).toContain('data-tooltip="Share thought trail"');
+    expect(markup).toContain('id="share-trail-dialog-feedback"');
+    expect(markup).toContain('class="node-dialog share-trail-dialog"');
+    expect(markup).toContain("Share this thought trail");
+    expect(markup).toContain("Create and copy link");
+    expect(markup).toContain("Chat and editing controls stay private");
     expect(markup).toContain('data-tooltip="Archive thought"');
     expect(markup).toContain('data-tooltip="Move To…"');
     expect(markup).toContain('data-tooltip="Delete thought"');
@@ -83,6 +98,9 @@ describe("DashboardShell", () => {
       actionsMarkup.indexOf('aria-label="Move To…"'),
     );
     expect(actionsMarkup.indexOf('aria-label="Move To…"')).toBeLessThan(
+      actionsMarkup.indexOf('aria-label="Share thought trail"'),
+    );
+    expect(actionsMarkup.indexOf('aria-label="Share thought trail"')).toBeLessThan(
       actionsMarkup.indexOf('aria-label="Delete"'),
     );
     expect(markup).toContain('class="node-drag-handle"');
@@ -133,6 +151,32 @@ describe("DashboardShell", () => {
     expect(selectedMarkup).toContain('<path d="M4 7v5h5"></path>');
     expect(selectedMarkup).toContain('role="status" aria-live="polite"');
     expect(selectedMarkup).not.toContain("Add child to Feedback loops");
+    expect(selectedMarkup).toContain("Unarchive this thought before sharing its trail.");
+    expect(selectedMarkup).toContain("Create and copy link");
+  });
+
+  it("shows recoverable share state without serializing the capability secret", () => {
+    const markup = renderToStaticMarkup(
+      <DashboardShell
+        email={syntheticDashboardEmail}
+        nodes={syntheticDashboardNodes}
+        selectedNodeId="feedback"
+        initialShareLink={{
+          id: "synthetic-share-id",
+          rootNodeId: "feedback",
+          createdAt: "2026-08-16T12:00:00.000Z",
+          recoverable: true,
+        }}
+      />,
+    );
+
+    expect(markup).not.toContain("Link active");
+    expect(markup).not.toContain(">Private<");
+    expect(markup).toContain("Revoke link");
+    expect(markup).toContain("button button--danger share-trail__revoke");
+    expect(markup).toContain("Loading the active share link…");
+    expect(markup).not.toContain("/share/");
+    expect(markup).not.toContain("synthetic-share-id");
   });
 
   it("renders published and pending synthesis with explicit diff and decision cues", () => {

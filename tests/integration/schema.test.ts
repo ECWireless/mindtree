@@ -45,7 +45,7 @@ describe("initial authentication schema", () => {
     ]);
   });
 
-  it("defines one digest-only owner-scoped share capability per root", async () => {
+  it("defines one encrypted owner-recoverable share capability per root", async () => {
     const columns = await client.query<{ column_name: string }>(
       `select column_name from information_schema.columns
        where table_schema = 'public' and table_name = 'branch_share_links'
@@ -57,6 +57,7 @@ describe("initial authentication schema", () => {
       "root_node_id",
       "secret_digest",
       "created_at",
+      "secret_ciphertext",
     ]);
 
     const constraints = await client.query<{ conname: string; definition: string }>(
@@ -68,6 +69,7 @@ describe("initial authentication schema", () => {
     expect(constraints.rows.map(({ conname }) => conname)).toEqual([
       "branch_share_links_pkey",
       "branch_share_links_root_owner_fk",
+      "branch_share_links_secret_ciphertext_check",
       "branch_share_links_secret_digest_check",
       "branch_share_links_secret_digest_unique",
       "branch_share_links_user_id_user_id_fk",

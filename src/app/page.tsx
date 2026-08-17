@@ -4,6 +4,7 @@ import { DashboardShell } from "@/components/dashboard-shell";
 import { resolveAuthenticationAvailability } from "@/lib/auth/deployment";
 import { AuthorizationError, type AuthSession } from "@/lib/auth/policy";
 import { getServerEnvironment } from "@/lib/env/server";
+import type { BranchShareLinkState } from "@/lib/sharing/contracts";
 
 type HomeProps = {
   searchParams: Promise<{
@@ -49,6 +50,7 @@ export default async function Home({ searchParams }: HomeProps) {
     let initialChatPage;
     let initialSynthesisWorkspace;
     let initialBranchOutlineWorkspace;
+    let initialShareLink: BranchShareLinkState | null | undefined;
     let chatGenerationEnabled = false;
     let branchOutlineGenerationEnabled = false;
     if (selectedNodeId && selectedNodeExists) {
@@ -58,16 +60,24 @@ export default async function Home({ searchParams }: HomeProps) {
         { getSynthesisWorkspaceForUser },
         { getBranchOutlineWorkspaceForUser },
         { isBranchOutlineGenerationEnabled },
+        { getBranchShareLinkStateForUser },
       ] = await Promise.all([
         import("@/lib/server/chat-service"),
         import("@/lib/server/chat-runtime"),
         import("@/lib/server/synthesis-service"),
         import("@/lib/server/branch-outline-service"),
         import("@/lib/server/branch-outline-runtime"),
+        import("@/lib/server/share-service"),
       ]);
-      initialChatPage = await getChatMessagesForUser(session.user.id, {
-        nodeId: selectedNodeId,
-      });
+      [
+        initialChatPage,
+        initialBranchOutlineWorkspace,
+        initialShareLink,
+      ] = await Promise.all([
+        getChatMessagesForUser(session.user.id, { nodeId: selectedNodeId }),
+        getBranchOutlineWorkspaceForUser(session.user.id, selectedNodeId),
+        getBranchShareLinkStateForUser(session.user.id, selectedNodeId),
+      ]);
       initialSynthesisWorkspace = await getSynthesisWorkspaceForUser(
         session.user.id,
         selectedNodeId,
@@ -76,10 +86,6 @@ export default async function Home({ searchParams }: HomeProps) {
             .filter((message) => message.role === "assistant")
             .map((message) => message.id),
         },
-      );
-      initialBranchOutlineWorkspace = await getBranchOutlineWorkspaceForUser(
-        session.user.id,
-        selectedNodeId,
       );
       chatGenerationEnabled = isChatGenerationEnabled();
       branchOutlineGenerationEnabled = isBranchOutlineGenerationEnabled();
@@ -93,6 +99,8 @@ export default async function Home({ searchParams }: HomeProps) {
         initialChatPage={initialChatPage}
         initialSynthesisWorkspace={initialSynthesisWorkspace}
         initialBranchOutlineWorkspace={initialBranchOutlineWorkspace}
+        initialShareLink={initialShareLink}
+        shareLinkEncryptionEnabled={Boolean(environment.SHARE_LINK_ENCRYPTION_KEY)}
         chatGenerationEnabled={chatGenerationEnabled}
         branchOutlineGenerationEnabled={branchOutlineGenerationEnabled}
       />

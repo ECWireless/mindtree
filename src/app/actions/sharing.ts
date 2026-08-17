@@ -5,12 +5,15 @@ import { revalidatePath } from "next/cache";
 import {
   branchShareRootInputSchema,
   type CreateBranchShareLinkResult,
+  type RecoverBranchShareLinkResult,
   type RevokeBranchShareLinkResult,
 } from "@/lib/sharing/contracts";
+import { getServerEnvironment } from "@/lib/env/server";
 import { requireAuthorizedSession } from "@/lib/server/authorization";
 import {
   BranchShareServiceError,
   createBranchShareLinkForUser,
+  recoverBranchShareLinkForUser,
   revokeBranchShareLinkForUser,
 } from "@/lib/server/share-service";
 
@@ -34,6 +37,7 @@ function shareFailure(
       case "invalid-link":
       case "not-found":
       case "oversized":
+      case "unrecoverable-link":
       case "unavailable":
         return {
           ok: false,
@@ -53,13 +57,48 @@ export async function createBranchShareLink(
     return { ok: false, message: "That thought is invalid." };
   }
   try {
+    const environment = getServerEnvironment(["sharing-encryption"]);
     const created = await createBranchShareLinkForUser(
       session.user.id,
       parsed.data.nodeId,
+      environment.SHARE_LINK_ENCRYPTION_KEY,
     );
     revalidatePath("/");
     return { ok: true, ...created };
   } catch (error) {
+    return shareFailure(error);
+  }
+}
+
+export async function recoverBranchShareLink(
+  input: unknown,
+): Promise<RecoverBranchShareLinkResult> {
+  const session = await requireAuthorizedSession();
+  const parsed = branchShareRootInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, message: "That thought is invalid." };
+  }
+  try {
+    const environment = getServerEnvironment(["sharing-encryption"]);
+    return {
+      ok: true,
+      ...await recoverBranchShareLinkForUser(
+        session.user.id,
+        parsed.data.nodeId,
+        environment.SHARE_LINK_ENCRYPTION_KEY,
+      ),
+    };
+  } catch (error) {
+    if (
+      error instanceof BranchShareServiceError &&
+      error.reason === "unrecoverable-link"
+    ) {
+      return {
+        ok: false,
+        message:
+          "This older link cannot be displayed again. Revoke it and create a new persistent link.",
+      };
+    }
     return shareFailure(error);
   }
 }

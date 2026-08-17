@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer";
+
 import { defineConfig, devices } from "@playwright/test";
 
 import { browserAllowedEmail, browserAuthSecret } from "./tests/config/browser-auth.mjs";
@@ -19,6 +21,7 @@ const testAuthEnvironment = {
   GOOGLE_CLIENT_ID: "synthetic-google-client-id",
   GOOGLE_CLIENT_SECRET: "synthetic-google-client-secret",
   ALLOWED_EMAIL: browserAllowedEmail,
+  SHARE_LINK_ENCRYPTION_KEY: Buffer.alloc(32, 15).toString("base64url"),
   MINDTREE_TEST_CHAT_FIXTURE: "1",
 };
 

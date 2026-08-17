@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 
 import { makeSignature } from "better-auth/crypto";
@@ -13,12 +14,15 @@ if (!connectionString) {
 }
 
 const authSecret = "synthetic-share-action-secret-only";
+const shareEncryptionKey = Buffer.alloc(32, 9).toString("base64url");
 const allowedEmail = "share-action-user@example.test";
 const pool = new Pool({ connectionString });
 const userIds = new Set<string>();
 let requestHeaders = new Headers();
 let createBranchShareLink:
   typeof import("../../src/app/actions/sharing").createBranchShareLink;
+let recoverBranchShareLink:
+  typeof import("../../src/app/actions/sharing").recoverBranchShareLink;
 let revokeBranchShareLink:
   typeof import("../../src/app/actions/sharing").revokeBranchShareLink;
 
@@ -68,7 +72,8 @@ describe("branch sharing Server Actions", () => {
     vi.stubEnv("GOOGLE_CLIENT_ID", "synthetic-google-client-id");
     vi.stubEnv("GOOGLE_CLIENT_SECRET", "synthetic-google-client-secret");
     vi.stubEnv("ALLOWED_EMAIL", allowedEmail);
-    ({ createBranchShareLink, revokeBranchShareLink } = await import(
+    vi.stubEnv("SHARE_LINK_ENCRYPTION_KEY", shareEncryptionKey);
+    ({ createBranchShareLink, recoverBranchShareLink, revokeBranchShareLink } = await import(
       "../../src/app/actions/sharing"
     ));
   });
@@ -93,12 +98,15 @@ describe("branch sharing Server Actions", () => {
     await expect(createBranchShareLink({ nodeId: "not-a-node" })).rejects.toEqual(
       new AuthorizationError("missing-session"),
     );
+    await expect(recoverBranchShareLink({ nodeId: "not-a-node" })).rejects.toEqual(
+      new AuthorizationError("missing-session"),
+    );
     await expect(revokeBranchShareLink({ nodeId: "not-a-node" })).rejects.toEqual(
       new AuthorizationError("missing-session"),
     );
   });
 
-  it("returns a capability once, reports duplicate state, and revokes safely", async () => {
+  it("creates, recovers, and revokes the same encrypted capability safely", async () => {
     const userId = await seedAuthorizedSession();
     const nodeId = await insertNode(userId);
 
@@ -113,13 +121,20 @@ describe("branch sharing Server Actions", () => {
       secret: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
     });
     if (!created.ok) throw new Error("Expected a share link to be created.");
-    const stored = await pool.query<{ secret_digest: string }>(
-      `select secret_digest from branch_share_links where root_node_id = $1`,
+    const stored = await pool.query<{
+      secret_ciphertext: string;
+      secret_digest: string;
+    }>(
+      `select secret_ciphertext, secret_digest
+       from branch_share_links where root_node_id = $1`,
       [nodeId],
     );
     expect(stored.rows).toEqual([{
+      secret_ciphertext: expect.stringMatching(/^v1\./),
       secret_digest: digestBranchShareSecret(created.secret),
     }]);
+    expect(stored.rows[0]?.secret_ciphertext).not.toContain(created.secret);
+    expect(await recoverBranchShareLink({ nodeId })).toEqual(created);
 
     expect(await createBranchShareLink({ nodeId })).toEqual({
       ok: false,

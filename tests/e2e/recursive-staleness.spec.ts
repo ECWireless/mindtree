@@ -118,8 +118,35 @@ test("recovers a stale Summary through Branch Outline regeneration and approval"
     const summary = page.getByRole("region", { name: "Summary" });
     const outline = page.getByRole("region", { name: "Branch Outline" });
     await expect(summary).toContainText("Readable stale child summary");
-    await expect(summary.getByRole("status")).toContainText("Update available");
-    await expect(summary).toContainText("Open Chat to request a refreshed Summary");
+    const staleWarning = summary.getByRole("button", { name: "Update available" });
+    const staleTooltip = summary.getByRole("tooltip");
+    await expect(staleWarning).toHaveAttribute("aria-expanded", "false");
+    await expect(staleTooltip).toHaveText(
+      "This Summary may no longer reflect the current branch. Open Chat to request a refreshed Summary.",
+    );
+    await staleWarning.click();
+    await expect(staleWarning).toHaveAttribute("aria-expanded", "true");
+    await expect.poll(() => staleTooltip.evaluate(
+      (tooltip) => getComputedStyle(tooltip).opacity,
+    )).toBe("1");
+    const warningBox = await staleWarning.boundingBox();
+    const tooltipBox = await staleTooltip.boundingBox();
+    const viewportWidth = page.viewportSize()?.width;
+    expect(warningBox).not.toBeNull();
+    expect(tooltipBox).not.toBeNull();
+    expect(viewportWidth).toBeDefined();
+    if (warningBox && tooltipBox && viewportWidth) {
+      const warningCenter = warningBox.x + warningBox.width / 2;
+      const tooltipAnchor = tooltipBox.x + tooltipBox.width * 0.33;
+      expect(Math.abs(warningCenter - tooltipAnchor)).toBeLessThan(2);
+      expect(tooltipBox.x).toBeGreaterThanOrEqual(0);
+      expect(tooltipBox.x + tooltipBox.width).toBeLessThanOrEqual(viewportWidth);
+    }
+    await staleWarning.press("Escape");
+    await expect(staleWarning).toHaveAttribute("aria-expanded", "false");
+    await expect.poll(() => staleTooltip.evaluate(
+      (tooltip) => getComputedStyle(tooltip).opacity,
+    )).toBe("0");
     await expect(outline).toContainText("Readable stale child Branch Outline");
     await expect(outline).toContainText("Stale · the branch has changed");
     expect((await summary.boundingBox())?.y ?? Number.MAX_SAFE_INTEGER)
@@ -147,17 +174,17 @@ test("recovers a stale Summary through Branch Outline regeneration and approval"
     await outline.getByRole("button", { name: "Regenerate", exact: true }).click();
     await expect(outline).toContainText("No direct child nodes.", { timeout: 10_000 });
     await expect(outline).not.toContainText("Stale · the branch has changed");
-    await expect(summary.getByRole("status")).toContainText("Update available");
+    await expect(summary.getByRole("button", { name: "Update available" })).toBeVisible();
 
     await page.goto(`/?node=${rootId}`);
     const rootSummaryAfterOutline = page.getByRole("region", { name: "Summary" });
     const rootOutlineAfterOutline = page.getByRole("region", { name: "Branch Outline" });
-    await expect(rootSummaryAfterOutline.getByRole("status"))
-      .toContainText("Update available");
+    await expect(rootSummaryAfterOutline.getByRole("button", { name: "Update available" }))
+      .toBeVisible();
     await expect(rootOutlineAfterOutline).toContainText("Stale · the branch has changed");
 
     await page.goto(`/?node=${childId}`);
-    await expect(summary.getByRole("status")).toContainText("Update available");
+    await expect(summary.getByRole("button", { name: "Update available" })).toBeVisible();
     await expect(outline).toContainText("No direct child nodes.");
     await expect(outline).not.toContainText("Stale · the branch has changed");
 
@@ -176,19 +203,17 @@ test("recovers a stale Summary through Branch Outline regeneration and approval"
     await expect(summary).toContainText(
       "Create a synthesis Summary after Branch Outline regeneration",
     );
-    await expect(summary.getByRole("status")).toHaveCount(0);
+    await expect(summary.getByRole("button", { name: "Update available" })).toHaveCount(0);
     await expect(outline).toContainText("Stale · the branch has changed");
 
     await page.goto(`/?node=${rootId}`);
     const rootSummary = page.getByRole("region", { name: "Summary" });
     const rootOutline = page.getByRole("region", { name: "Branch Outline" });
-    await expect(rootSummary.getByRole("status")).toContainText("Update available");
+    await expect(rootSummary.getByRole("button", { name: "Update available" })).toBeVisible();
     await expect(rootOutline).toContainText("Stale · the branch has changed");
-    const dimensions = await page.evaluate(() => ({
-      clientWidth: document.documentElement.clientWidth,
-      scrollWidth: document.documentElement.scrollWidth,
-    }));
-    expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
+    await expect.poll(() => page.evaluate(() =>
+      document.documentElement.scrollWidth <= document.documentElement.clientWidth
+    )).toBe(true);
   } finally {
     await seeded.cleanup();
   }

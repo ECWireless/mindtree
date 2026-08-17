@@ -174,6 +174,7 @@ export const branchShareLinks = pgTable(
       .references(() => user.id, { onDelete: "cascade" }),
     rootNodeId: uuid("root_node_id").notNull(),
     secretDigest: varchar("secret_digest", { length: 64 }).notNull(),
+    secretCiphertext: varchar("secret_ciphertext", { length: 160 }),
     createdAt: createdAt(),
   },
   (table) => [
@@ -190,6 +191,10 @@ export const branchShareLinks = pgTable(
     check(
       "branch_share_links_secret_digest_check",
       sql`${table.secretDigest} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "branch_share_links_secret_ciphertext_check",
+      sql`${table.secretCiphertext} is null or ${table.secretCiphertext} ~ '^v1\\.[A-Za-z0-9_-]{16}\\.[A-Za-z0-9_-]{58}\\.[A-Za-z0-9_-]{22}$'`,
     ),
   ],
 );

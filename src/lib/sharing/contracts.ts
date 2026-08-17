@@ -20,6 +20,7 @@ export type BranchShareLinkState = {
   id: string;
   rootNodeId: string;
   createdAt: string;
+  recoverable: boolean;
 };
 
 export type CreateBranchShareLinkResult =
@@ -32,6 +33,14 @@ export type CreateBranchShareLinkResult =
 
 export type RevokeBranchShareLinkResult =
   | { ok: true; nodeId: string; revoked: boolean }
+  | { ok: false; message: string };
+
+export type RecoverBranchShareLinkResult =
+  | {
+      ok: true;
+      link: BranchShareLinkState;
+      secret: string;
+    }
   | { ok: false; message: string };
 
 export type PublicInternalCitation = {
@@ -66,6 +75,11 @@ export type PublicThoughtTrailNode = {
   } | null;
   branchOutline: { content: string } | null;
 };
+
+export type PublicConstellationNode = Pick<
+  PublicThoughtTrailNode,
+  "id" | "parentId" | "position" | "title"
+>;
 
 export type PublicThoughtTrail = {
   rootNodeId: string;

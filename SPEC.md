@@ -459,11 +459,17 @@ MindTree lets the owner deliberately share the current published thought trail
 beneath one selected node without granting dashboard access or exposing the
 private process used to create it.
 
-- The authenticated owner can create and revoke a share link for a selected
-  node. Revocation makes that link unavailable without changing the branch.
+- The authenticated owner can create, recover, copy, share, and revoke one
+  stable share link for a selected node. The active URL remains available to
+  the owner after reload; revocation makes it unavailable without changing the
+  branch.
 - Anyone with the link can read the selected scope root and its current
   descendants. The scope root's real parent, ancestors, siblings, and other
   branches remain private.
+- Anyone with the link can switch between the thought-trail reader and a
+  read-only Node Constellation of exactly that same current shared subtree.
+  The selected mode and thought use URL query state so either view can be
+  reloaded, bookmarked, or shared without creating another capability.
 - The shared view is dynamic rather than a snapshot. Current node titles,
   hierarchy, approved Summaries, Branch Outlines, and published external
   References are read when the page is requested, so later owner changes are
@@ -483,6 +489,10 @@ private process used to create it.
 - The public surface is strictly read-only. Possession of a link grants no
   mutation, generation, authentication, invitation, collaboration, API, or
   account authority.
+- The public constellation permits only local camera and layout interactions:
+  pan, zoom, reset, selection, and temporary bubble nudging. It never exposes
+  archived thoughts, archive or synthesis state, empty-workspace creation,
+  dashboard navigation, persistent coordinates, or owner-only controls.
 - Shared titles, Summaries, Branch Outlines, link labels, and external source
   metadata remain untrusted rendered data. Markdown and URL allowlists remain
   application-controlled.
@@ -730,13 +740,16 @@ operational logs rather than the main interface.
 
 ### `branchShareLinks`
 
-- UUID `id`, `userId`, `rootNodeId`, fixed-length random-secret digest, and
-  `createdAt`.
+- UUID `id`, `userId`, `rootNodeId`, fixed-length random-secret digest,
+  nullable authenticated-encryption envelope, and `createdAt`.
 - A unique owner/root constraint permits at most one active share link per
   selected node.
 - A composite foreign key guarantees that the share and scope root have the
   same owner; deleting the scope root deletes the share.
-- The plaintext link secret is never stored.
+- The plaintext link secret is never stored. New links store an AES-256-GCM
+  envelope encrypted with a dedicated deployment key so the authenticated
+  owner can recover the same URL after reload. Existing digest-only links stay
+  publicly valid but remain owner-unrecoverable until replaced.
 
 ### Derived data
 
@@ -762,13 +775,15 @@ against the current configured allowlist.
   pending proposal, diff inputs, provenance, citations, and References.
 - Constellation data derived from the same authorized tree.
 - Current share-link state for the selected node, excluding its secret.
+- Owner-authorized recovery of an active share-link secret only when the
+  sharing surface is opened; the initial dashboard payload excludes it.
 
 ### Server Actions
 
 - Create, rename, move, archive, unarchive, and delete nodes.
 - Approve, reject, and supersede synthesis proposals.
 - Retry a failed embedding refresh if an owner-facing control proves necessary.
-- Create and revoke the selected node's public share link.
+- Create, recover, and revoke the selected node's public share link.
 
 Every action validates with Zod, owner-scopes reads and writes, uses a
 transaction for multi-record changes, returns a small typed result, and
@@ -780,6 +795,9 @@ revalidates affected application data.
   its current subtree.
 - It reads only allowlisted shared fields and applies internal-link scope
   filtering before rendering.
+- Its trail and constellation modes are alternate presentations of the same
+  bounded allowlisted response; constellation mode does not add a data field,
+  read path, or broader scope.
 - It does not require or reveal an owner session, perform a product mutation,
   expose a general-purpose JSON contract, or call OpenAI.
 
@@ -817,10 +835,12 @@ revalidates affected application data.
 
 - `.env` and local variants are ignored; `.env.example` contains names and safe
   descriptions only.
-- `OPENAI_API_KEY`, database credentials, OAuth secrets, auth secrets, and
-  share-link digests are deployment server-only. Share-link secrets are
-  unguessable, revocable capabilities and are never written to logs or
-  analytics.
+- `OPENAI_API_KEY`, database credentials, OAuth secrets, auth secrets,
+  share-link digests, encrypted share-link secrets, and
+  `SHARE_LINK_ENCRYPTION_KEY` are deployment server-only. Share-link secrets
+  are unguessable, revocable capabilities; plaintext exists only during
+  owner-authorized creation or recovery and public-link validation, and is
+  never written to storage, logs, or analytics.
 - External web results, Branch Outlines, child summaries, related summaries,
   node titles, and chat history are untrusted model inputs and never
   instructions.

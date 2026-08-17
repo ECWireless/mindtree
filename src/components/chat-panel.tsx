@@ -29,6 +29,7 @@ import {
   chatFailureMessage,
 } from "@/lib/chat/presentation";
 import type { SynthesisDecisionSummary, SynthesisWorkspace } from "@/lib/synthesis/contracts";
+import { isDialogBackdropClick } from "@/lib/ui/dialog";
 
 type ChatPanelProps = {
   nodeId: string;
@@ -519,6 +520,11 @@ export function ChatPanel({
       aria-labelledby={`chat-dialog-title-${nodeId}`}
       onCancel={() => {
         restoreFocusOnClose.current = true;
+      }}
+      onClick={(event) => {
+        if (!isDialogBackdropClick(event)) return;
+        restoreFocusOnClose.current = true;
+        dialogRef.current?.close();
       }}
       onClose={() => {
         onClose();

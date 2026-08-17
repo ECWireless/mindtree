@@ -54,7 +54,11 @@ principles while using MindTree-specific product behavior:
    - `ALLOWED_EMAIL`: the one verified Google account allowed to sign in;
    - `OPENAI_API_KEY`: server-only Responses and Embeddings API access for
      Chat, Summary proposals, Branch Outlines, requested research, and semantic
-     related-thought retrieval.
+     related-thought retrieval;
+   - `SHARE_LINK_ENCRYPTION_KEY`: a stable 32-byte base64url key used only to
+     recover active public share URLs for the authenticated owner. Generate one
+     with
+     `node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('base64url') + '\n')"`.
 
    Local PostgreSQL may use the same connection for both database URL fields.
    Keep local environment files ignored and never commit credentials.
@@ -204,9 +208,12 @@ The canonical target is a standard Next.js Node.js application on Vercel with
 PostgreSQL on Neon. Builds never run migrations automatically. Arbitrary Vercel
 preview origins do not initiate Google OAuth; they direct visitors to the
 configured canonical origin instead. Production deployment, OAuth callbacks,
-database credentials, migrations, and AI-provider access remain separate
-operational approval boundaries. Keep `OPENAI_API_KEY` server-only and review
-provider data controls independently before enabling a production deployment.
+database credentials, migrations, share-link encryption, and AI-provider
+access remain separate operational approval boundaries. Keep `OPENAI_API_KEY`
+and `SHARE_LINK_ENCRYPTION_KEY` server-only. Preserve the share-link key across
+deployments; changing or losing it leaves public links active through their
+digests but prevents the owner from recovering those URLs. Review provider
+data controls independently before enabling a production deployment.
 
 ## License
 

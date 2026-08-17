@@ -18,6 +18,7 @@ import {
   createBranchShareLinkForUser,
   getBranchShareLinkStateForUser,
   getPublicThoughtTrail,
+  recoverBranchShareLinkForUser,
   revokeBranchShareLinkForUser,
 } from "../../src/lib/server/share-service";
 
@@ -28,6 +29,7 @@ if (!connectionString) {
 
 const pool = new Pool({ connectionString });
 const userIds = new Set<string>();
+const shareEncryptionKey = Buffer.alloc(32, 7).toString("base64url");
 
 async function insertUser() {
   const userId = `share-user-${randomUUID()}`;
@@ -217,14 +219,19 @@ describe("branch share capability lifecycle", () => {
     expect(digestBranchShareSecret(generated)).toMatch(/^[0-9a-f]{64}$/);
     expect(digestBranchShareSecret("malformed")).toBeNull();
 
-    const created = await createBranchShareLinkForUser(userId, rootNodeId);
+    const created = await createBranchShareLinkForUser(
+      userId,
+      rootNodeId,
+      shareEncryptionKey,
+    );
     expect(created.secret).toHaveLength(BRANCH_SHARE_SECRET_LENGTH);
     expect(created.link).toMatchObject({ rootNodeId });
     const stored = await pool.query<{
+      secret_ciphertext: string;
       secret_digest: string;
       secret_present: boolean;
     }>(
-      `select secret_digest,
+      `select secret_ciphertext, secret_digest,
         exists(
           select 1 from information_schema.columns
           where table_name = 'branch_share_links' and column_name = 'secret'
@@ -233,13 +240,52 @@ describe("branch share capability lifecycle", () => {
       [created.link.id],
     );
     expect(stored.rows).toEqual([{
+      secret_ciphertext: expect.stringMatching(/^v1\./),
       secret_digest: digestBranchShareSecret(created.secret),
       secret_present: false,
     }]);
     expect(await getBranchShareLinkStateForUser(userId, rootNodeId)).toEqual(
       created.link,
     );
-    await expect(createBranchShareLinkForUser(userId, rootNodeId)).rejects.toEqual(
+    expect(await recoverBranchShareLinkForUser(
+      userId,
+      rootNodeId,
+      shareEncryptionKey,
+    )).toEqual(created);
+    await expect(recoverBranchShareLinkForUser(
+      userId,
+      rootNodeId,
+      Buffer.alloc(32, 8).toString("base64url"),
+    )).rejects.toEqual(new BranchShareServiceError("unavailable"));
+
+    const storedCiphertext = stored.rows[0]!.secret_ciphertext;
+    const tamperedCiphertext = `${storedCiphertext.slice(0, 3)}${storedCiphertext[3] === "A" ? "B" : "A"}${storedCiphertext.slice(4)}`;
+    await pool.query(
+      `update branch_share_links set secret_ciphertext = $1 where id = $2`,
+      [tamperedCiphertext, created.link.id],
+    );
+    await expect(recoverBranchShareLinkForUser(
+      userId,
+      rootNodeId,
+      shareEncryptionKey,
+    )).rejects.toEqual(new BranchShareServiceError("unavailable"));
+
+    await pool.query(
+      `update branch_share_links
+       set secret_ciphertext = $1, secret_digest = $2
+       where id = $3`,
+      [storedCiphertext, "0".repeat(64), created.link.id],
+    );
+    await expect(recoverBranchShareLinkForUser(
+      userId,
+      rootNodeId,
+      shareEncryptionKey,
+    )).rejects.toEqual(new BranchShareServiceError("unavailable"));
+    await expect(createBranchShareLinkForUser(
+      userId,
+      rootNodeId,
+      shareEncryptionKey,
+    )).rejects.toEqual(
       new BranchShareServiceError("link-exists"),
     );
 
@@ -254,6 +300,36 @@ describe("branch share capability lifecycle", () => {
     await expect(getPublicThoughtTrail(created.secret)).rejects.toEqual(
       new BranchShareServiceError("not-found"),
     );
+    await expect(recoverBranchShareLinkForUser(
+      userId,
+      rootNodeId,
+      shareEncryptionKey,
+    )).rejects.toEqual(new BranchShareServiceError("not-found"));
+  });
+
+  it("keeps legacy digest-only links public without pretending they are recoverable", async () => {
+    const userId = await insertUser();
+    const rootNodeId = await insertNode({ userId, title: "Legacy shared root" });
+    const secret = generateBranchShareSecret();
+    await pool.query(
+      `insert into branch_share_links (user_id, root_node_id, secret_digest)
+       values ($1, $2, $3)`,
+      [userId, rootNodeId, digestBranchShareSecret(secret)],
+    );
+
+    await expect(getPublicThoughtTrail(secret)).resolves.toMatchObject({
+      rootNodeId,
+      selectedNodeId: rootNodeId,
+    });
+    await expect(getBranchShareLinkStateForUser(userId, rootNodeId)).resolves.toMatchObject({
+      rootNodeId,
+      recoverable: false,
+    });
+    await expect(recoverBranchShareLinkForUser(
+      userId,
+      rootNodeId,
+      shareEncryptionKey,
+    )).rejects.toEqual(new BranchShareServiceError("unrecoverable-link"));
   });
 
   it("keeps creation owner-scoped and refuses archived roots", async () => {
@@ -263,22 +339,30 @@ describe("branch share capability lifecycle", () => {
       userId: otherOwnerId,
       title: "Foreign root",
     });
+    await createBranchShareLinkForUser(
+      otherOwnerId,
+      foreignNodeId,
+      shareEncryptionKey,
+    );
     const archivedNodeId = await insertNode({
       userId: ownerId,
       title: "Archived root",
       archived: true,
     });
     await expect(
-      createBranchShareLinkForUser(ownerId, foreignNodeId),
+      createBranchShareLinkForUser(ownerId, foreignNodeId, shareEncryptionKey),
     ).rejects.toEqual(new BranchShareServiceError("node-not-found"));
     await expect(
-      createBranchShareLinkForUser(ownerId, randomUUID()),
+      createBranchShareLinkForUser(ownerId, randomUUID(), shareEncryptionKey),
     ).rejects.toEqual(new BranchShareServiceError("node-not-found"));
     await expect(
-      createBranchShareLinkForUser(ownerId, archivedNodeId),
+      createBranchShareLinkForUser(ownerId, archivedNodeId, shareEncryptionKey),
     ).rejects.toEqual(new BranchShareServiceError("archived-root"));
     await expect(
       getBranchShareLinkStateForUser(ownerId, foreignNodeId),
+    ).rejects.toEqual(new BranchShareServiceError("node-not-found"));
+    await expect(
+      recoverBranchShareLinkForUser(ownerId, foreignNodeId, shareEncryptionKey),
     ).rejects.toEqual(new BranchShareServiceError("node-not-found"));
     await expect(
       revokeBranchShareLinkForUser(ownerId, foreignNodeId),
@@ -361,7 +445,7 @@ describe("dynamic public thought-trail read boundary", () => {
       content: "- **Public child:** Current child relationship",
     });
 
-    const created = await createBranchShareLinkForUser(userId, rootId);
+    const created = await createBranchShareLinkForUser(userId, rootId, shareEncryptionKey);
     const trail = await getPublicThoughtTrail(created.secret, childId);
     expect(trail).toEqual({
       rootNodeId: rootId,
@@ -453,7 +537,7 @@ describe("dynamic public thought-trail read boundary", () => {
        from generate_series(0, $3::int) as generated(position)`,
       [userId, rootId, MAX_PUBLIC_TRAIL_NODES - 1],
     );
-    const created = await createBranchShareLinkForUser(userId, rootId);
+    const created = await createBranchShareLinkForUser(userId, rootId, shareEncryptionKey);
     await expect(getPublicThoughtTrail(created.secret)).rejects.toEqual(
       new BranchShareServiceError("oversized"),
     );
@@ -532,7 +616,11 @@ describe("dynamic public thought-trail read boundary", () => {
        where nodes.id = input.node_id`,
       [nodeIds, summaryIds, outlineIds],
     );
-    const created = await createBranchShareLinkForUser(userId, nodeIds[0]!);
+    const created = await createBranchShareLinkForUser(
+      userId,
+      nodeIds[0]!,
+      shareEncryptionKey,
+    );
     const underLimit = await getPublicThoughtTrail(created.secret);
     expect(Buffer.byteLength(JSON.stringify(underLimit), "utf8"))
       .toBeLessThanOrEqual(MAX_PUBLIC_TRAIL_SERIALIZED_BYTES);
@@ -575,7 +663,7 @@ describe("dynamic public thought-trail read boundary", () => {
         url: "https://synthetic:secret@example.test/source",
       }],
     });
-    const created = await createBranchShareLinkForUser(userId, rootId);
+    const created = await createBranchShareLinkForUser(userId, rootId, shareEncryptionKey);
     await expect(getPublicThoughtTrail(created.secret)).rejects.toEqual(
       new BranchShareServiceError("unavailable"),
     );
@@ -651,7 +739,11 @@ describe("dynamic public thought-trail read boundary", () => {
        where nodes.id = input.node_id`,
       [nodeIds, summaryIds],
     );
-    const created = await createBranchShareLinkForUser(userId, nodeIds[0]!);
+    const created = await createBranchShareLinkForUser(
+      userId,
+      nodeIds[0]!,
+      shareEncryptionKey,
+    );
     await expect(getPublicThoughtTrail(created.secret)).rejects.toEqual(
       new BranchShareServiceError("oversized"),
     );
@@ -660,7 +752,7 @@ describe("dynamic public thought-trail read boundary", () => {
   it("makes revocation wait for the production public-read lock and denies later reads", async () => {
     const userId = await insertUser();
     const rootId = await insertNode({ userId, title: "Concurrent root" });
-    const created = await createBranchShareLinkForUser(userId, rootId);
+    const created = await createBranchShareLinkForUser(userId, rootId, shareEncryptionKey);
     let signalReadLocked!: () => void;
     let releaseRead!: () => void;
     const readLocked = new Promise<void>((resolve) => { signalReadLocked = resolve; });

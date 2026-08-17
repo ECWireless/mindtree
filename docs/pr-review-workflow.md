@@ -84,9 +84,11 @@ For changes touching chat or synthesis, reviewers verify that:
 
 For changes touching shareable thought trails, reviewers verify that:
 
-- share-link creation and revocation require the authorized owner session, and
-  the plaintext capability secret is unguessable, never stored, and excluded
-  from logs, analytics, tracked files, and error bodies;
+- share-link creation, recovery, and revocation require the authorized owner
+  session; the plaintext capability secret is unguessable, never stored, and
+  excluded from logs, analytics, tracked files, and error bodies; encrypted
+  recovery uses the dedicated deployment key and binds ciphertext to its owner
+  and share record;
 - every public request validates the link, selected root, revocation state, and
   current subtree membership before rendering;
 - the public representation uses an explicit field allowlist and contains only

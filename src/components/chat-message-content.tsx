@@ -16,6 +16,11 @@ import type {
   InternalCitationView,
   SynthesisCitationView,
 } from "@/lib/citations/contracts";
+import type {
+  PublicExternalCitation,
+  PublicInternalCitation,
+  PublicSynthesisCitation,
+} from "@/lib/sharing/contracts";
 
 const allowedElements = ["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "em", "strong", "a"];
 
@@ -247,7 +252,10 @@ type MarkdownAstNode = {
 
 function createInternalLinkPlugin(
   content: string,
-  citations: readonly InternalCitationView[],
+  citations: readonly Pick<
+    InternalCitationView,
+    "endUtf16" | "ordinal" | "startUtf16"
+  >[],
 ) {
   const ordered = [...citations].sort((left, right) =>
     left.startUtf16 - right.startUtf16 || left.ordinal - right.ordinal
@@ -344,7 +352,10 @@ function createInternalLinkPlugin(
 
 function createSynthesisCitationPlugin(
   content: string,
-  internalCitations: readonly InternalCitationView[],
+  internalCitations: readonly Pick<
+    InternalCitationView,
+    "endUtf16" | "ordinal" | "startUtf16"
+  >[],
   externalCitations: readonly ExternalCitationView[],
 ) {
   const applyInternal = createInternalLinkPlugin(content, internalCitations)();
@@ -656,6 +667,91 @@ export function SynthesisDocumentContent({
         {content}
       </ReactMarkdown>
     </>
+  );
+}
+
+export function PublicSynthesisDocumentContent({
+  content,
+  citations = [],
+}: {
+  content: string;
+  citations?: readonly PublicSynthesisCitation[];
+}) {
+  const internalCitations = citations.filter(
+    (citation): citation is PublicInternalCitation => citation.kind === "internal",
+  );
+  const externalCitations = citations.filter(
+    (citation): citation is PublicExternalCitation => citation.kind === "external",
+  );
+  const internalByOrdinal = new Map(
+    internalCitations.map((citation) => [citation.ordinal, citation]),
+  );
+  return (
+    <ReactMarkdown
+      allowedElements={allowedElements}
+      remarkPlugins={[
+        createSynthesisCitationPlugin(content, internalCitations, externalCitations),
+      ]}
+      skipHtml
+      components={{
+        a: ({ children, href, node }) => {
+          const trustedExternal = node?.properties?.[externalCitationProperty];
+          const externalOccurrence = typeof trustedExternal === "number"
+            ? trustedExternal
+            : Number.NaN;
+          const externalCitation = Number.isInteger(externalOccurrence)
+            ? externalCitations[externalOccurrence]
+            : undefined;
+          if (
+            externalCitation &&
+            href === `${externalCitationPrefix}${externalOccurrence}`
+          ) {
+            return (
+              <a
+                className="external-citation-link"
+                href={externalCitation.url}
+                target="_blank"
+                rel="noreferrer noopener"
+                aria-label={`Source ${externalCitation.ordinal}: ${externalCitation.title}. Opens in a new tab.`}
+                title={externalCitation.title}
+              >
+                {children}
+              </a>
+            );
+          }
+          const trustedInternal = node?.properties?.[internalCitationProperty];
+          const ordinal = typeof trustedInternal === "number"
+            ? trustedInternal
+            : Number.NaN;
+          const citation = Number.isInteger(ordinal)
+            ? internalByOrdinal.get(ordinal)
+            : undefined;
+          if (
+            !citation ||
+            !citation.targetNodeId ||
+            href !== `${internalLinkPrefix}${ordinal}`
+          ) {
+            return <>{children}</>;
+          }
+          return (
+            <a
+              className="internal-node-link"
+              href={`?node=${encodeURIComponent(citation.targetNodeId)}`}
+            >
+              {children}
+            </a>
+          );
+        },
+        h1: ({ children }) => <h4>{children}</h4>,
+        h2: ({ children }) => <h5>{children}</h5>,
+        h3: ({ children }) => <h6>{children}</h6>,
+        h4: ({ children }) => <h6>{children}</h6>,
+        h5: ({ children }) => <h6>{children}</h6>,
+        h6: ({ children }) => <h6>{children}</h6>,
+      }}
+    >
+      {content}
+    </ReactMarkdown>
   );
 }
 

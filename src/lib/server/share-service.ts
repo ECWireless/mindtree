@@ -1,6 +1,7 @@
 import "server-only";
 
 import { Buffer } from "node:buffer";
+import { randomUUID } from "node:crypto";
 
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { DrizzleError, DrizzleQueryError } from "drizzle-orm/errors";
@@ -24,7 +25,9 @@ import {
   type PublicThoughtTrailNode,
 } from "@/lib/sharing/contracts";
 import {
+  decryptBranchShareSecret,
   digestBranchShareSecret,
+  encryptBranchShareSecret,
   generateBranchShareSecret,
 } from "@/lib/server/share-capability";
 import {
@@ -66,6 +69,7 @@ export class BranchShareServiceError extends Error {
     | "node-not-found"
     | "not-found"
     | "oversized"
+    | "unrecoverable-link"
     | "unavailable") {
     super(reason);
     this.name = "BranchShareServiceError";
@@ -112,12 +116,16 @@ function sanitizeShareServiceError(error: unknown) {
 }
 
 function toShareLinkState(
-  row: Pick<typeof branchShareLinks.$inferSelect, "id" | "rootNodeId" | "createdAt">,
+  row: Pick<
+    typeof branchShareLinks.$inferSelect,
+    "id" | "rootNodeId" | "secretCiphertext" | "createdAt"
+  >,
 ): BranchShareLinkState {
   return {
     id: row.id,
     rootNodeId: row.rootNodeId,
     createdAt: row.createdAt.toISOString(),
+    recoverable: row.secretCiphertext !== null,
   };
 }
 
@@ -150,6 +158,7 @@ export async function getBranchShareLinkStateForUser(
       .select({
         id: branchShareLinks.id,
         rootNodeId: branchShareLinks.rootNodeId,
+        secretCiphertext: branchShareLinks.secretCiphertext,
         createdAt: branchShareLinks.createdAt,
       })
       .from(branchShareLinks)
@@ -166,10 +175,19 @@ export async function getBranchShareLinkStateForUser(
 export async function createBranchShareLinkForUser(
   userId: string,
   rootNodeId: string,
+  encryptionKey: string,
 ): Promise<{ link: BranchShareLinkState; secret: string }> {
+  const linkId = randomUUID();
   const secret = generateBranchShareSecret();
   const secretDigest = digestBranchShareSecret(secret);
-  if (!secretDigest) throw new BranchShareServiceError("unavailable");
+  const secretCiphertext = encryptBranchShareSecret(secret, encryptionKey, {
+    linkId,
+    userId,
+    rootNodeId,
+  });
+  if (!secretDigest || !secretCiphertext) {
+    throw new BranchShareServiceError("unavailable");
+  }
   try {
     const created = await db.transaction(async (tx) => {
       const root = await lockOwnerAndRoot(tx, userId, rootNodeId);
@@ -186,16 +204,67 @@ export async function createBranchShareLinkForUser(
       if (existing) throw new BranchShareServiceError("link-exists");
       const [link] = await tx
         .insert(branchShareLinks)
-        .values({ userId, rootNodeId, secretDigest })
+        .values({
+          id: linkId,
+          userId,
+          rootNodeId,
+          secretDigest,
+          secretCiphertext,
+        })
         .returning({
           id: branchShareLinks.id,
           rootNodeId: branchShareLinks.rootNodeId,
+          secretCiphertext: branchShareLinks.secretCiphertext,
           createdAt: branchShareLinks.createdAt,
         });
       if (!link) throw new BranchShareServiceError("unavailable");
       return toShareLinkState(link);
     });
     return { link: created, secret };
+  } catch (error) {
+    throw sanitizeShareServiceError(error);
+  }
+}
+
+export async function recoverBranchShareLinkForUser(
+  userId: string,
+  rootNodeId: string,
+  encryptionKey: string,
+): Promise<{ link: BranchShareLinkState; secret: string }> {
+  try {
+    const [root] = await db
+      .select({ id: nodes.id })
+      .from(nodes)
+      .where(and(eq(nodes.userId, userId), eq(nodes.id, rootNodeId)));
+    if (!root) throw new BranchShareServiceError("node-not-found");
+
+    const [link] = await db
+      .select({
+        id: branchShareLinks.id,
+        rootNodeId: branchShareLinks.rootNodeId,
+        secretDigest: branchShareLinks.secretDigest,
+        secretCiphertext: branchShareLinks.secretCiphertext,
+        createdAt: branchShareLinks.createdAt,
+      })
+      .from(branchShareLinks)
+      .where(and(
+        eq(branchShareLinks.userId, userId),
+        eq(branchShareLinks.rootNodeId, rootNodeId),
+      ));
+    if (!link) throw new BranchShareServiceError("not-found");
+    if (!link.secretCiphertext) {
+      throw new BranchShareServiceError("unrecoverable-link");
+    }
+
+    const secret = decryptBranchShareSecret(
+      link.secretCiphertext,
+      encryptionKey,
+      { linkId: link.id, userId, rootNodeId },
+    );
+    if (!secret || digestBranchShareSecret(secret) !== link.secretDigest) {
+      throw new BranchShareServiceError("unavailable");
+    }
+    return { link: toShareLinkState(link), secret };
   } catch (error) {
     throw sanitizeShareServiceError(error);
   }
