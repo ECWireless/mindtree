@@ -122,8 +122,25 @@ test("explores a responsive thought constellation as a design canvas", async ({
     await constellationToggle.click();
     await expect(constellationToggle).toHaveAttribute("aria-pressed", "true");
     await expect(
-      page.getByRole("heading", { level: 1, name: "Thought Constellation" }),
+      page.getByRole("region", { name: "Thought Constellation" }),
     ).toBeVisible();
+    const constellationHeading = page.getByRole("heading", {
+      level: 1,
+      name: "Thought Constellation",
+    });
+    const viewport = page.viewportSize();
+    const hidesHeader = Boolean(
+      viewport && viewport.width <= 760 && viewport.height <= 576,
+    );
+    if (hidesHeader) {
+      await expect(page.locator(".constellation__header")).toHaveCSS(
+        "clip-path",
+        "inset(50%)",
+      );
+      await expect(constellationHeading).toBeAttached();
+    } else {
+      await expect(constellationHeading).toBeVisible();
+    }
     await expect(page.getByText("Pull a thought and watch its branches respond.")).toHaveCount(0);
 
     const canvas = page.getByRole("group", { name: "8 thought node constellation" });
@@ -261,7 +278,11 @@ test("explores a responsive thought constellation as a design canvas", async ({
     const showArchived = page.getByRole("button", { name: "Show archived" });
     await showArchived.click();
     await expect(page.getByRole("group", { name: "9 thought node constellation" })).toBeVisible();
-    await expect(page.getByText("Archived", { exact: true })).toBeVisible();
+    const constellationLegend = page.getByLabel("Constellation legend");
+    await expect(constellationLegend).toContainText("Archived");
+    if (!hidesHeader) {
+      await expect(page.getByText("Archived", { exact: true })).toBeVisible();
+    }
     await expect(page.locator(".constellation-node--archived")).toHaveCount(1);
     await showArchived.click();
     await expect(page.getByRole("group", { name: "8 thought node constellation" })).toBeVisible();
