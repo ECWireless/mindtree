@@ -1690,6 +1690,7 @@ button:not(:disabled) {
 .public-trail-tree h2 {
   margin-top: 0.25rem;
   font-size: 1.25rem;
+  overflow-wrap: anywhere;
 }
 
 .public-trail-tree__count,
@@ -1818,6 +1819,7 @@ button:not(:disabled) {
   margin-top: 1rem;
   font-size: clamp(1.85rem, 4vw, 3rem);
   letter-spacing: -0.04em;
+  overflow-wrap: anywhere;
 }
 
 .public-trail-summary {
