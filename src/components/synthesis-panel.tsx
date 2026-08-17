@@ -68,8 +68,8 @@ export function PublishedSynthesisArtifact({
   const titleId = `published-synthesis-${synthesis.id}`;
   const staleTooltipId = `published-synthesis-stale-${synthesis.id}`;
   const [staleTooltipOpen, setStaleTooltipOpen] = useState(false);
-  const staleTooltipOpenedByFocus = useRef(false);
-  const staleTooltipOpenedByHover = useRef(false);
+  const staleTooltipFocused = useRef(false);
+  const staleTooltipHovered = useRef(false);
   const staleMessage =
     "This Summary may no longer reflect the current branch. Open Chat to request a refreshed Summary.";
   return (
@@ -85,39 +85,31 @@ export function PublishedSynthesisArtifact({
               aria-describedby={staleTooltipId}
               aria-expanded={staleTooltipOpen}
               onBlur={() => {
-                staleTooltipOpenedByFocus.current = false;
-                setStaleTooltipOpen(false);
+                staleTooltipFocused.current = false;
+                setStaleTooltipOpen(staleTooltipHovered.current);
               }}
               onClick={() => {
-                if (
-                  staleTooltipOpenedByFocus.current ||
-                  staleTooltipOpenedByHover.current
-                ) {
-                  staleTooltipOpenedByFocus.current = false;
-                  staleTooltipOpenedByHover.current = false;
-                  return;
-                }
-                setStaleTooltipOpen((current) => !current);
+                setStaleTooltipOpen(true);
               }}
               onFocus={() => {
-                staleTooltipOpenedByFocus.current = true;
+                staleTooltipFocused.current = true;
                 setStaleTooltipOpen(true);
               }}
               onKeyDown={(event) => {
                 if (event.key === "Escape") {
-                  staleTooltipOpenedByFocus.current = false;
-                  staleTooltipOpenedByHover.current = false;
+                  staleTooltipFocused.current = false;
+                  staleTooltipHovered.current = false;
                   setStaleTooltipOpen(false);
                   event.currentTarget.focus();
                 }
               }}
               onMouseEnter={() => {
-                staleTooltipOpenedByHover.current = true;
+                staleTooltipHovered.current = true;
                 setStaleTooltipOpen(true);
               }}
               onMouseLeave={() => {
-                staleTooltipOpenedByHover.current = false;
-                setStaleTooltipOpen(false);
+                staleTooltipHovered.current = false;
+                setStaleTooltipOpen(staleTooltipFocused.current);
               }}
             >
               <WarningIcon />

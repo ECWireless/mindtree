@@ -126,6 +126,9 @@ test("recovers a stale Summary through Branch Outline regeneration and approval"
     );
     await staleWarning.click();
     await expect(staleWarning).toHaveAttribute("aria-expanded", "true");
+    await expect(staleTooltip).toHaveAttribute("data-open", "true");
+    await page.mouse.move(0, 0);
+    await expect(staleWarning).toHaveAttribute("aria-expanded", "true");
     await expect.poll(() => staleTooltip.evaluate(
       (tooltip) => getComputedStyle(tooltip).opacity,
     )).toBe("1");
@@ -144,6 +147,7 @@ test("recovers a stale Summary through Branch Outline regeneration and approval"
     }
     await staleWarning.press("Escape");
     await expect(staleWarning).toHaveAttribute("aria-expanded", "false");
+    await expect(staleTooltip).toHaveAttribute("data-open", "false");
     await expect.poll(() => staleTooltip.evaluate(
       (tooltip) => getComputedStyle(tooltip).opacity,
     )).toBe("0");
