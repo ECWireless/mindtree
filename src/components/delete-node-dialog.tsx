@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 
 import { deleteNode } from "@/app/actions/nodes";
 import type { TreeNode } from "@/lib/nodes/tree";
+import { isDialogBackdropClick } from "@/lib/ui/dialog";
 
 function CloseIcon() {
   return (
@@ -113,6 +114,9 @@ export function DeleteNodeDialog({
         if (requestInFlight.current) {
           event.preventDefault();
         }
+      }}
+      onClick={(event) => {
+        if (isDialogBackdropClick(event)) close();
       }}
       onClose={onClose}
     >

@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer";
+
 import { describe, expect, it } from "vitest";
 
 import { parseServerEnvironment } from "@/lib/env/contracts";
@@ -14,6 +16,7 @@ const syntheticEnvironment = {
   GOOGLE_CLIENT_SECRET: "synthetic-google-client-secret",
   ALLOWED_EMAIL: "owner@example.test",
   OPENAI_API_KEY: "synthetic-openai-key",
+  SHARE_LINK_ENCRYPTION_KEY: Buffer.alloc(32, 13).toString("base64url"),
 } satisfies NodeJS.ProcessEnv;
 
 describe("parseServerEnvironment", () => {
@@ -25,7 +28,12 @@ describe("parseServerEnvironment", () => {
 
   it("accepts the complete synthetic server contract", () => {
     expect(
-      parseServerEnvironment(syntheticEnvironment, ["database", "authentication", "openai"]),
+      parseServerEnvironment(syntheticEnvironment, [
+        "database",
+        "authentication",
+        "openai",
+        "sharing-encryption",
+      ]),
     ).toEqual({
       ...syntheticEnvironment,
       BETTER_AUTH_TRUSTED_ORIGINS: ["https://trusted.example.test"],
@@ -68,6 +76,7 @@ describe("parseServerEnvironment", () => {
       "BETTER_AUTH_SECRET, BETTER_AUTH_URL, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, ALLOWED_EMAIL",
     ],
     ["openai", "OPENAI_API_KEY"],
+    ["sharing-encryption", "SHARE_LINK_ENCRYPTION_KEY"],
   ] as const)("reports missing %s configuration by variable name", (requirement, names) => {
     expect(() => parseServerEnvironment({ NODE_ENV: "production" }, [requirement])).toThrow(
       `Missing required server environment variables: ${names}`,
@@ -92,6 +101,36 @@ describe("parseServerEnvironment", () => {
     } catch (error) {
       expect(String(error)).not.toContain(shortSecret);
     }
+  });
+
+  it("rejects a malformed share-link encryption key without echoing its value", () => {
+    const malformedKey = "synthetic-share-key-that-is-not-base64url";
+    expect(() =>
+      parseServerEnvironment({
+        ...syntheticEnvironment,
+        SHARE_LINK_ENCRYPTION_KEY: malformedKey,
+      }),
+    ).toThrow("SHARE_LINK_ENCRYPTION_KEY must be a 32-byte base64url value.");
+
+    try {
+      parseServerEnvironment({
+        ...syntheticEnvironment,
+        SHARE_LINK_ENCRYPTION_KEY: malformedKey,
+      });
+    } catch (error) {
+      expect(String(error)).not.toContain(malformedKey);
+    }
+  });
+
+  it("rejects non-canonical base64url aliases for the share-link encryption key", () => {
+    const nonCanonicalKey = "a".repeat(43);
+
+    expect(() =>
+      parseServerEnvironment({
+        ...syntheticEnvironment,
+        SHARE_LINK_ENCRYPTION_KEY: nonCanonicalKey,
+      }),
+    ).toThrow("SHARE_LINK_ENCRYPTION_KEY must be a 32-byte base64url value.");
   });
 
   it.each([

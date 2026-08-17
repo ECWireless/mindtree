@@ -1,0 +1,2 @@
+ALTER TABLE "branch_share_links" ADD COLUMN "secret_ciphertext" varchar(160);--> statement-breakpoint
+ALTER TABLE "branch_share_links" ADD CONSTRAINT "branch_share_links_secret_ciphertext_check" CHECK ("branch_share_links"."secret_ciphertext" is null or "branch_share_links"."secret_ciphertext" ~ '^v1\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{58}\.[A-Za-z0-9_-]{22}$');

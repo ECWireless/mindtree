@@ -43,7 +43,8 @@ import {
   zoomConstellationTransform,
   type ConstellationViewTransform,
 } from "@/lib/nodes/constellation";
-import type { TreeNode } from "@/lib/nodes/tree";
+import { assembleNodeTree, type TreeNode } from "@/lib/nodes/tree";
+import type { PublicConstellationNode } from "@/lib/sharing/contracts";
 
 type LayoutNode = SimulationNodeDatum & {
   id: string;
@@ -83,14 +84,28 @@ type PinchState = {
   worldY: number;
 };
 
-type NodeConstellationProps = {
-  nodes: readonly TreeNode[];
+type NodeConstellationBaseProps = {
   selectedNodeId?: string;
+};
+
+type OwnerNodeConstellationProps = NodeConstellationBaseProps & {
+  variant: "owner";
+  nodes: readonly TreeNode[];
   showArchived: boolean;
   onCreateRoot: () => void;
   onOpenNode: (nodeId: string) => void;
   onShowArchived: () => void;
 };
+
+type PublicNodeConstellationProps = NodeConstellationBaseProps & {
+  variant: "public";
+  nodes: readonly PublicConstellationNode[];
+  onSelectNode: (nodeId: string) => void;
+};
+
+type NodeConstellationProps =
+  | OwnerNodeConstellationProps
+  | PublicNodeConstellationProps;
 
 function Icon({ children, ...props }: SVGProps<SVGSVGElement>) {
   return (
@@ -162,14 +177,21 @@ function breadcrumbForNode(node: TreeNode) {
   return node.breadcrumb.map(({ title }) => title).join(" / ");
 }
 
-export function NodeConstellation({
-  nodes,
-  selectedNodeId,
-  showArchived,
-  onCreateRoot,
-  onOpenNode,
-  onShowArchived,
-}: NodeConstellationProps) {
+export function NodeConstellation(props: NodeConstellationProps) {
+  const { selectedNodeId } = props;
+  const publicView = props.variant === "public";
+  const showArchived = publicView ? false : props.showArchived;
+  const nodes = useMemo<readonly TreeNode[]>(() => {
+    if (props.variant === "owner") {
+      return props.nodes;
+    }
+    return assembleNodeTree(props.nodes.map((node) => ({
+      ...node,
+      archivedAt: null,
+      publishedSynthesisVersionId: null,
+      synthesisStaleAt: null,
+    }))).ordered;
+  }, [props.nodes, props.variant]);
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<SVGSVGElement>(null);
   const simulationRef = useRef<Simulation<LayoutNode, LayoutLink> | null>(null);
@@ -180,7 +202,7 @@ export function NodeConstellation({
   const pinchStateRef = useRef<PinchState | null>(null);
   const focusFirstNodeAfterRevealRef = useRef(false);
   const animationFrameRef = useRef<number | null>(null);
-  const openNodeButtonRef = useRef<HTMLButtonElement>(null);
+  const openNodeControlRef = useRef<HTMLElement | null>(null);
   const [dimensions, setDimensions] = useState({ width: 900, height: 620 });
   const [inspectedNodeId, setInspectedNodeId] = useState<string | null>(
     selectedNodeId ?? null,
@@ -206,6 +228,13 @@ export function NodeConstellation({
       : undefined) ??
     null;
   const activeInspectedNodeId = inspectedNode?.id ?? null;
+  const Heading = publicView ? "h2" : "h1";
+  const setOpenNodeControl = useCallback(
+    (element: HTMLAnchorElement | HTMLButtonElement | null) => {
+      openNodeControlRef.current = element;
+    },
+    [],
+  );
 
   const finishDrag = useCallback((pointerId?: number) => {
     const dragState = dragStateRef.current;
@@ -515,8 +544,8 @@ export function NodeConstellation({
     if (registerPointer(event)) {
       return;
     }
-    if (chooseOnStart) {
-      chooseNode(node.node);
+    if (chooseOnStart || publicView) {
+      chooseNode(node.node, publicView);
     }
     dragStateRef.current = { kind: "node", nodeId: node.id, pointerId: event.pointerId };
     node.fx = node.x;
@@ -598,8 +627,11 @@ export function NodeConstellation({
     finishPointer(event.pointerId);
   }
 
-  function chooseNode(node: TreeNode) {
+  function chooseNode(node: TreeNode, persistPublicSelection = false) {
     setInspectedNodeId(node.id);
+    if (publicView && persistPublicSelection) {
+      props.onSelectNode(node.id);
+    }
   }
 
   function focusRelativeNode(nodeId: string, offset: number) {
@@ -614,8 +646,8 @@ export function NodeConstellation({
   function handleNodeKeyDown(event: KeyboardEvent<SVGGElement>, node: TreeNode) {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      chooseNode(node);
-      window.requestAnimationFrame(() => openNodeButtonRef.current?.focus());
+      chooseNode(node, true);
+      window.requestAnimationFrame(() => openNodeControlRef.current?.focus());
       return;
     }
     if (event.key === "ArrowRight" || event.key === "ArrowDown") {
@@ -641,12 +673,14 @@ export function NodeConstellation({
     <section className="constellation" aria-labelledby="constellation-heading">
       <header className="constellation__header">
         <div>
-          <p className="eyebrow">Read-only view</p>
-          <h1 id="constellation-heading">Thought Constellation</h1>
+          {!publicView ? <p className="eyebrow">Read-only view</p> : null}
+          <Heading id="constellation-heading">Thought Constellation</Heading>
         </div>
         <div className="constellation__legend" aria-label="Constellation legend">
           <span><i className="constellation__legend-root" />Root thought</span>
-          {showArchived ? <span><i className="constellation__legend-archived" />Archived</span> : null}
+          {!publicView && showArchived ? (
+            <span><i className="constellation__legend-archived" />Archived</span>
+          ) : null}
           <span className="constellation__play-cue">Drag bubbles to reshape the constellation</span>
         </div>
       </header>
@@ -654,27 +688,29 @@ export function NodeConstellation({
       <div className="constellation__stage" ref={containerRef}>
         {graph.nodes.length === 0 ? (
           <div className="constellation__empty">
-            <p>
-              {nodes.length === 0
+            <p>{publicView
+              ? "No shared thoughts to map."
+              : nodes.length === 0
                 ? "Create a thought to start your constellation."
                 : "No active thoughts to map."}
             </p>
-            {nodes.length === 0 ? (
-              <button className="text-action" type="button" onClick={onCreateRoot}>
+            {!publicView && nodes.length === 0 ? (
+              <button className="text-action" type="button" onClick={props.onCreateRoot}>
                 Create your first root thought
               </button>
-            ) : (
+            ) : null}
+            {!publicView && nodes.length > 0 ? (
               <button
                 className="text-action"
                 type="button"
                 onClick={() => {
                   focusFirstNodeAfterRevealRef.current = true;
-                  onShowArchived();
+                  props.onShowArchived();
                 }}
               >
                 Show archived thoughts
               </button>
-            )}
+            ) : null}
           </div>
         ) : (
           <>
@@ -739,12 +775,15 @@ export function NodeConstellation({
                         className={classes}
                         role="button"
                         tabIndex={0}
-                        aria-label={`${breadcrumbForNode(node)}: ${archiveLabel}; ${constellationSynthesisLabel(node)}`}
+                        aria-label={publicView
+                          ? `${breadcrumbForNode(node)}: Shared thought`
+                          : `${breadcrumbForNode(node)}: ${archiveLabel}; ${constellationSynthesisLabel(node)}`
+                        }
                         aria-pressed={activeInspectedNodeId === node.id}
                         style={nodeVisualStyle(radius)}
                         transform={`translate(${layoutNode.x ?? 0} ${layoutNode.y ?? 0})`}
-                        onClick={() => chooseNode(node)}
-                        onFocus={() => chooseNode(node)}
+                        onClick={() => chooseNode(node, true)}
+                        onFocus={() => chooseNode(node, publicView)}
                         onKeyDown={(event) => handleNodeKeyDown(event, node)}
                         onPointerDown={(event) => beginNodeDrag(event, layoutNode)}
                         onPointerMove={movePointer}
@@ -828,27 +867,41 @@ export function NodeConstellation({
                 </p>
                 <div className="constellation-card__title">
                   <h2>{inspectedNode.title}</h2>
-                  <span
-                    className={
-                      inspectedNode.archivedAt === null
-                        ? "status-pill"
-                        : "status-pill status-pill--archived"
-                    }
-                  >
-                    {inspectedNode.archivedAt === null ? "Active" : "Archived"}
-                  </span>
+                  {!publicView ? (
+                    <span
+                      className={
+                        inspectedNode.archivedAt === null
+                          ? "status-pill"
+                          : "status-pill status-pill--archived"
+                      }
+                    >
+                      {inspectedNode.archivedAt === null ? "Active" : "Archived"}
+                    </span>
+                  ) : null}
                 </div>
-                <p className="constellation-card__summary-state">
-                  {constellationSynthesisLabel(inspectedNode)}
-                </p>
-                <button
-                  ref={openNodeButtonRef}
-                  className="button button--primary button--small"
-                  type="button"
-                  onClick={() => onOpenNode(inspectedNode.id)}
-                >
-                  Open in tree
-                </button>
+                {!publicView ? (
+                  <p className="constellation-card__summary-state">
+                    {constellationSynthesisLabel(inspectedNode)}
+                  </p>
+                ) : null}
+                {publicView ? (
+                  <a
+                    ref={setOpenNodeControl}
+                    className="button button--primary button--small constellation-card__action"
+                    href={`?node=${encodeURIComponent(inspectedNode.id)}`}
+                  >
+                    Read thought
+                  </a>
+                ) : (
+                  <button
+                    ref={setOpenNodeControl}
+                    className="button button--primary button--small"
+                    type="button"
+                    onClick={() => props.onOpenNode(inspectedNode.id)}
+                  >
+                    Open in tree
+                  </button>
+                )}
               </aside>
             ) : (
               <p className="constellation__hint">Choose a bubble, then give it a nudge.</p>

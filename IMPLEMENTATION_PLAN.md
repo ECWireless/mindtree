@@ -1181,22 +1181,31 @@ shares one selected node and its current subtree as a read-only thought trail.
 
 ### User-visible outcome
 
-- The owner can create, copy, and revoke a share link for the selected branch.
+- The owner can create, recover after reload, copy, share, and revoke one
+  stable share link for the selected branch.
 - Anyone with the link can navigate the shared root and its deepest current
   descendants, including node titles, approved Summaries, Branch Outlines,
   in-scope internal links, external links, and published References.
+- Anyone with the link can switch to a reload-, bookmark-, and share-persistent
+  read-only constellation of exactly the same active shared subtree.
 - The public experience contains no Chat history, composer, regeneration,
   proposal, decision, or node-management functionality.
 
 ### Deliverables
 
-- Owner-session-only share-link creation and revocation with an unguessable
-  capability secret whose plaintext is not stored.
+- Owner-session-only share-link creation, recovery, and revocation with an
+  unguessable capability secret whose plaintext is not stored. New secrets use
+  authenticated encryption with a dedicated deployment key; legacy
+  digest-only links remain valid but cannot be recovered until replaced.
 - A dynamic current-subtree read boundary that reveals no real parent,
   ancestor, sibling, other branch, owner, or private operational record.
 - A responsive public thought-trail surface that reuses the safe Summary,
   Branch Outline, external-citation, and References presentation while omitting
   every private or mutable dashboard control.
+- A URL-backed trail/constellation view switch. The public constellation reuses
+  the existing camera, force layout, touch, keyboard, and reduced-motion
+  behavior while omitting archived data, archive and synthesis state, creation,
+  owner navigation, and every mutation control.
 - Public navigation among current in-scope nodes from the shared root through
   arbitrary depth.
 - Internal links whose live targets remain in scope; out-of-scope or deleted
@@ -1214,6 +1223,9 @@ shares one selected node and its current subtree as a read-only thought trail.
 - No Chat visibility or submission, Branch Outline generation/regeneration,
   proposal history or decisions, node mutation, comments, collaboration,
   invitations, owner identity, general-purpose API, export, or snapshot copy.
+- No public archived-node toggle, private synthesis-state metadata, dashboard
+  deep link, stored constellation coordinate, or constellation-specific read
+  contract.
 - No semantic data-loss prevention over prose the owner deliberately shares;
   the boundary prevents structured out-of-scope navigation and record
   disclosure.
@@ -1231,6 +1243,8 @@ split into separate persistence/security and public-experience PR batches.
 
 - A valid link shows exactly its current shared subtree through arbitrary
   depth, and ordinary owner changes appear without recreating the link.
+- Trail and constellation modes expose the same node IDs and titles; their URL
+  state preserves the selected in-scope thought across reload and view changes.
 - Revocation and root deletion make the link unavailable without changing
   branch content.
 - Moving a descendant out removes it; moving one in adds it; moving the root

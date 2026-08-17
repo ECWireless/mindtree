@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type Ref } from "react";
+import { useMemo, useRef, useState, type Ref } from "react";
 import { useRouter } from "next/navigation";
 
 import {
@@ -39,6 +39,23 @@ function externalCitations(citations: SynthesisVersion["citations"]) {
   );
 }
 
+function WarningIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 3 2.8 20h18.4L12 3Z" />
+      <path d="M12 9v5M12 17.5h.01" />
+    </svg>
+  );
+}
+
 export function PublishedSynthesisArtifact({
   synthesis,
   staleAt,
@@ -49,17 +66,73 @@ export function PublishedSynthesisArtifact({
   headingRef?: Ref<HTMLHeadingElement>;
 }) {
   const titleId = `published-synthesis-${synthesis.id}`;
+  const staleTooltipId = `published-synthesis-stale-${synthesis.id}`;
+  const [staleTooltipOpen, setStaleTooltipOpen] = useState(false);
+  const staleTooltipOpenedByFocus = useRef(false);
+  const staleTooltipOpenedByHover = useRef(false);
+  const staleMessage =
+    "This Summary may no longer reflect the current branch. Open Chat to request a refreshed Summary.";
   return (
     <section className="synthesis-published" aria-labelledby={titleId}>
-      <h2 id={titleId} ref={headingRef} tabIndex={-1}>Summary</h2>
-      {staleAt ? (
-        <div className="synthesis-published__stale" role="status">
-          <p className="synthesis-published__stale-label">Update available</p>
-          <p>
-            This Summary may no longer reflect the current branch. Open Chat to request a refreshed Summary.
-          </p>
-        </div>
-      ) : null}
+      <div className="synthesis-published__heading">
+        <h2 id={titleId} ref={headingRef} tabIndex={-1}>Summary</h2>
+        {staleAt ? (
+          <span className="synthesis-published__stale-indicator">
+            <button
+              className="icon-button synthesis-published__stale"
+              type="button"
+              aria-label="Update available"
+              aria-describedby={staleTooltipId}
+              aria-expanded={staleTooltipOpen}
+              onBlur={() => {
+                staleTooltipOpenedByFocus.current = false;
+                setStaleTooltipOpen(false);
+              }}
+              onClick={() => {
+                if (
+                  staleTooltipOpenedByFocus.current ||
+                  staleTooltipOpenedByHover.current
+                ) {
+                  staleTooltipOpenedByFocus.current = false;
+                  staleTooltipOpenedByHover.current = false;
+                  return;
+                }
+                setStaleTooltipOpen((current) => !current);
+              }}
+              onFocus={() => {
+                staleTooltipOpenedByFocus.current = true;
+                setStaleTooltipOpen(true);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  staleTooltipOpenedByFocus.current = false;
+                  staleTooltipOpenedByHover.current = false;
+                  setStaleTooltipOpen(false);
+                  event.currentTarget.focus();
+                }
+              }}
+              onMouseEnter={() => {
+                staleTooltipOpenedByHover.current = true;
+                setStaleTooltipOpen(true);
+              }}
+              onMouseLeave={() => {
+                staleTooltipOpenedByHover.current = false;
+                setStaleTooltipOpen(false);
+              }}
+            >
+              <WarningIcon />
+            </button>
+            <span
+              id={staleTooltipId}
+              className="synthesis-published__stale-tooltip"
+              role="tooltip"
+              data-open={staleTooltipOpen ? "true" : "false"}
+            >
+              {staleMessage}
+            </span>
+          </span>
+        ) : null}
+      </div>
       <div className="synthesis-document__content">
         <SynthesisDocumentContent content={synthesis.content} citations={synthesis.citations} />
       </div>

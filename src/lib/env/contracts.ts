@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { parseShareLinkEncryptionKey } from "@/lib/server/share-encryption-key";
+
 const optionalUrl = z.union([z.literal(""), z.url()]).transform((value) => value || undefined);
 const optionalNonEmpty = z
   .union([z.literal(""), z.string().trim().min(1)])
@@ -50,6 +52,7 @@ const serverEnvironmentSchema = z.object({
     .transform((value) => value || undefined)
     .optional(),
   OPENAI_API_KEY: optionalNonEmpty.optional(),
+  SHARE_LINK_ENCRYPTION_KEY: optionalNonEmpty.optional(),
 });
 
 export type ServerEnvironment = z.infer<typeof serverEnvironmentSchema>;
@@ -58,7 +61,8 @@ export type ServerEnvironmentRequirement =
   | "database"
   | "authentication-origin"
   | "authentication"
-  | "openai";
+  | "openai"
+  | "sharing-encryption";
 
 export type RequiredServerEnvironment<
   Requirements extends readonly ServerEnvironmentRequirement[],
@@ -78,7 +82,10 @@ export type RequiredServerEnvironment<
         ALLOWED_EMAIL: string;
       }
     : object) &
-  ("openai" extends Requirements[number] ? { OPENAI_API_KEY: string } : object);
+  ("openai" extends Requirements[number] ? { OPENAI_API_KEY: string } : object) &
+  ("sharing-encryption" extends Requirements[number]
+    ? { SHARE_LINK_ENCRYPTION_KEY: string }
+    : object);
 
 const requirementNames: Record<ServerEnvironmentRequirement, readonly (keyof ServerEnvironment)[]> = {
   database: ["DATABASE_URL"],
@@ -91,6 +98,7 @@ const requirementNames: Record<ServerEnvironmentRequirement, readonly (keyof Ser
     "ALLOWED_EMAIL",
   ],
   openai: ["OPENAI_API_KEY"],
+  "sharing-encryption": ["SHARE_LINK_ENCRYPTION_KEY"],
 };
 
 export function parseServerEnvironment<
@@ -110,6 +118,15 @@ export function parseServerEnvironment<
 
   if (requirements.includes("authentication") && (parsed.BETTER_AUTH_SECRET?.length ?? 0) < 32) {
     throw new Error("BETTER_AUTH_SECRET must contain at least 32 characters.");
+  }
+
+  if (
+    parsed.SHARE_LINK_ENCRYPTION_KEY &&
+    !parseShareLinkEncryptionKey(parsed.SHARE_LINK_ENCRYPTION_KEY)
+  ) {
+    throw new Error(
+      "SHARE_LINK_ENCRYPTION_KEY must be a 32-byte base64url value.",
+    );
   }
 
   return parsed as RequiredServerEnvironment<Requirements>;

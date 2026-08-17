@@ -43,7 +43,9 @@ import { BranchOutlinePanel } from "@/components/branch-outline-panel";
 import { ChatPanel } from "@/components/chat-panel";
 import { MoveNodeDialog } from "@/components/move-node-dialog";
 import { NodeConstellation } from "@/components/node-constellation";
+import { NodeConstellationIcon } from "@/components/node-constellation-icon";
 import { NodeTreeList } from "@/components/node-tree-list";
+import { ShareThoughtTrail } from "@/components/share-thought-trail";
 import { ExternalReferences } from "@/components/chat-message-content";
 import { PublishedSynthesisArtifact } from "@/components/synthesis-panel";
 import type { ChatMessagePage } from "@/lib/chat/contracts";
@@ -58,6 +60,7 @@ import {
 } from "@/lib/nodes/presentation";
 import { assembleNodeTree, type FlatNode, type TreeNode } from "@/lib/nodes/tree";
 import type { SynthesisWorkspace } from "@/lib/synthesis/contracts";
+import type { BranchShareLinkState } from "@/lib/sharing/contracts";
 
 import { SignOutButton } from "./auth-buttons";
 import { BrandMark } from "./brand-mark";
@@ -69,6 +72,8 @@ type DashboardShellProps = {
   initialChatPage?: ChatMessagePage;
   initialSynthesisWorkspace?: SynthesisWorkspace;
   initialBranchOutlineWorkspace?: BranchOutlineWorkspace;
+  initialShareLink?: BranchShareLinkState | null;
+  shareLinkEncryptionEnabled?: boolean;
   chatGenerationEnabled?: boolean;
   branchOutlineGenerationEnabled?: boolean;
 };
@@ -166,25 +171,6 @@ function EyeOffIcon() {
   );
 }
 
-function GraphIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="m7.3 10.9 7.6-3.8M7.3 13.1l7.6 3.8" />
-      <circle cx="5" cy="12" r="2.4" />
-      <circle cx="17" cy="6" r="2.25" />
-      <circle cx="17" cy="18" r="2.25" />
-    </svg>
-  );
-}
-
 function ArchiveIcon() {
   return (
     <svg
@@ -233,6 +219,23 @@ function MoveIcon() {
     >
       <path d="M3 7.5h7l2 2h9v9H3z" />
       <path d="m10 14 2-2 2 2M12 12v5" />
+    </svg>
+  );
+}
+
+function ShareIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M10.5 13.5a4.5 4.5 0 0 0 6.4 0l2-2a4.5 4.5 0 0 0-6.4-6.4l-1.1 1.1" />
+      <path d="M13.5 10.5a4.5 4.5 0 0 0-6.4 0l-2 2a4.5 4.5 0 0 0 6.4 6.4l1.1-1.1" />
     </svg>
   );
 }
@@ -549,6 +552,8 @@ function DashboardWorkspace({
   initialChatPage,
   initialSynthesisWorkspace,
   initialBranchOutlineWorkspace,
+  initialShareLink,
+  shareLinkEncryptionEnabled = true,
   chatGenerationEnabled = false,
   branchOutlineGenerationEnabled = false,
   expanded,
@@ -566,6 +571,7 @@ function DashboardWorkspace({
   const [searchText, setSearchText] = useState("");
   const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [chatDialogOpen, setChatDialogOpen] = useState(false);
   const [lifecyclePending, setLifecyclePending] = useState(false);
@@ -578,6 +584,7 @@ function DashboardWorkspace({
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const createReturnFocus = useRef<HTMLElement | null>(null);
   const moveTriggerRef = useRef<HTMLButtonElement>(null);
+  const shareTriggerRef = useRef<HTMLButtonElement>(null);
   const deleteTriggerRef = useRef<HTMLButtonElement>(null);
   const chatTriggerRef = useRef<HTMLButtonElement>(null);
   const summaryHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -1163,7 +1170,7 @@ function DashboardWorkspace({
               });
             }}
           >
-            <GraphIcon />
+            <NodeConstellationIcon />
           </button>
           <button
             ref={newRootTriggerRef}
@@ -1200,6 +1207,7 @@ function DashboardWorkspace({
 
       {constellationOpen ? (
         <NodeConstellation
+          variant="owner"
           nodes={tree.ordered}
           selectedNodeId={selectedNode?.id}
           showArchived={showArchived}
@@ -1380,7 +1388,7 @@ function DashboardWorkspace({
                     setConstellationOpen(true);
                   }}
                 >
-                  <GraphIcon />
+                  <NodeConstellationIcon />
                 </button>
               </div>
               <nav className="breadcrumbs" aria-label="Breadcrumb">
@@ -1453,6 +1461,18 @@ function DashboardWorkspace({
                   onClick={() => setMoveDialogOpen(true)}
                 >
                   <MoveIcon />
+                </button>
+                <button
+                  ref={shareTriggerRef}
+                  className="icon-button"
+                  type="button"
+                  aria-label="Share thought trail"
+                  aria-haspopup="dialog"
+                  aria-controls={`share-trail-dialog-${selectedNode.id}`}
+                  data-tooltip="Share thought trail"
+                  onClick={() => setShareDialogOpen(true)}
+                >
+                  <ShareIcon />
                 </button>
                 <button
                   ref={deleteTriggerRef}
@@ -1556,8 +1576,21 @@ function DashboardWorkspace({
         />
       ) : null}
       {selectedNode ? (
+        <ShareThoughtTrail
+          key={`share-${selectedNode.id}`}
+          archived={selectedNode.archivedAt !== null}
+          initialLink={initialShareLink ?? null}
+          nodeId={selectedNode.id}
+          nodeTitle={selectedNode.title}
+          open={shareDialogOpen}
+          onClose={() => setShareDialogOpen(false)}
+          recoveryEnabled={shareLinkEncryptionEnabled}
+          returnFocusRef={shareTriggerRef}
+        />
+      ) : null}
+      {selectedNode ? (
         <ChatPanel
-          key={selectedNode.id}
+          key={`chat-${selectedNode.id}`}
           nodeId={selectedNode.id}
           nodeTitle={selectedNode.title}
           initialPage={initialChatPage ?? { messages: [], nextCursor: null }}
