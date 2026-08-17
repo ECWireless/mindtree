@@ -28,7 +28,7 @@ principles while using MindTree-specific product behavior:
 
 ## Requirements
 
-- Node.js 22.12 or newer in the 22.x line, or Node.js 24 or newer
+- Node.js 22.13 or newer in the 22.x line, or Node.js 24 or newer
 - Corepack and pnpm 11.13.1
 - PostgreSQL 15 or newer
 - Google OAuth credentials

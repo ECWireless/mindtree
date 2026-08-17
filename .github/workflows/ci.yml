@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Fast checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+
+    env:
+      ALLOWED_EMAIL: browser-user@example.test
+      BETTER_AUTH_SECRET: synthetic-auth-secret-for-ci-verification
+      BETTER_AUTH_URL: http://127.0.0.1:3188
+      GOOGLE_CLIENT_ID: synthetic-google-client-id
+      GOOGLE_CLIENT_SECRET: synthetic-google-client-secret
+      SHARE_LINK_ENCRYPTION_KEY: Dw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.13.0
+
+      - name: Install compatible Corepack
+        run: |
+          npm install --global corepack@0.34.6 --ignore-scripts
+          corepack enable
+          corepack --version
+          corepack pnpm --version
+
+      - name: Install frozen dependencies
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: corepack pnpm lint
+
+      - name: Typecheck
+        run: corepack pnpm typecheck
+
+      - name: Run unit tests
+        run: corepack pnpm test
+
+      - name: Run deterministic evaluation fixtures
+        run: corepack pnpm test:eval:fixtures
