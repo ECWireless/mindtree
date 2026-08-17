@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer";
+
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
@@ -176,7 +178,7 @@ describe("public thought trail presentation", () => {
       id: `node-${index}`,
       parentId: index === 0 ? null : `node-${index - 1}`,
       position: 0,
-      title: `Thought ${index} ${"x".repeat(180)}`,
+      title: `Thought ${index} 思考 🌲 ${"x".repeat(180)}`,
       summary: null,
       branchOutline: null,
     }));
@@ -190,7 +192,9 @@ describe("public thought trail presentation", () => {
       "position",
       "title",
     ]);
-    expect(serialized.length).toBeLessThan(MAX_PUBLIC_TRAIL_SERIALIZED_BYTES);
+    const serializedBytes = Buffer.byteLength(serialized, "utf8");
+    expect(serializedBytes).toBeGreaterThan(serialized.length);
+    expect(serializedBytes).toBeLessThan(MAX_PUBLIC_TRAIL_SERIALIZED_BYTES);
     expect(serialized).not.toContain("archivedAt");
     expect(serialized).not.toContain("publishedSynthesisVersionId");
     expect(serialized).not.toContain("synthesisStaleAt");
