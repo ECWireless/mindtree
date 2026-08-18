@@ -38,10 +38,11 @@ While the project remains on `0.x`:
 
 The final v0.1.0 release-readiness unit must:
 
-1. Complete every phase and gate in `IMPLEMENTATION_PLAN.md`.
+1. Complete the agreed v0.1.0 scope and release gates.
 2. Confirm durable product behavior in `SPEC.md` and maintained documentation.
-3. Run the full automated suite, independent reviews, approved browser QA, and
-   approved synthetic live-model evaluation.
+3. Run the full automated suite and proportional independent reviews. Complete
+   or explicitly waive additional owner QA and synthetic live-model evaluation
+   based on the release evidence.
 4. Confirm no secret, private content, provider payload, or developer-machine
    data is tracked.
 5. Set or confirm `package.json` version `0.1.0`.

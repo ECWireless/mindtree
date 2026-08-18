@@ -1,10 +1,10 @@
 # MindTree v0.1.0 Specification
 
-Status: Approved for planning
+Status: Approved v0.1.0 release specification
 
 This specification is the durable product and architecture authority for
-MindTree v0.1.0. `IMPLEMENTATION_PLAN.md` describes the temporary delivery
-sequence and is deleted when v0.1.0 is complete.
+MindTree v0.1.0. The temporary implementation plan is retired as part of the
+reviewed v0.1.0 release-readiness change.
 
 ## Source reference
 

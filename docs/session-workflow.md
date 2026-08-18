@@ -27,8 +27,9 @@ Before editing files:
 3. Confirm the current branch and worktree state.
 4. Identify likely change directories and read every applicable nested
    `AGENTS.md`.
-5. Identify the active implementation phase and confirm the current PR-sized
-   unit with the user.
+5. Identify the current release or change objective, including the active plan
+   phase while a plan exists, and confirm the current PR-sized unit with the
+   user.
 6. Debrief:
    - intended user-visible outcome;
    - explicit non-goals and stopping point;
@@ -67,7 +68,8 @@ foundational pattern.
 
 ## Implementation rules
 
-- Keep work within the agreed PR-sized unit and active plan phase.
+- Keep work within the agreed PR-sized unit and current release or change
+  objective.
 - Do not begin the next unit without a new debrief and approval.
 - Do not install dependencies until their purpose is agreed.
 - Do not start a development server unless the user expects a preview or it is
@@ -174,7 +176,8 @@ Useful specialties:
 1. Finish implementation and automated verification.
 2. Freeze implementation edits during review.
 3. Give reviewers the approved goal, acceptance criteria, stopping point,
-   relevant specification sections, active plan phase, and complete diff.
+   relevant specification sections, active plan phase while a plan exists, and
+   complete diff.
 4. Keep reviewers read-only.
 5. Require evidence-based findings with severity, tight file and line
    references where applicable, violated contract or risk, and concise
@@ -204,7 +207,9 @@ final release-readiness commit unit after:
 - durable behavior is represented in `SPEC.md` and maintained documentation;
 - deferred work is either removed from v0.1.0 scope or recorded in an approved
   durable location;
-- final verification, review, live evaluation, and owner-approved QA pass;
+- final verification and proportional independent review pass;
+- any paid live evaluation or additional owner QA selected for the release is
+  complete, or the owner explicitly waives it based on the release evidence;
 - the repository version is ready for `0.1.0`.
 
 Its deletion does not authorize a tag. Tagging follows the separate workflow
