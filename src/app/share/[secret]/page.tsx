@@ -5,6 +5,7 @@ import {
   PublicThoughtTrailUnavailable,
   PublicThoughtTrailView,
 } from "@/components/public-thought-trail";
+import { PublicSurfaceAnalytics } from "@/components/public-surface-analytics";
 import {
   BranchShareServiceError,
   getPublicThoughtTrail,
@@ -57,7 +58,12 @@ export default async function PublicTrailPage({
   const requestedNodeId = typeof query.node === "string" ? query.node : undefined;
   const view = query.view === "constellation" ? "constellation" : "trail";
   const trail = await loadPublicTrail(secret, requestedNodeId);
-  return trail
-    ? <PublicThoughtTrailView trail={trail} view={view} />
-    : <PublicThoughtTrailUnavailable oversized />;
+  if (!trail) return <PublicThoughtTrailUnavailable oversized />;
+
+  return (
+    <>
+      <PublicThoughtTrailView trail={trail} view={view} />
+      <PublicSurfaceAnalytics />
+    </>
+  );
 }

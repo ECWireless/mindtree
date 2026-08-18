@@ -1,6 +1,6 @@
-# MindTree v0.1.0 Specification
+# MindTree Specification
 
-Status: Approved v0.1.0 release specification
+Status: Approved v0.1.0 release specification with post-release amendments
 
 This specification is the durable product and architecture authority for
 MindTree v0.1.0. The temporary implementation plan is retired as part of the
@@ -129,6 +129,31 @@ v0.1.0 does not include:
 - Import, export, offline mode, native mobile apps, or browser extensions.
 - Analytics, billing, token budgets, or cost dashboards.
 - Formal visual-regression, load-testing, or broad cross-browser services.
+
+## Approved post-v0.1.0 additions
+
+### Operational analytics
+
+- The canonical Vercel deployment may use Vercel Web Analytics for anonymous,
+  aggregate pageviews on only the signed-out landing page and successfully
+  resolved public thought trails.
+- The authenticated owner dashboard, invalid or revoked public links, API
+  routes, authentication routes, and every other application surface remain
+  uninstrumented.
+- The landing page is reported only as `/`. Every public thought-trail URL is
+  reported only as `/share/[secret]`; the client removes the actual capability
+  secret, query parameters, and fragments before an event can leave the
+  browser. Events for any other path are discarded.
+- Analytics never receives a share-link secret, node ID, share-record ID,
+  owner identity, email address, thought content, Chat content, Summary,
+  Branch Outline, citation, model data, or other application record.
+- The application records no custom analytics events, adds no analytics
+  datastore or in-product dashboard, and does not attempt to identify an
+  individual visitor. Vercel's aggregate route, referrer, geography, browser,
+  operating-system, and device reporting is the intended boundary.
+- Analytics enablement and plan-level event billing remain deployment-operator
+  concerns in Vercel. No analytics environment variable or application
+  credential is introduced.
 
 ## Tree behavior
 
@@ -863,7 +888,9 @@ revalidates affected application data.
 - Public share responses cannot disclose structured out-of-scope citation
   identities, Chat, proposal history, embeddings, share records, owner records,
   or mutation controls.
-- No analytics or third-party error-reporting service is added in v0.1.0.
+- v0.1.0 shipped without analytics or third-party error reporting. The narrow
+  post-release Vercel Web Analytics boundary defined above is the only approved
+  analytics exception; third-party error reporting remains absent.
 
 ## Quality boundary
 
