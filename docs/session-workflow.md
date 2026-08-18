@@ -6,8 +6,8 @@ requests, so every session rebuilds its context before implementation.
 ## Sources of truth
 
 - `SPEC.md` defines approved product behavior, boundaries, and architecture.
-- `IMPLEMENTATION_PLAN.md` defines the temporary phase and dependency sequence
-  until its required deletion at v0.1.0 release readiness.
+- `IMPLEMENTATION_PLAN.md`, while present, defines the temporary phase and
+  dependency sequence until its required deletion at v0.1.0 release readiness.
 - This workflow defines planning, verification, review, evaluation, and
   publication for each PR-sized unit.
 - Older attachments, handoffs, brainstorms, and chat history are context, not
