@@ -1,6 +1,7 @@
 import { SignInButton } from "@/components/auth-buttons";
 import { BrandMark } from "@/components/brand-mark";
 import { DashboardShell } from "@/components/dashboard-shell";
+import { PublicSurfaceAnalytics } from "@/components/public-surface-analytics";
 import { resolveAuthenticationAvailability } from "@/lib/auth/deployment";
 import { AuthorizationError, type AuthSession } from "@/lib/auth/policy";
 import { getServerEnvironment } from "@/lib/env/server";
@@ -114,33 +115,36 @@ export default async function Home({ searchParams }: HomeProps) {
   const signInFailed = Boolean(error) && !accessDenied;
 
   return (
-    <main className="landing" aria-labelledby="page-title" data-testid="sign-in-page">
-      <div className="landing__content">
-        <div className="wordmark" aria-label="MindTree">
-          <BrandMark />
-          <span>MindTree</span>
-        </div>
+    <>
+      <main className="landing" aria-labelledby="page-title" data-testid="sign-in-page">
+        <div className="landing__content">
+          <div className="wordmark" aria-label="MindTree">
+            <BrandMark />
+            <span>MindTree</span>
+          </div>
 
-        <p className="eyebrow">Hierarchical thinking</p>
-        <h1 id="page-title">See how your thoughts grow.</h1>
-        <p>
-          {accessDenied
-            ? "That Google account can’t access this MindTree."
-            : signInFailed
-              ? "Google sign-in wasn’t completed. Please try again."
-              : authenticationAvailability.available
-                ? "Organize your ideas your way, then develop and synthesize them at any level."
-                : "Google sign-in is available only on the canonical MindTree deployment."}
-        </p>
-        <SignInButton
-          canonicalOrigin={
-            authenticationAvailability.available
-              ? undefined
-              : authenticationAvailability.canonicalOrigin
-          }
-          clearExistingSession={accessDenied}
-        />
-      </div>
-    </main>
+          <p className="eyebrow">Hierarchical thinking</p>
+          <h1 id="page-title">See how your thoughts grow.</h1>
+          <p>
+            {accessDenied
+              ? "That Google account can’t access this MindTree."
+              : signInFailed
+                ? "Google sign-in wasn’t completed. Please try again."
+                : authenticationAvailability.available
+                  ? "Organize your ideas your way, then develop and synthesize them at any level."
+                  : "Google sign-in is available only on the canonical MindTree deployment."}
+          </p>
+          <SignInButton
+            canonicalOrigin={
+              authenticationAvailability.available
+                ? undefined
+                : authenticationAvailability.canonicalOrigin
+            }
+            clearExistingSession={accessDenied}
+          />
+        </div>
+      </main>
+      <PublicSurfaceAnalytics />
+    </>
   );
 }

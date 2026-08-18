@@ -215,6 +215,20 @@ deployments; changing or losing it leaves public links active through their
 digests but prevents the owner from recovering those URLs. Review provider
 data controls independently before enabling a production deployment.
 
+### Web Analytics
+
+Enable Web Analytics for the production project in the Vercel dashboard after
+deploying the tracking code. MindTree records automatic anonymous pageviews
+only for the signed-out landing page and successfully resolved public thought
+trails. It does not record custom events or instrument the authenticated owner
+dashboard.
+
+Before transmission, every shared URL is grouped as `/share/[secret]` and all
+query parameters and fragments are removed. Landing-page events are grouped as
+`/`. Share capabilities, node IDs, owner identity, and thought content must
+never appear in analytics. Pageviews count toward the Vercel account's Web
+Analytics event usage under its current plan.
+
 ## License
 
 MindTree is available under the [MIT License](./LICENSE).
