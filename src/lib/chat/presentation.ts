@@ -10,7 +10,7 @@ export function chatFailureMessage(input: {
       return "External research is unavailable. Try again.";
     }
     if (input.failureCode === "response-invalid") {
-      return "Couldn’t verify that source. Try one webpage or HTTPS PDF.";
+      return "Couldn’t verify the external research result. Try again.";
     }
     if (input.failureCode === "provider-refusal") {
       return "External research couldn’t answer that request. Try rephrasing it.";

@@ -320,7 +320,7 @@ describe("OpenAI Responses chat stream", () => {
         },
       ],
     },
-  ])("rejects direct-PDF output with $label", async ({ output }) => {
+  ])("rejects direct-PDF output with $label", async ({ label, output }) => {
     const rawText = output.find((item) => item.type === "message")
       ?.content?.find((item: { type: string }) => item.type === "output_text")?.text ??
       "PDF answer";
@@ -337,7 +337,12 @@ describe("OpenAI Responses chat stream", () => {
         title: "paper.pdf",
         url: "https://example.test/paper.pdf",
       },
-    }))).rejects.toEqual(new OpenAIChatError("response-invalid"));
+    }))).rejects.toEqual(new OpenAIChatError(
+      "response-invalid",
+      label === "a citation phrase absent from the answer"
+        ? "external-citation-invalid-mention"
+        : null,
+    ));
   });
 
   it("buffers researched text and normalizes final URL annotations", async () => {
@@ -650,19 +655,25 @@ describe("OpenAI Responses chat stream", () => {
       },
     });
 
-    for (const annotation of [
+    for (const { annotation, diagnosticReason } of [
       {
+        diagnosticReason: "external-citation-invalid-url" as const,
+        annotation: {
         type: "url_citation",
         start_index: markerStart,
         end_index: rawContent.length,
         title: "Unsafe source",
         url: "file:///private/source",
+        },
       },
       {
+        diagnosticReason: "external-citation-invalid-evidence" as const,
+        annotation: {
         type: "file_citation",
         start_index: markerStart,
         end_index: rawContent.length,
         filename: "private.txt",
+        },
       },
     ]) {
       await expect(Array.fromAsync(normalizeOpenAIChatEvents(fixture([
@@ -671,7 +682,7 @@ describe("OpenAI Responses chat stream", () => {
         completedSearch,
         responseOutput(annotation),
       ]), { webSearchAuthorized: true }))).rejects.toEqual(
-        new OpenAIChatError("response-invalid"),
+        new OpenAIChatError("response-invalid", diagnosticReason),
       );
     }
   });

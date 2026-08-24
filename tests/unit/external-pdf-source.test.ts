@@ -330,7 +330,7 @@ describe("authorized external PDF source", () => {
       response: () => pdfResponse({ contentLength: "999" }),
       reason: "invalid-pdf-response",
     },
-  ])("rejects $label", async ({ response, reason }) => {
+  ] as const)("rejects $label", async ({ response, reason }) => {
     const failureResponse = response();
     const deps = dependencies({ responses: [failureResponse] });
     await expect(fetchAuthorizedExternalPdf(source, { dependencies: deps }))

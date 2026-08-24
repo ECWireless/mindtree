@@ -16,7 +16,7 @@ describe("chat failure presentation", () => {
     ["assistant-unavailable", "External research is unavailable. Try again."],
     [
       "response-invalid",
-      "Couldn’t verify that source. Try one webpage or HTTPS PDF.",
+      "Couldn’t verify the external research result. Try again.",
     ],
     [
       "provider-refusal",

@@ -18,7 +18,12 @@ import {
   prepareChatContextForUser,
 } from "@/lib/server/chat-context";
 import {
+  logChatGenerationFailure,
+  type ChatGenerationPhase,
+} from "@/lib/server/chat-observability";
+import {
   createExternalCitationEvidence,
+  ExternalCitationValidationError,
   mergeExternalCitationEvidenceBounded,
   type ExternalCitationEvidence,
 } from "@/lib/server/external-citations";
@@ -176,6 +181,7 @@ export async function POST(request: Request) {
     return await terminalResponse(userId, turn) ??
       jsonError(409, "The message is already in progress.");
   }
+  const generationStartedAt = Date.now();
   const webSearchAuthorized = turn.userMessage.webSearchAuthorized;
   let externalPdfSource: ExternalPdfInput | null = null;
   if (webSearchAuthorized) {
@@ -186,7 +192,18 @@ export async function POST(request: Request) {
           ? createDeterministicExternalPdfInput(source)
           : await fetchAuthorizedExternalPdf(source, { signal: request.signal });
       }
-    } catch {
+    } catch (error) {
+      logChatGenerationFailure({
+        failureCode: "response-invalid",
+        diagnosticReason: error instanceof ExternalCitationValidationError
+          ? `external-citation-${error.reason}`
+          : null,
+        phase: "preparation",
+        webSearchAuthorized,
+        externalPdfAttached: false,
+        providerResponseRecorded: false,
+        elapsedMs: Date.now() - generationStartedAt,
+      });
       const assistantMessage = await failChatTurnForUser(userId, {
         ...input,
         failureCode: "response-invalid",
@@ -202,6 +219,15 @@ export async function POST(request: Request) {
   try {
     preparedContext = await prepareChatContextForUser(userId, input);
   } catch {
+    logChatGenerationFailure({
+      failureCode: "generation-failed",
+      diagnosticReason: null,
+      phase: "preparation",
+      webSearchAuthorized,
+      externalPdfAttached: externalPdfSource !== null,
+      providerResponseRecorded: false,
+      elapsedMs: Date.now() - generationStartedAt,
+    });
     const assistantMessage = await failChatTurnForUser(userId, {
       ...input,
       failureCode: "generation-failed",
@@ -244,6 +270,7 @@ export async function POST(request: Request) {
       let visibleContent = "";
       let providerContextRecorded = false;
       let providerResponseRecorded = false;
+      let activeProviderPhase: ChatGenerationPhase = "preparation";
       let persistedCharacterCount = 0;
       let lastPersistenceAt = Date.now();
       const flushPersistence = async (force = false) => {
@@ -282,6 +309,7 @@ export async function POST(request: Request) {
           { type: "completed" }
         >["externalCitations"] = [];
         const consumeProviderPhase = async (phase: "conversation" | "synthesis") => {
+          activeProviderPhase = phase;
           if (!providerContextRecorded || phase === "synthesis") {
             await recordChatTurnContextForUser(userId, {
               ...input,
@@ -449,22 +477,34 @@ export async function POST(request: Request) {
           proposalCreated: finalResult.proposal !== null,
         });
       } catch (error) {
+        const interrupted = downstreamDisconnected ||
+          generationSignal.aborted ||
+          error instanceof OpenAIChatAbortError;
+        const failureCode = interrupted
+          ? "stream-disconnected"
+          : error instanceof OpenAIChatError
+          ? error.failureCode
+          : "generation-failed";
+        logChatGenerationFailure({
+          failureCode,
+          diagnosticReason: error instanceof OpenAIChatError
+            ? error.diagnosticReason
+            : null,
+          phase: activeProviderPhase,
+          webSearchAuthorized,
+          externalPdfAttached: externalPdfSource !== null,
+          providerResponseRecorded,
+          elapsedMs: Date.now() - generationStartedAt,
+        });
         try {
           await flushPersistence(true);
         } catch {
           // Preserve the authoritative persisted prefix and continue to a terminal state.
         }
         try {
-          const interrupted = downstreamDisconnected ||
-            generationSignal.aborted ||
-            error instanceof OpenAIChatAbortError;
           const assistantMessage = await failChatTurnForUser(userId, {
             ...input,
-            failureCode: interrupted
-              ? "stream-disconnected"
-              : error instanceof OpenAIChatError
-              ? error.failureCode
-              : "generation-failed",
+            failureCode,
           });
           if (assistantMessage.status === "failed") {
             enqueueEvent({ type: "failed", assistantMessage });

@@ -325,7 +325,7 @@ test("shows a concise durable error when web research cannot verify a source", a
     const useWebSources = page.getByRole("checkbox", { name: "Use external sources" });
     const composer = page.getByRole("textbox", { name: "Message" });
     const liveStatus = page.locator(".chat-panel > .sr-only[role='status']");
-    const failure = "Couldn’t verify that source. Try one webpage or HTTPS PDF.";
+    const failure = "Couldn’t verify the external research result. Try again.";
     const progress = "Reading external sources… This can take up to 2 minutes.";
 
     await useWebSources.check();
