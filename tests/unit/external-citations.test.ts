@@ -8,6 +8,7 @@ import {
   normalizeExternalCitationAnnotations,
   normalizeExternalCitationMentions,
   normalizeExternalCitationViews,
+  normalizeExternalTitle,
   normalizeExternalUrl,
   requireNonOverlappingSynthesisCitations,
   toExternalResearchEvidence,
@@ -200,6 +201,86 @@ describe("external citation normalization", () => {
       { ordinal: 1, url: "https://b.example.test/", startUtf16: 16 },
       { ordinal: 2, url: "https://a.example.test/", startUtf16: 16 },
     ]);
+  });
+
+  it("bounds and sanitizes untrusted provider citation titles", () => {
+    const content = "Supported claim.【sources】";
+    const start = content.indexOf("【sources】");
+    const normalized = normalizeExternalCitationAnnotations({
+      content,
+      annotations: [
+        {
+          type: "url_citation",
+          start_index: start,
+          end_index: content.length,
+          title: "x".repeat(600),
+          url: "https://long.example.test/",
+        },
+        {
+          type: "url_citation",
+          start_index: start,
+          end_index: content.length,
+          title: "Control\u0000separated\nsource",
+          url: "https://control.example.test/",
+        },
+        {
+          type: "url_citation",
+          start_index: start,
+          end_index: content.length,
+          title: "\u0000\n\t",
+          url: "https://fallback.example.test/report",
+        },
+        {
+          type: "url_citation",
+          start_index: start,
+          end_index: content.length,
+          title: `${"y".repeat(499)}🙂`,
+          url: "https://surrogate.example.test/",
+        },
+        {
+          type: "url_citation",
+          start_index: start,
+          end_index: content.length,
+          title: "C1\u0085separated\u200Bsource\u202Etitle",
+          url: "https://unicode-control.example.test/",
+        },
+        {
+          type: "url_citation",
+          start_index: start,
+          end_index: content.length,
+          title: "\u0085\u200B\u202E",
+          url: "https://unicode-fallback.example.test/report",
+        },
+        {
+          type: "url_citation",
+          start_index: start,
+          end_index: content.length,
+          title: "Emoji 🙂 title",
+          url: "https://emoji.example.test/",
+        },
+        {
+          type: "url_citation",
+          start_index: start,
+          end_index: content.length,
+          title: "left\uD800right",
+          url: "https://lone-surrogate.example.test/",
+        },
+      ],
+    });
+
+    expect(normalized.citations.map(({ title }) => title)).toEqual([
+      "x".repeat(500),
+      "Control separated source",
+      "fallback.example.test",
+      "y".repeat(499),
+      "C1 separated source title",
+      "unicode-fallback.example.test",
+      "Emoji 🙂 title",
+      "left right",
+    ]);
+    expect(() => normalizeExternalTitle("x".repeat(501))).toThrowError(
+      new ExternalCitationValidationError("invalid-title"),
+    );
   });
 
   it("maps exact proposal phrases to validated evidence in first-use order", () => {

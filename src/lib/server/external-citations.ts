@@ -15,8 +15,30 @@ export type ProviderUrlCitation = {
   url: string;
 };
 
+export type ExternalCitationValidationReason =
+  | "content-too-long"
+  | "duplicate-evidence"
+  | "empty-content"
+  | "inconsistent-evidence"
+  | "invalid-count"
+  | "invalid-evidence"
+  | "invalid-location"
+  | "invalid-mention"
+  | "invalid-pdf-address"
+  | "invalid-pdf-redirect"
+  | "invalid-pdf-response"
+  | "invalid-pdf-url"
+  | "invalid-title"
+  | "invalid-url"
+  | "overlapping-location"
+  | "overlapping-mention"
+  | "pdf-fetch-failed"
+  | "pdf-too-large"
+  | "too-many-pdf-sources"
+  | "too-many-sources";
+
 export class ExternalCitationValidationError extends Error {
-  constructor(public readonly reason: string) {
+  constructor(public readonly reason: ExternalCitationValidationReason) {
     super(reason);
     this.name = "ExternalCitationValidationError";
   }
@@ -55,6 +77,23 @@ export function normalizeExternalTitle(value: string) {
     throw new ExternalCitationValidationError("invalid-title");
   }
   return title;
+}
+
+function truncateExternalTitle(value: string) {
+  if (value.length <= MAX_EXTERNAL_CITATION_TITLE_LENGTH) return value;
+  const bounded = value.slice(0, MAX_EXTERNAL_CITATION_TITLE_LENGTH);
+  return /[\uD800-\uDBFF]$/u.test(bounded) ? bounded.slice(0, -1) : bounded;
+}
+
+function normalizeProviderExternalTitle(value: unknown, normalizedUrl: string) {
+  const sanitized = typeof value === "string"
+    ? value
+      .replace(/[\p{Cc}\p{Cf}\p{Cs}]/gu, " ")
+      .trim()
+      .replace(/\s+/gu, " ")
+    : "";
+  const fallback = new URL(normalizedUrl).hostname;
+  return normalizeExternalTitle(truncateExternalTitle(sanitized || fallback));
 }
 
 export function normalizeExternalCitationViews(input: {
@@ -325,11 +364,12 @@ export function normalizeExternalCitationAnnotations(input: {
     ) {
       throw new ExternalCitationValidationError("invalid-location");
     }
+    const url = normalizeExternalUrl(annotation.url);
     return {
       start: annotation.start_index,
       end: annotation.end_index,
-      title: normalizeExternalTitle(annotation.title),
-      url: normalizeExternalUrl(annotation.url),
+      title: normalizeProviderExternalTitle(annotation.title, url),
+      url,
     };
   }).sort((left, right) => left.start - right.start || left.end - right.end);
 

@@ -655,13 +655,20 @@ describe("chat generation failure boundaries", () => {
   });
 
   it("fails an invalid direct PDF before incurring provider cost", async () => {
-    const clientMessageId = randomUUID();
-    const events = await readEvents(await post({
-      nodeId,
-      clientMessageId,
-      content: "Read http://example.test/private.pdf",
-      webSearchAuthorized: true,
-    }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.stubEnv("NODE_ENV", "production");
+    let events;
+    try {
+      const clientMessageId = randomUUID();
+      events = await readEvents(await post({
+        nodeId,
+        clientMessageId,
+        content: "Read http://example.test/private.pdf",
+        webSearchAuthorized: true,
+      }));
+    } finally {
+      vi.stubEnv("NODE_ENV", "test");
+    }
 
     expect(events.at(-1)).toMatchObject({
       type: "failed",
@@ -669,6 +676,19 @@ describe("chat generation failure boundaries", () => {
     });
     expect(runtime.invocations).toBe(0);
     expect(runtime.externalPdfSources).toEqual([]);
+    expect(warn).toHaveBeenCalledOnce();
+    const record = JSON.parse(warn.mock.calls[0]![0] as string) as Record<string, unknown>;
+    expect(record).toEqual({
+      event: "chat_generation_failed",
+      failureCode: "response-invalid",
+      diagnosticReason: "external-citation-invalid-pdf-url",
+      phase: "preparation",
+      webSearchAuthorized: true,
+      externalPdfAttached: false,
+      providerResponseRecorded: false,
+      elapsedMs: expect.any(Number),
+    });
+    warn.mockRestore();
   });
 
   it("fails a direct PDF that cannot be fetched safely before incurring provider cost", async () => {

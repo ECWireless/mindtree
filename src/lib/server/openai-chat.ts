@@ -40,6 +40,7 @@ import {
   ExternalCitationValidationError,
   normalizeExternalCitationAnnotations,
   normalizeExternalCitationMentions,
+  type ExternalCitationValidationReason,
   type ProviderUrlCitation,
 } from "@/lib/server/external-citations";
 import type { ExternalPdfInput } from "@/lib/server/external-pdf-source";
@@ -96,9 +97,14 @@ export type NormalizedOpenAIChatEvent =
     };
 
 export type OpenAIChatPhase = "conversation" | "synthesis";
+export type OpenAIChatDiagnosticReason =
+  `external-citation-${ExternalCitationValidationReason}`;
 
 export class OpenAIChatError extends Error {
-  constructor(public readonly failureCode: ChatFailureCode) {
+  constructor(
+    public readonly failureCode: ChatFailureCode,
+    public readonly diagnosticReason: OpenAIChatDiagnosticReason | null = null,
+  ) {
     super(failureCode);
     this.name = "OpenAIChatError";
   }
@@ -291,7 +297,10 @@ export async function* normalizeOpenAIChatEvents(
           if (outputText.annotations.some((annotation) =>
             annotation.type !== "url_citation"
           )) {
-            throw new OpenAIChatError("response-invalid");
+            throw new OpenAIChatError(
+              "response-invalid",
+              "external-citation-invalid-evidence",
+            );
           }
           try {
             const normalized = normalizeExternalCitationAnnotations({
@@ -305,7 +314,10 @@ export async function* normalizeOpenAIChatEvents(
             externalCitations = normalized.citations;
           } catch (error) {
             if (error instanceof ExternalCitationValidationError) {
-              throw new OpenAIChatError("response-invalid");
+              throw new OpenAIChatError(
+                "response-invalid",
+                `external-citation-${error.reason}`,
+              );
             }
             throw error;
           }
@@ -343,7 +355,13 @@ export async function* normalizeOpenAIChatEvents(
               }
               proposal = synthesisProposalDraftSchema.parse(argumentsValue);
             }
-          } catch {
+          } catch (error) {
+            if (error instanceof ExternalCitationValidationError) {
+              throw new OpenAIChatError(
+                "response-invalid",
+                `external-citation-${error.reason}`,
+              );
+            }
             throw new OpenAIChatError("response-invalid");
           }
         }
